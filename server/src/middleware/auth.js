@@ -20,7 +20,11 @@ export const protect = asyncHandler(async (req, _res, next) => {
 
   const user = await loadSessionUser(payload.sub);
   if (!user) throw new ApiError(401, 'Account not found');
-  if (user.isBlocked) throw new ApiError(403, 'Your account has been suspended. Please contact support.');
+  if (user.status === 'blocked') throw new ApiError(403, 'Your account has been suspended. Please contact support.');
+  // Tokens issued before the last password change are no longer valid.
+  if (user.passwordChangedAt && payload.iat < Math.floor(new Date(user.passwordChangedAt).getTime() / 1000)) {
+    throw new ApiError(401, 'Your password was changed. Please log in again.');
+  }
 
   req.user = user;
   req.auth = payload;
@@ -34,6 +38,12 @@ export const optionalAuth = (req, res, next) => {
     if (err) req.user = undefined;
     next();
   });
+};
+
+/** Gates actions that need a confirmed email (checkout, opening a store). Admins are exempt. */
+export const requireVerifiedEmail = (req, _res, next) => {
+  if (req.user.role === 'admin' || req.user.emailVerified) return next();
+  return next(new ApiError(403, 'Please verify your email address first. Check your inbox or resend the link from your account.', { code: 'EMAIL_NOT_VERIFIED' }));
 };
 
 /** Role-based access control. */
