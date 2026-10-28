@@ -22,6 +22,7 @@ const OrderDetail = lazy(() => import('./pages/OrderDetail'));
 const Account = lazy(() => import('./pages/Account'));
 const Login = lazy(() => import('./pages/auth/Login'));
 const Register = lazy(() => import('./pages/auth/Register'));
+const VerifyEmail = lazy(() => import('./pages/auth/VerifyEmail'));
 const Sell = lazy(() => import('./pages/Sell'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 
@@ -74,13 +75,14 @@ export default function App() {
         <Route element={<MainLayout />}>
           <Route index element={<Home />} />
           <Route path="search" element={<Search />} />
-          <Route path="product/:slug" element={<ProductDetail />} />
+          <Route path="product/:productId" element={<ProductDetail />} />
           <Route path="stores" element={<Stores />} />
-          <Route path="store/:slug" element={<StorePage />} />
+          <Route path="store/:storeId" element={<StorePage />} />
           <Route path="cart" element={<Cart />} />
           <Route path="sell" element={<Sell />} />
           <Route path="login" element={<Login />} />
           <Route path="register" element={<Register />} />
+          <Route path="verify-email" element={<VerifyEmail />} />
 
           <Route element={<RequireAuth roles={['customer']} />}>
             <Route path="checkout" element={<Checkout />} />

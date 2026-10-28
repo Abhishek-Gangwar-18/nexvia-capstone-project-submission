@@ -13,7 +13,7 @@ import AuthShell from './AuthShell';
 
 function strength(pw) {
   let score = 0;
-  if (pw.length >= 6) score++;
+  if (pw.length >= 8) score++;
   if (pw.length >= 10) score++;
   if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
   if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) score++;
@@ -86,7 +86,7 @@ export default function Register() {
           <label className="label" htmlFor="reg-password">Password</label>
           <div className="relative">
             <Lock className="absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-            <input id="reg-password" type="password" required minLength={6} value={form.password} onChange={set('password')} className="input pl-10" placeholder="At least 6 characters" autoComplete="new-password" />
+            <input id="reg-password" type="password" required minLength={8} value={form.password} onChange={set('password')} className="input pl-10" placeholder="At least 8 characters" autoComplete="new-password" />
           </div>
           {form.password && (
             <div className="mt-2 flex items-center gap-2">
