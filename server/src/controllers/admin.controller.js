@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Order } from '../models/Order.js';
 import { User } from '../models/User.js';
 import { Vendor } from '../models/Vendor.js';
-import { Product } from '../models/Product.js';
+import { LISTED, Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
 import { Settings } from '../models/Settings.js';
 import { cache } from '../services/cache.js';
@@ -78,7 +78,6 @@ export async function analytics(req, res) {
               _id: '$packages.items.product',
               title: { $first: '$packages.items.title' },
               image: { $first: '$packages.items.image' },
-              slug: { $first: '$packages.items.slug' },
               store: { $first: '$packages.storeName' },
               units: { $sum: '$packages.items.quantity' },
               revenue: { $sum: '$packages.items.total' },
@@ -112,7 +111,7 @@ export async function analytics(req, res) {
     User.countDocuments({ role: 'customer', createdAt: { $gte: since } }),
     Vendor.countDocuments({ status: 'approved' }),
     Vendor.countDocuments({ status: 'pending' }),
-    Product.countDocuments({ isActive: true }),
+    Product.countDocuments(LISTED),
     Category.find().select('slug name').lean(),
     Order.find({ 'payment.status': { $in: ['paid', 'refunded'] } })
       .sort({ createdAt: -1 })
@@ -188,16 +187,19 @@ export async function listVendors(req, res) {
 export async function updateVendor(req, res) {
   const vendor = await Vendor.findById(req.params.id);
   if (!vendor) throw new ApiError(404, 'Vendor not found');
-  const statusChanged = req.body.status && req.body.status !== vendor.status;
-  Object.assign(vendor, req.body);
-  if (statusChanged && vendor.status === 'approved') {
-    vendor.approvedAt = new Date();
-    vendor.rejectionReason = undefined;
+  const { status, rejectionReason, ...rest } = req.body;
+  const statusChanged = status && status !== vendor.status;
+  Object.assign(vendor, rest);
+  if (statusChanged) {
+    if (['rejected', 'suspended'].includes(status) && !rejectionReason) {
+      throw new ApiError(400, `Give a reason when a store is ${status}`);
+    }
+    vendor.setStatus(status, { reason: rejectionReason, by: req.user._id });
   }
   await vendor.save();
   if (statusChanged) {
     // Store visibility changed -> refresh search docs, listings and cached product pages.
-    const products = await Product.find({ vendor: vendor._id }).select('_id slug').lean();
+    const products = await Product.find({ vendor: vendor._id }).select('_id').lean();
     await invalidateProducts(products);
     await invalidateCatalog();
     indexProducts(products.map((p) => p._id));
@@ -216,21 +218,30 @@ export async function listUsers(req, res) {
     filter.$or = [{ name: rx }, { email: rx }];
   }
   const [items, total, counts] = await Promise.all([
-    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select('name email role phone avatar isBlocked lastLoginAt createdAt').lean(),
+    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select('name email emailVerified role phone avatar status blockedReason blockedAt lastLoginAt createdAt').lean(),
     User.countDocuments(filter),
     User.aggregate([{ $group: { _id: '$role', count: { $sum: 1 } } }]),
   ]);
   res.json({ ...paginated(items, total, page, limit), counts: Object.fromEntries(counts.map((c) => [c._id, c.count])) });
 }
 
-export const userUpdateSchema = z.object({ isBlocked: z.boolean() });
+export const userUpdateSchema = z
+  .object({
+    status: z.enum(['active', 'blocked']),
+    reason: z.string().trim().max(300).optional(),
+  })
+  .refine((b) => b.status !== 'blocked' || b.reason, { message: 'Give a reason for blocking this user', path: ['reason'] });
 
 export async function updateUser(req, res) {
   if (req.params.id === req.user._id) throw new ApiError(400, 'You cannot change your own account here');
   const user = await User.findById(req.params.id);
   if (!user) throw new ApiError(404, 'User not found');
   if (user.role === 'admin') throw new ApiError(400, 'Admin accounts cannot be blocked');
-  user.isBlocked = req.body.isBlocked;
+  const blocked = req.body.status === 'blocked';
+  user.status = req.body.status;
+  user.blockedReason = blocked ? req.body.reason : undefined;
+  user.blockedAt = blocked ? new Date() : undefined;
+  user.blockedBy = blocked ? req.user._id : undefined;
   await user.save();
   await invalidateUser(user._id);
   res.json({ user: user.toSafeJSON() });
@@ -284,26 +295,32 @@ export async function listProducts(req, res) {
     filter.$or = [{ title: rx }, { brand: rx }];
   }
   if (req.query.category) filter.category = req.query.category;
-  if (req.query.status === 'active') filter.isActive = true;
+  if (req.query.status === 'active') Object.assign(filter, LISTED);
   if (req.query.status === 'inactive') filter.isActive = false;
+  if (req.query.status === 'removed') filter['moderation.status'] = 'removed';
   if (mongoose.isValidObjectId(req.query.vendor)) filter.vendor = req.query.vendor;
   const [items, total] = await Promise.all([
     Product.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate('vendor', 'storeName slug')
-      .select('title slug thumbnail price mrp stock category brand rating numReviews sold isActive vendor createdAt')
+      .populate('vendor', 'storeName')
+      .select('title thumbnail price mrp stock category brand rating numReviews sold isActive moderation vendor createdAt')
       .lean(),
     Product.countDocuments(filter),
   ]);
   res.json(paginated(items, total, page, limit));
 }
 
+export const moderationSchema = z
+  .object({ status: z.enum(['approved', 'removed']), reason: z.string().trim().max(300).optional() })
+  .refine((b) => b.status !== 'removed' || b.reason, { message: 'Give a reason for removing this product', path: ['reason'] });
+
 export async function moderateProduct(req, res) {
   const product = await Product.findById(req.params.id);
   if (!product) throw new ApiError(404, 'Product not found');
-  product.isActive = Boolean(req.body.isActive);
+  const removed = req.body.status === 'removed';
+  product.moderation = { status: req.body.status, reason: removed ? req.body.reason : undefined, by: req.user._id, at: new Date() };
   await product.save();
   await invalidateProducts([product]);
   await invalidateCatalog();

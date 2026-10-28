@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as admin from '../controllers/admin.controller.js';
 import * as coupons from '../controllers/coupon.controller.js';
+import * as orders from '../controllers/order.controller.js';
 import { authorize, protect } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/http.js';
@@ -17,10 +18,12 @@ router.get('/users', asyncHandler(admin.listUsers));
 router.patch('/users/:id', validate(admin.userUpdateSchema), asyncHandler(admin.updateUser));
 
 router.get('/orders', asyncHandler(admin.listOrders));
+router.get('/orders/:id', asyncHandler(orders.adminGetOrder));
+router.get('/orders/:id/invoice', asyncHandler(orders.adminInvoice));
 router.patch('/orders/:id/packages/:packageId', validate(admin.packageStatusSchema), asyncHandler(admin.updatePackage));
 
 router.get('/products', asyncHandler(admin.listProducts));
-router.patch('/products/:id', asyncHandler(admin.moderateProduct));
+router.patch('/products/:id', validate(admin.moderationSchema), asyncHandler(admin.moderateProduct));
 
 router.get('/coupons', asyncHandler(coupons.listCoupons));
 router.post('/coupons', validate(coupons.couponCreateSchema), asyncHandler(coupons.createCoupon));

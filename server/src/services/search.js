@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { Client } from '@elastic/elasticsearch';
 import { env } from '../config/env.js';
-import { Product } from '../models/Product.js';
+import { isListed, LISTED, Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
 import { logger } from '../utils/logger.js';
 import { escapeRegex } from '../utils/http.js';
@@ -15,7 +15,6 @@ const MAPPINGS = {
   properties: {
     title: { type: 'text', analyzer: 'english', fields: { keyword: { type: 'keyword', ignore_above: 256 } } },
     titleSuggest: { type: 'search_as_you_type' },
-    slug: { type: 'keyword' },
     description: { type: 'text', analyzer: 'english' },
     brand: { type: 'keyword', fields: { text: { type: 'text' } } },
     category: { type: 'keyword' },
@@ -82,7 +81,6 @@ async function categoryNames() {
 const toDoc = (p, names) => ({
   title: p.title,
   titleSuggest: p.title,
-  slug: p.slug,
   description: (p.description || '').slice(0, 2000),
   brand: p.brand,
   category: p.category,
@@ -90,7 +88,6 @@ const toDoc = (p, names) => ({
   tags: p.tags || [],
   vendorId: String(p.vendor?._id || p.vendor),
   storeName: p.vendor?.storeName || '',
-  storeSlug: p.vendor?.slug || '',
   price: p.price,
   mrp: p.mrp || p.price,
   discount: p.mrp > p.price ? Math.round(((p.mrp - p.price) / p.mrp) * 100) : 0,
@@ -99,11 +96,11 @@ const toDoc = (p, names) => ({
   sold: p.sold || 0,
   stock: p.stock || 0,
   thumbnail: p.thumbnail || p.images?.[0]?.url || '',
-  isActive: Boolean(p.isActive) && (!p.vendor?.status || p.vendor.status === 'approved'),
+  isActive: isListed(p) && (!p.vendor?.status || p.vendor.status === 'approved'),
   createdAt: p.createdAt,
 });
 
-const loadProducts = (filter) => Product.find(filter).populate('vendor', 'storeName slug status').lean();
+const loadProducts = (filter) => Product.find(filter).populate('vendor', 'storeName status').lean();
 
 /** Re-indexes the given products. Safe to call fire-and-forget; errors are logged, never thrown. */
 export async function indexProducts(ids) {
@@ -274,7 +271,7 @@ async function esSearch(p) {
 }
 
 async function mongoSearch(p) {
-  const base = { isActive: true };
+  const base = { ...LISTED };
   if (p.q) {
     const words = p.q.split(/\s+/).filter(Boolean).slice(0, 6);
     base.$and = words.map((word) => {
@@ -305,7 +302,7 @@ async function mongoSearch(p) {
 
   const [result] = await Product.aggregate([
     { $match: base },
-    { $lookup: { from: 'vendors', localField: 'vendor', foreignField: '_id', as: 'v', pipeline: [{ $project: { storeName: 1, slug: 1, status: 1 } }] } },
+    { $lookup: { from: 'vendors', localField: 'vendor', foreignField: '_id', as: 'v', pipeline: [{ $project: { storeName: 1, status: 1 } }] } },
     { $set: { v: { $first: '$v' } } },
     { $match: { 'v.status': 'approved' } },
     {
@@ -319,7 +316,7 @@ async function mongoSearch(p) {
           {
             $project: {
               title: 1, slug: 1, brand: 1, category: 1, price: 1, mrp: 1, discount: 1, rating: 1, numReviews: 1,
-              sold: 1, stock: 1, thumbnail: 1, createdAt: 1, vendorId: '$v._id', storeName: '$v.storeName', storeSlug: '$v.slug',
+              sold: 1, stock: 1, thumbnail: 1, createdAt: 1, vendorId: '$v._id', storeName: '$v.storeName',
             },
           },
         ],
@@ -402,10 +399,10 @@ export async function suggest(rawQuery) {
     }
   }
   if (!products) {
-    products = await Product.find({ isActive: true, title: new RegExp(`(^|\\s)${escapeRegex(q)}`, 'i') })
+    products = await Product.find({ ...LISTED, title: new RegExp(`(^|\\s)${escapeRegex(q)}`, 'i') })
       .sort({ sold: -1 })
       .limit(6)
-      .select('title slug thumbnail price category brand')
+      .select('title thumbnail price category brand')
       .lean();
   }
   return { products, categories: await categoriesPromise };

@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { z } from 'zod';
-import { Product } from '../models/Product.js';
+import { isListed, LISTED, Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
 import { Review } from '../models/Review.js';
 import { Order } from '../models/Order.js';
@@ -8,7 +8,7 @@ import { Vendor } from '../models/Vendor.js';
 import { Coupon } from '../models/Coupon.js';
 import { cache } from '../services/cache.js';
 import { searchProducts, suggest, indexProducts } from '../services/search.js';
-import { approvedVendorIds, CARD_FIELDS, categoriesWithCounts, invalidateProducts, rankedVendors, toCard } from '../services/catalog.js';
+import { approvedVendorIds, CARD_FIELDS, recalcVendorRating, categoriesWithCounts, invalidateProducts, listVendors, rankedVendors, storeListParams, toCard } from '../services/catalog.js';
 import { uploadFile } from '../services/storage.js';
 import { ApiError, paginated, parsePagination, round2 } from '../utils/http.js';
 
@@ -29,8 +29,8 @@ export async function suggestProducts(req, res) {
 export async function home(_req, res) {
   const feed = await cache.remember('home:feed', 120, async () => {
     const vendorIds = (await approvedVendorIds()).map((id) => new mongoose.Types.ObjectId(id));
-    const base = { isActive: true, vendor: { $in: vendorIds } };
-    const cards = (query) => query.select(CARD_FIELDS).populate('vendor', 'storeName slug').lean().then((list) => list.map(toCard));
+    const base = { ...LISTED, vendor: { $in: vendorIds } };
+    const cards = (query) => query.select(CARD_FIELDS).populate('vendor', 'storeName').lean().then((list) => list.map(toCard));
 
     const [categories, trending, topRated, newArrivals, dealIds, vendors] = await Promise.all([
       categoriesWithCounts(),
@@ -54,21 +54,21 @@ export async function home(_req, res) {
 }
 
 export async function getProduct(req, res) {
-  const { idOrSlug } = req.params;
-  const data = await cache.remember(`product:${idOrSlug}`, 300, async () => {
-    const filter = mongoose.isValidObjectId(idOrSlug) ? { _id: idOrSlug } : { slug: idOrSlug };
-    const product = await Product.findOne(filter).populate('vendor', 'user storeName slug logo tagline status createdAt').lean();
+  const { productId } = req.params;
+  if (!mongoose.isValidObjectId(productId)) throw new ApiError(400, 'Invalid product id');
+  const data = await cache.remember(`product:${productId}`, 300, async () => {
+    const product = await Product.findById(productId).populate('vendor', 'user storeName logo tagline status createdAt').lean();
     if (!product) return null;
     const [related, category, storeStats] = await Promise.all([
-      Product.find({ category: product.category, _id: { $ne: product._id }, isActive: true })
+      Product.find({ category: product.category, _id: { $ne: product._id }, ...LISTED })
         .sort({ sold: -1 })
         .limit(10)
         .select(CARD_FIELDS)
-        .populate('vendor', 'storeName slug')
+        .populate('vendor', 'storeName')
         .lean(),
       Category.findOne({ slug: product.category }).select('name slug').lean(),
       Product.aggregate([
-        { $match: { vendor: product.vendor._id, isActive: true } },
+        { $match: { vendor: product.vendor._id, ...LISTED } },
         { $group: { _id: null, products: { $sum: 1 }, sold: { $sum: '$sold' }, rating: { $avg: { $cond: [{ $gt: ['$numReviews', 0] }, '$rating', null] } } } },
       ]),
     ]);
@@ -81,7 +81,7 @@ export async function getProduct(req, res) {
   });
 
   const isOwner = req.user && (req.user.role === 'admin' || String(data?.product.vendor?.user) === req.user._id);
-  const publiclyVisible = data && data.product.isActive && data.product.vendor?.status === 'approved';
+  const publiclyVisible = data && isListed(data.product) && data.product.vendor?.status === 'approved';
   if (!data || (!publiclyVisible && !isOwner)) throw new ApiError(404, 'Product not found');
 
   const { user: _vendorUser, ...vendor } = data.product.vendor;
@@ -90,18 +90,22 @@ export async function getProduct(req, res) {
 
 /* --------------------------------------------------------------- stores */
 
-export async function listStores(_req, res) {
-  res.json({ stores: await cache.remember('store:list', 300, () => rankedVendors(60)) });
+export async function listStores(req, res) {
+  const params = storeListParams(req.query);
+  const key = `store:list:${params.q}:${params.sort}:${params.page}:${params.limit}`;
+  res.json(await cache.remember(key, 300, () => listVendors(params)));
 }
 
 export async function getStore(req, res) {
-  const store = await cache.remember(`store:${req.params.slug}`, 300, async () => {
-    const vendor = await Vendor.findOne({ slug: req.params.slug, status: 'approved' })
-      .select('storeName slug tagline description logo banner address.city address.state createdAt')
+  const { storeId } = req.params;
+  if (!mongoose.isValidObjectId(storeId)) throw new ApiError(400, 'Invalid store id');
+  const store = await cache.remember(`store:${storeId}`, 300, async () => {
+    const vendor = await Vendor.findOne({ _id: storeId, status: 'approved' })
+      .select('storeName tagline description logo banner address.city address.state createdAt')
       .lean();
     if (!vendor) return null;
     const [stats] = await Product.aggregate([
-      { $match: { vendor: vendor._id, isActive: true } },
+      { $match: { vendor: vendor._id, ...LISTED } },
       {
         $group: {
           _id: null,
@@ -138,7 +142,7 @@ async function hasDeliveredPurchase(userId, productId) {
 }
 
 export async function getReviews(req, res) {
-  const productId = req.params.id;
+  const { productId } = req.params;
   if (!mongoose.isValidObjectId(productId)) throw new ApiError(400, 'Invalid product id');
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 6, maxLimit: 30 });
   const sorts = { recent: { createdAt: -1 }, top: { rating: -1, createdAt: -1 }, low: { rating: 1, createdAt: -1 } };
@@ -149,7 +153,7 @@ export async function getReviews(req, res) {
     Review.find(filter).sort(sorts[req.query.sort] || sorts.recent).skip(skip).limit(limit).lean(),
     Review.countDocuments(filter),
     Review.aggregate([{ $match: { product: new mongoose.Types.ObjectId(productId) } }, { $group: { _id: '$rating', count: { $sum: 1 } } }]),
-    req.user ? Review.findOne({ product: productId, user: req.user._id }).lean() : null,
+    req.user ? Review.find({ product: productId, user: req.user._id }).select('_id').lean() : [],
     req.user ? hasDeliveredPurchase(req.user._id, productId) : false,
   ]);
 
@@ -157,7 +161,7 @@ export async function getReviews(req, res) {
   breakdown.forEach((b) => {
     distribution[b._id] = b.count;
   });
-  res.json({ ...paginated(items, total, page, limit), distribution, myReview: mine, hasPurchased: purchased });
+  res.json({ ...paginated(items, total, page, limit), distribution, myReviewIds: mine.map((r) => String(r._id)), hasPurchased: purchased });
 }
 
 async function recalcRating(productId) {
@@ -172,27 +176,48 @@ async function recalcRating(productId) {
   ).lean();
   await invalidateProducts([product]);
   indexProducts([productId]);
+  await recalcVendorRating(product.vendor);
 }
 
-export async function upsertReview(req, res) {
+export const reviewUpdateSchema = reviewSchema
+  .partial()
+  .refine((body) => Object.keys(body).length > 0, 'Send at least one field to update');
+
+/** A customer may post several reviews on the same product (e.g. after each purchase). */
+export async function createReview(req, res) {
   if (req.user.role !== 'customer') throw new ApiError(403, 'Only customer accounts can write reviews');
-  const product = await Product.findById(req.params.id).select('_id').lean();
+  const product = await Product.findById(req.params.productId).select('_id').lean();
   if (!product) throw new ApiError(404, 'Product not found');
 
   const verified = await hasDeliveredPurchase(req.user._id, product._id);
-  const review = await Review.findOneAndUpdate(
-    { product: product._id, user: req.user._id },
-    { $set: { ...req.body, name: req.user.name, verified } },
-    { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
-  );
+  const review = await Review.create({ ...req.body, product: product._id, user: req.user._id, name: req.user.name, verified });
   await recalcRating(product._id);
   res.status(201).json({ review });
 }
 
-export async function deleteMyReview(req, res) {
-  const review = await Review.findOneAndDelete({ product: req.params.id, user: req.user._id });
+/** Loads a review of this product; only its author (or an admin, when allowed) may act on it. */
+async function authoredReview(req, { allowAdmin = false } = {}) {
+  const { productId, reviewId } = req.params;
+  if (!mongoose.isValidObjectId(reviewId)) throw new ApiError(400, 'Invalid review id');
+  const review = await Review.findOne({ _id: reviewId, product: productId });
   if (!review) throw new ApiError(404, 'Review not found');
-  await recalcRating(req.params.id);
+  const isAuthor = String(review.user) === String(req.user._id);
+  if (!isAuthor && !(allowAdmin && req.user.role === 'admin')) throw new ApiError(403, 'You can only change your own reviews');
+  return review;
+}
+
+export async function updateReview(req, res) {
+  const review = await authoredReview(req);
+  Object.assign(review, req.body);
+  await review.save();
+  await recalcRating(review.product);
+  res.json({ review });
+}
+
+export async function deleteReview(req, res) {
+  const review = await authoredReview(req, { allowAdmin: true });
+  await review.deleteOne();
+  await recalcRating(review.product);
   res.json({ message: 'Review deleted' });
 }
 
@@ -205,6 +230,8 @@ export async function publicCoupons(req, res) {
     .filter((id) => mongoose.isValidObjectId(id));
   const coupons = await Coupon.find({
     isActive: true,
+    // Private coupons are left out of the list but still redeem when typed in at checkout.
+    isPublic: { $ne: false },
     vendor: { $in: [null, ...vendorIds] },
     $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
   })
@@ -222,9 +249,12 @@ export async function publicCoupons(req, res) {
 
 /* -------------------------------------------------------------- uploads */
 
+const UPLOAD_FOLDERS = ['products', 'stores', 'avatars'];
+
 export async function uploadImages(req, res) {
   if (!req.files?.length) throw new ApiError(400, 'Choose at least one image to upload');
-  const folder = ['products', 'stores', 'avatars'].includes(req.query.folder) ? req.query.folder : 'misc';
+  const { folder } = req.query;
+  if (!UPLOAD_FOLDERS.includes(folder)) throw new ApiError(400, `folder must be one of: ${UPLOAD_FOLDERS.join(', ')}`);
   // Store logos/banners are uploaded during onboarding, before a customer's role becomes "vendor".
   if (folder === 'products' && !['vendor', 'admin'].includes(req.user.role)) {
     throw new ApiError(403, 'Only sellers can upload product images');

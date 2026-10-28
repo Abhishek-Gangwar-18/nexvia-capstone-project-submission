@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import * as vendor from '../controllers/vendor.controller.js';
 import * as coupons from '../controllers/coupon.controller.js';
-import { authorize, loadVendor, protect } from '../middleware/auth.js';
+import { authorize, loadVendor, protect, requireVerifiedEmail } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/http.js';
 
 const router = Router();
 
 // Onboarding is open to customers too ("Become a seller"); it upgrades their role to vendor.
-router.post('/onboard', protect, authorize('customer', 'vendor'), validate(vendor.onboardSchema), asyncHandler(vendor.onboard));
+router.post('/onboard', protect, authorize('customer', 'vendor'), requireVerifiedEmail, validate(vendor.onboardSchema), asyncHandler(vendor.onboard));
 
 // Store profile is editable while pending/rejected so sellers can fix their application.
 router.get('/store', protect, authorize('vendor'), loadVendor({ approved: false }), asyncHandler(vendor.myStore));

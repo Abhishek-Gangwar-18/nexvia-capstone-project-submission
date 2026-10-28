@@ -13,6 +13,7 @@ const couponBase = z.object({
   usageLimit: z.coerce.number().int().min(0).default(0),
   perUserLimit: z.coerce.number().int().min(1).default(1),
   isActive: z.boolean().default(true),
+  isPublic: z.boolean().optional(),
 });
 
 const percentRule = [(c) => c.type !== 'percent' || !c.value || c.value <= 90, { message: 'A percentage discount cannot exceed 90%', path: ['value'] }];
@@ -25,6 +26,11 @@ export const couponUpdateSchema = couponBase.partial().refine(...percentRule);
  */
 const scopeOf = (req) => (req.vendor ? req.vendor._id : null);
 
+/** Only admins decide whether a coupon is listed publicly. */
+function assertCanSetVisibility(req) {
+  if (req.vendor && req.body.isPublic !== undefined) throw new ApiError(403, 'Only admins can change coupon visibility');
+}
+
 export async function listCoupons(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 20 });
   const filter = req.vendor ? { vendor: req.vendor._id } : req.query.scope === 'all' ? {} : { vendor: null };
@@ -36,6 +42,7 @@ export async function listCoupons(req, res) {
 }
 
 export async function createCoupon(req, res) {
+  assertCanSetVisibility(req);
   if (await Coupon.exists({ code: req.body.code })) throw new ApiError(409, `Coupon ${req.body.code} already exists`);
   const coupon = await Coupon.create({ ...req.body, vendor: scopeOf(req) });
   res.status(201).json({ coupon });
@@ -50,6 +57,7 @@ async function ownCoupon(req) {
 }
 
 export async function updateCoupon(req, res) {
+  assertCanSetVisibility(req);
   const coupon = await ownCoupon(req);
   if (req.body.code && req.body.code !== coupon.code && (await Coupon.exists({ code: req.body.code }))) {
     throw new ApiError(409, `Coupon ${req.body.code} already exists`);
