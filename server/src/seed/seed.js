@@ -25,7 +25,6 @@ import { Cart } from '../models/Cart.js';
 import { Settings } from '../models/Settings.js';
 import { RevokedSession } from '../models/RevokedSession.js';
 import { round2 } from '../utils/http.js';
-import { toSlug } from '../utils/slug.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const SNAPSHOT = path.join(path.dirname(__filename), 'data', 'dummyjson-products.json');
@@ -215,13 +214,13 @@ export async function seedDatabase({ live = false, log = console.log } = {}) {
   const rawProducts = catalog.products.filter((p) => !EXCLUDED_CATEGORIES.includes(p.category));
 
   // Users ---------------------------------------------------------------
-  const [vendorHash, customerHash] = await Promise.all([DEMO_ACCOUNTS.vendor.password, DEMO_ACCOUNTS.customer.password].map((pw) => bcrypt.hash(pw, 10)));
+  const [vendorHash, customerHash] = await Promise.all([DEMO_ACCOUNTS.vendor.password, DEMO_ACCOUNTS.customer.password].map((pw) => bcrypt.hash(pw, 12)));
   const daysAgo = (n) => new Date(now - n * DAY);
 
   const users = [];
   const vendorUsers = STORES.map((s, i) =>
     prepare(User, {
-      _id: id(), name: s.owner, email: s.email, password: vendorHash, role: 'vendor',
+      _id: id(), name: s.owner, email: s.email, password: vendorHash, role: 'vendor', emailVerified: true,
       phone: `98${String(45000000 + i * 7919).padStart(8, '0')}`, createdAt: daysAgo(180 - i * 6), updatedAt: daysAgo(2),
     }),
   );
@@ -229,7 +228,7 @@ export async function seedDatabase({ live = false, log = console.log } = {}) {
 
   const customers = CUSTOMERS.map(([name, email, city, state, pincode], i) =>
     prepare(User, {
-      _id: id(), name, email, password: customerHash, role: 'customer',
+      _id: id(), name, email, password: customerHash, role: 'customer', emailVerified: true,
       phone: `90${String(11000000 + i * 104729).padStart(8, '0')}`,
       addresses: [
         {
@@ -250,12 +249,16 @@ export async function seedDatabase({ live = false, log = console.log } = {}) {
   // Vendors -------------------------------------------------------------
   const vendors = STORES.map((s, i) =>
     prepare(Vendor, {
-      _id: id(), user: vendorUsers[i]._id, storeName: s.storeName, slug: toSlug(s.storeName), tagline: s.tagline,
+      _id: id(), user: vendorUsers[i]._id, storeName: s.storeName, tagline: s.tagline,
       description: `${s.storeName} is a verified Vendora seller based in ${s.city}. ${s.tagline}. Every order is quality-checked and shipped within 24 hours.`,
       email: s.email, phone: vendorUsers[i].phone, gstin: `${String(10 + i).padStart(2, '0')}ABCDE${1000 + i}F1Z${i}`,
       address: { line1: `${rand.int(1, 99)}, Industrial Area Phase ${rand.int(1, 3)}`, city: s.city, state: s.state, pincode: String(400001 + i * 1111) },
       bank: { accountHolder: s.storeName, accountNumberMasked: `••••••••${String(1000 + i * 37).slice(-4)}`, ifsc: `HDFC000${String(1000 + i).slice(-4)}` },
       status: 'approved', commissionRate: s.commissionRate ?? null, approvedAt: daysAgo(170 - i * 6),
+      statusHistory: [
+        { status: 'pending', reason: 'Application submitted', by: vendorUsers[i]._id, at: daysAgo(175 - i * 6) },
+        { status: 'approved', at: daysAgo(170 - i * 6) },
+      ],
       createdAt: daysAgo(175 - i * 6), updatedAt: daysAgo(3),
     }),
   );
@@ -274,12 +277,8 @@ export async function seedDatabase({ live = false, log = console.log } = {}) {
   );
 
   // Products ------------------------------------------------------------
-  const usedSlugs = new Set();
   const products = rawProducts.map((p) => {
     const { vendor, store } = vendorByCategory.get(p.category);
-    let slug = toSlug(p.title);
-    while (usedSlugs.has(slug)) slug = `${slug}-${rand.int(2, 99)}`;
-    usedSlugs.add(slug);
     const price = toInr(p.price);
     const mrp = p.discountPercentage >= 3 ? Math.max(price, toInr(p.price / (1 - p.discountPercentage / 100))) : price;
     const createdAt = daysAgo(rand.int(0, 120) + rand.next());
@@ -290,7 +289,7 @@ export async function seedDatabase({ live = false, log = console.log } = {}) {
       p.returnPolicy && { label: 'Returns', value: p.returnPolicy },
     ].filter(Boolean);
     return prepare(Product, {
-      _id: id(), vendor: vendor._id, title: p.title, slug, description: p.description,
+      _id: id(), vendor: vendor._id, title: p.title, description: p.description,
       brand: p.brand || store.houseBrand, category: p.category, price, mrp,
       stock: rand.chance(0.04) ? 0 : Math.max(4, p.stock), sku: p.sku,
       images: p.images.map((url) => ({ url })), thumbnail: p.thumbnail, tags: p.tags || [], specs,
@@ -457,6 +456,14 @@ export async function seedDatabase({ live = false, log = console.log } = {}) {
   const demo = customers[0];
   demo.wishlist = [products[3]._id, products[40]._id, products[90]._id, products[150]._id].filter(Boolean);
   const cart = prepare(Cart, { user: demo._id, items: [{ product: products[1]._id, quantity: 1 }, { product: products[60]._id, quantity: 2 }] });
+
+  // Store ratings: review-weighted average of each vendor's product ratings (same rule as recalcVendorRating).
+  vendors.forEach((v) => {
+    const own = products.filter((p) => String(p.vendor) === String(v._id) && p.numReviews > 0);
+    const count = own.reduce((n, p) => n + p.numReviews, 0);
+    v.rating = count ? Math.round((own.reduce((n, p) => n + p.rating * p.numReviews, 0) / count) * 100) / 100 : 0;
+    v.numReviews = count;
+  });
 
   // Insert everything ------------------------------------------------------
   log('Seeding: inserting documents…');

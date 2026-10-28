@@ -13,10 +13,7 @@ const reviewSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// One review per (product, user); seeded reviews without a user are exempt.
-reviewSchema.index(
-  { product: 1, user: 1 },
-  { unique: true, partialFilterExpression: { user: { $type: 'objectId' } } },
-);
+// A user may review the same product more than once; this index only speeds up "my reviews" lookups.
+reviewSchema.index({ product: 1, user: 1 });
 
 export const Review = mongoose.model('Review', reviewSchema);

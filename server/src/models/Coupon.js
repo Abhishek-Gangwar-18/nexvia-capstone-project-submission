@@ -18,6 +18,8 @@ const couponSchema = new mongoose.Schema(
     /** null -> platform-wide coupon (admin); otherwise only applies to that vendor's items. */
     vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
     isActive: { type: Boolean, default: true },
+    /** Admin-controlled: false hides the code from shopper-facing lists; it still works when typed in. */
+    isPublic: { type: Boolean, default: true },
   },
   { timestamps: true },
 );
