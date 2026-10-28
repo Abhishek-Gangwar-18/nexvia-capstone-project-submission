@@ -1,21 +1,14 @@
 import { z } from 'zod';
-import { addItem, getCart, mergeItems, setQuantity, clearCart, MAX_PER_ITEM } from '../services/cart.js';
+import { clearCart, getCart, MAX_PER_ITEM, removeItem, setItem } from '../services/cart.js';
 import { evaluateCoupon, getSettings, shippingFor } from '../services/pricing.js';
 import { ApiError, round2 } from '../utils/http.js';
 
 const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid product id');
 
+/** quantity is the line's new total, not an increment. */
 export const addItemSchema = z.object({
   productId: objectId,
   quantity: z.coerce.number().int().min(1).max(MAX_PER_ITEM).default(1),
-});
-
-export const quantitySchema = z.object({
-  quantity: z.coerce.number().int().min(0).max(MAX_PER_ITEM),
-});
-
-export const mergeSchema = z.object({
-  items: z.array(z.object({ productId: objectId, quantity: z.coerce.number().int().min(1).max(MAX_PER_ITEM) })).max(50),
 });
 
 export const couponSchema = z.object({ code: z.string().trim().min(1, 'Enter a coupon code').max(30) });
@@ -25,24 +18,16 @@ export async function show(req, res) {
 }
 
 export async function add(req, res) {
-  res.status(201).json(await addItem(req.user._id, req.body.productId, req.body.quantity));
-}
-
-export async function update(req, res) {
-  res.json(await setQuantity(req.user._id, req.params.productId, req.body.quantity));
+  res.json(await setItem(req.user._id, req.body.productId, req.body.quantity));
 }
 
 export async function remove(req, res) {
-  res.json(await setQuantity(req.user._id, req.params.productId, 0));
+  res.json(await removeItem(req.user._id, req.params.productId));
 }
 
 export async function clear(req, res) {
   await clearCart(req.user._id);
   res.json(await getCart(req.user._id));
-}
-
-export async function merge(req, res) {
-  res.json(await mergeItems(req.user._id, req.body.items));
 }
 
 /** Previews a coupon against the current cart (the discount is re-validated at checkout). */

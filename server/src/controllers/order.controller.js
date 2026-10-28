@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Order } from '../models/Order.js';
 import { User } from '../models/User.js';
 import { Vendor } from '../models/Vendor.js';
+import { cache } from '../services/cache.js';
 import { addressSchema } from './auth.controller.js';
 import { getCart } from '../services/cart.js';
 import { applyCommission, distributeDiscount, evaluateCoupon, getSettings, shippingFor } from '../services/pricing.js';
@@ -41,7 +42,7 @@ const prefill = (user) => ({ name: user.name, email: user.email, contact: user.p
  * computes the platform commission and vendor earnings per package, and opens a gateway order whose
  * Razorpay Route transfers send each vendor's share to their linked account.
  */
-export async function checkout(req, res) {
+async function placeOrder(req) {
   const userId = req.user._id;
   const cart = await getCart(userId);
   if (!cart.items.length) throw new ApiError(400, 'Your cart is empty');
@@ -75,7 +76,6 @@ export async function checkout(req, res) {
       items: lines.map((l) => ({
         product: l.product._id,
         title: l.product.title,
-        slug: l.product.slug,
         image: l.product.thumbnail,
         category: l.product.category,
         price: l.product.price,
@@ -132,11 +132,36 @@ export async function checkout(req, res) {
   });
   await order.save();
 
-  res.status(201).json({
+  return {
     order: { _id: order._id, orderNumber: order.orderNumber, pricing: order.pricing },
     payment: checkoutConfig(order),
     prefill: prefill(req.user),
-  });
+  };
+}
+
+const IDEMPOTENCY_TTL = 24 * 60 * 60;
+
+/**
+ * POST /orders/checkout requires an Idempotency-Key header. A retry with the same key (double click,
+ * network retry) gets the first response back instead of creating a second order and gateway order.
+ */
+export async function checkout(req, res) {
+  const key = req.get('Idempotency-Key');
+  if (!key || !/^[\w-]{8,100}$/.test(key)) {
+    throw new ApiError(400, 'Send an Idempotency-Key header (8-100 letters, digits, - or _) with checkout');
+  }
+  const base = `idem:checkout:${req.user._id}:${key}`;
+  const saved = await cache.getJSON(`${base}:result`);
+  if (saved) return res.status(201).json(saved);
+  if ((await cache.incrWithTtl(`${base}:lock`, 60)) > 1) throw new ApiError(409, 'This checkout is already being processed');
+  try {
+    const result = await placeOrder(req);
+    await cache.setJSON(`${base}:result`, result, IDEMPOTENCY_TTL);
+    return res.status(201).json(result);
+  } finally {
+    // A failed attempt releases the key so the customer can fix the problem and retry with it.
+    await cache.del(`${base}:lock`);
+  }
 }
 
 /** Payment config for an order still awaiting payment (retry from the order page). */
@@ -212,39 +237,46 @@ export async function listMyOrders(req, res) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('orderNumber status pricing payment.status payment.provider createdAt placedAt packages.storeName packages.status packages.items.title packages.items.image packages.items.quantity packages.items.slug')
+      .select('orderNumber status pricing payment.status payment.provider createdAt placedAt packages.storeName packages.status packages.items.title packages.items.image packages.items.quantity packages.items.product')
       .lean(),
     Order.countDocuments(filter),
   ]);
   res.json(paginated(items, total, page, limit));
 }
 
-/** Customers see their own orders, admins see all, vendors see only their own packages. */
-async function loadOrderForViewer(req) {
-  if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(400, 'Invalid order id');
-  const order = await Order.findById(req.params.id).populate('customer', 'name email phone').lean();
+async function findOrder(id) {
+  if (!mongoose.isValidObjectId(id)) throw new ApiError(400, 'Invalid order id');
+  const order = await Order.findById(id).populate('customer', 'name email phone').lean();
   if (!order) throw new ApiError(404, 'Order not found');
-  const { role, _id } = req.user;
-  if (role === 'admin') return order;
-  if (role === 'vendor') {
-    const vendor = await Vendor.findOne({ user: _id }).select('_id').lean();
-    const own = order.packages.filter((p) => vendor && String(p.vendor) === String(vendor._id));
-    if (!own.length) throw new ApiError(404, 'Order not found');
-    return { ...order, packages: own };
-  }
-  if (String(order.customer._id) !== _id) throw new ApiError(404, 'Order not found');
   return order;
 }
 
+/** An order is private to the customer who placed it; admins use GET /admin/orders/:id. */
+async function ownOrder(req) {
+  const order = await findOrder(req.params.id);
+  if (String(order.customer._id) !== String(req.user._id)) throw new ApiError(403, 'You can only view your own orders');
+  return order;
+}
+
+function sendInvoice(order, res) {
+  if (!['paid', 'refunded'].includes(order.payment.status)) throw new ApiError(400, 'An invoice is generated once the order is paid');
+  streamInvoice(order, order.customer, res);
+}
+
 export async function getOrder(req, res) {
-  res.json({ order: await loadOrderForViewer(req) });
+  res.json({ order: await ownOrder(req) });
 }
 
 export async function invoice(req, res) {
-  const order = await loadOrderForViewer(req);
-  if (req.user.role === 'vendor') throw new ApiError(403, 'Invoices are available to the customer and admins');
-  if (!['paid', 'refunded'].includes(order.payment.status)) throw new ApiError(400, 'An invoice is generated once the order is paid');
-  streamInvoice(order, order.customer, res);
+  sendInvoice(await ownOrder(req), res);
+}
+
+export async function adminGetOrder(req, res) {
+  res.json({ order: await findOrder(req.params.id) });
+}
+
+export async function adminInvoice(req, res) {
+  sendInvoice(await findOrder(req.params.id), res);
 }
 
 /** Customers can cancel until a package ships. Paid orders are refunded package by package. */

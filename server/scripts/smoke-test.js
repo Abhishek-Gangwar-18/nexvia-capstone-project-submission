@@ -47,12 +47,11 @@ async function main() {
   check(faceted.data.facets.brands.length > 0, 'brand facets', faceted.data.facets.brands.map((b) => b.key).slice(0, 4).join(', '));
   const suggest = await call('GET', '/products/suggest?q=iph');
   check(suggest.data.products.length > 0, 'typeahead suggestions', suggest.data.products[0]?.title);
-  const slug = home.data.trending[0].slug;
-  const detail = await call('GET', `/products/${slug}`);
+  const detail = await call('GET', `/products/${home.data.trending[0]._id}`);
   check(detail.status === 200 && detail.data.product.vendor.storeName, 'product detail', `${detail.data.product.title} by ${detail.data.product.vendor.storeName}`);
   const reviews = await call('GET', `/products/${detail.data.product._id}/reviews`);
   check(reviews.data.total > 0, 'reviews + distribution', JSON.stringify(reviews.data.distribution));
-  const store = await call('GET', `/stores/${detail.data.product.vendor.slug}`);
+  const store = await call('GET', `/stores/${detail.data.product.vendor._id}`);
   check(store.status === 200, 'store page', `${store.data.store.stats.products} products`);
   const coupons = await call('GET', '/coupons');
   check(coupons.data.coupons.length > 0, 'public coupons', coupons.data.coupons.map((c) => c.code).join(', '));
@@ -122,7 +121,7 @@ async function main() {
     token: vendor,
     body: { title: 'Smoke Test Wireless Earbuds', description: 'Test product', brand: 'TechNova', category: 'mobile-accessories', price: 1999, mrp: 2999, stock: 25, images: upload.data.files, tags: ['audio'] },
   });
-  check(created.status === 201, 'vendor creates product', created.data.product?.slug);
+  check(created.status === 201, 'vendor creates product', created.data.product?._id);
   const found = await call('GET', '/products?q=smoke%20test%20earbuds');
   check(found.data.items.some((p) => p._id === created.data.product._id), 'new product is searchable', found.data.engine);
   const updated = await call('PUT', `/vendor/products/${created.data.product._id}`, { token: vendor, body: { price: 1799, stock: 10 } });

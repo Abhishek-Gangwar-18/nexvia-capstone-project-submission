@@ -1,5 +1,5 @@
 import { Cart } from '../models/Cart.js';
-import { Product } from '../models/Product.js';
+import { isListed, Product } from '../models/Product.js';
 import { cache } from './cache.js';
 import { getSettings, shippingFor } from './pricing.js';
 import { ApiError, round2 } from '../utils/http.js';
@@ -31,7 +31,7 @@ async function writeRaw(userId, items) {
 
 async function sellableProduct(productId) {
   const product = await Product.findById(productId).populate('vendor', 'status').lean();
-  if (!product || !product.isActive || product.vendor?.status !== 'approved') {
+  if (!product || !isListed(product) || product.vendor?.status !== 'approved') {
     throw new ApiError(404, 'This product is no longer available');
   }
   if (product.stock <= 0) throw new ApiError(400, 'This product is out of stock');
@@ -42,7 +42,7 @@ async function sellableProduct(productId) {
 export async function getCart(userId) {
   const raw = await readRaw(userId);
   const products = await Product.find({ _id: { $in: raw.map((r) => r.productId) } })
-    .populate('vendor', 'storeName slug status')
+    .populate('vendor', 'storeName status')
     .lean();
   const byId = new Map(products.map((p) => [String(p._id), p]));
 
@@ -50,7 +50,7 @@ export async function getCart(userId) {
   let changed = false;
   for (const line of raw) {
     const p = byId.get(line.productId);
-    if (!p || !p.isActive || p.vendor?.status !== 'approved') {
+    if (!p || !isListed(p) || p.vendor?.status !== 'approved') {
       changed = true;
       continue;
     }
@@ -66,7 +66,6 @@ export async function getCart(userId) {
       product: {
         _id: p._id,
         title: p.title,
-        slug: p.slug,
         brand: p.brand,
         category: p.category,
         thumbnail: p.thumbnail,
@@ -74,7 +73,7 @@ export async function getCart(userId) {
         mrp: p.mrp,
         stock: p.stock,
       },
-      vendor: { _id: p.vendor._id, storeName: p.vendor.storeName, slug: p.vendor.slug },
+      vendor: { _id: p.vendor._id, storeName: p.vendor.storeName },
     });
   }
   if (changed) await writeRaw(userId, items.map(({ productId, quantity }) => ({ productId, quantity })));
@@ -99,28 +98,21 @@ export async function getCart(userId) {
   };
 }
 
-export async function addItem(userId, productId, quantity = 1) {
+/** Adds or changes a line with an absolute quantity: POST /cart/items is the single way to write an item. */
+export async function setItem(userId, productId, quantity) {
   const product = await sellableProduct(productId);
   const items = await readRaw(userId);
-  const existing = items.find((i) => i.productId === String(productId));
-  const limit = Math.min(product.stock, MAX_PER_ITEM);
-  if (existing) existing.quantity = Math.min(existing.quantity + quantity, limit);
-  else items.unshift({ productId: String(productId), quantity: Math.min(quantity, limit) });
+  const clamped = Math.min(quantity, product.stock, MAX_PER_ITEM);
+  const line = items.find((i) => i.productId === String(productId));
+  if (line) line.quantity = clamped;
+  else items.unshift({ productId: String(productId), quantity: clamped });
   await writeRaw(userId, items);
   return getCart(userId);
 }
 
-export async function setQuantity(userId, productId, quantity) {
-  let items = await readRaw(userId);
-  if (quantity <= 0) {
-    items = items.filter((i) => i.productId !== String(productId));
-  } else {
-    const product = await sellableProduct(productId);
-    const line = items.find((i) => i.productId === String(productId));
-    if (!line) throw new ApiError(404, 'Item is not in your cart');
-    line.quantity = Math.min(quantity, product.stock, MAX_PER_ITEM);
-  }
-  await writeRaw(userId, items);
+export async function removeItem(userId, productId) {
+  const items = await readRaw(userId);
+  await writeRaw(userId, items.filter((i) => i.productId !== String(productId)));
   return getCart(userId);
 }
 
@@ -134,21 +126,3 @@ export async function clearCartItems(userId, session) {
 }
 
 export const invalidateCartCache = (userId) => cache.del(cacheKey(userId));
-
-/** Merges a guest cart (kept in the browser) into the user's cart after login. */
-export async function mergeItems(userId, guestItems = []) {
-  const items = await readRaw(userId);
-  const ids = guestItems.map((g) => g.productId);
-  const products = await Product.find({ _id: { $in: ids }, isActive: true, stock: { $gt: 0 } }).select('stock').lean();
-  const stockById = new Map(products.map((p) => [String(p._id), p.stock]));
-  for (const guest of guestItems) {
-    const stock = stockById.get(String(guest.productId));
-    if (!stock) continue;
-    const limit = Math.min(stock, MAX_PER_ITEM);
-    const existing = items.find((i) => i.productId === String(guest.productId));
-    if (existing) existing.quantity = Math.min(Math.max(existing.quantity, guest.quantity), limit);
-    else items.push({ productId: String(guest.productId), quantity: Math.min(guest.quantity, limit) });
-  }
-  await writeRaw(userId, items);
-  return getCart(userId);
-}
