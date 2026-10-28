@@ -42,22 +42,26 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Razorpay Orders + Ro
 Razorpay all fall back to local equivalents automatically.
 
 ```bash
-npm run install:all     # installs root, server and client dependencies
-npm run dev             # starts the database, API (http://localhost:5050) and web app (http://localhost:5180)
+pnpm --dir server install; pnpm --dir client install   # install dependencies
+
+# then, each in its own terminal:
+pnpm --dir server db     # local MongoDB (skip when MONGO_URI points to Atlas)
+pnpm --dir server dev    # API on http://localhost:5050
+pnpm --dir client dev    # web app on http://localhost:5180
 ```
 
 Open **http://localhost:5180**.
 
-- **First run:** `npm run db` downloads a MongoDB binary (about 600 MB, one time only) and stores data in `server/.data/`.
+- **First run:** `pnpm --dir server db` downloads a MongoDB binary (about 600 MB, one time only) and stores data in `server/.data/`.
 - **Empty database:** the API seeds demo data automatically: 20 customers, 5 stores, 184 products from DummyJSON,
-  about 1,170 reviews, 210 historical orders and coupons. Run `npm run seed` to reset to that data at any time.
-- Run `npm run smoke` in `server/` while the API is up for an end-to-end test of the API. To include the admin checks,
+  about 1,170 reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
+- Run `pnpm smoke` in `server/` while the API is up for an end-to-end test of the API. To include the admin checks,
   set `SMOKE_ADMIN_EMAIL` and `SMOKE_ADMIN_PASSWORD` to your admin login first.
 
 ### Seeded accounts
 
 **No admin account is seeded.** The platform owner is the only admin; existing admin accounts are kept every time
-`npm run seed` runs. To make your own account an admin, register it and then change its `role` field to `"admin"` in
+`pnpm --dir server seed` runs. To make your own account an admin, register it and then change its `role` field to `"admin"` in
 the `users` collection.
 
 | Store (seller) | Seller login | Categories |
@@ -84,7 +88,7 @@ Edit `server/.env` (copy it from `server/.env.example`) and restart the API. The
 
 | Service | Variables | Notes |
 |---|---|---|
-| **MongoDB Atlas** | `MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/vendora?retryWrites=true&w=majority` | Add your IP under Atlas → Network Access. `npm run db` stays idle, an empty database is seeded on first start, and payments are finalized in multi-document transactions (Atlas is a replica set). If Node can't resolve the SRV record (`querySrv ECONNREFUSED` on some Windows setups), the API retries via public DNS automatically |
+| **MongoDB Atlas** | `MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/vendora?retryWrites=true&w=majority` | Add your IP under Atlas → Network Access. `pnpm db` stays idle, an empty database is seeded on first start, and payments are finalized in multi-document transactions (Atlas is a replica set). If Node can't resolve the SRV record (`querySrv ECONNREFUSED` on some Windows setups), the API retries via public DNS automatically |
 | **Redis** | `REDIS_URL=redis://localhost:6379` (or Upstash `rediss://...`) | Cart, session and page cache |
 | **Elasticsearch** | `ELASTICSEARCH_NODE=http://localhost:9200` (+ `ELASTICSEARCH_API_KEY` for Elastic Cloud) | The index is created and filled automatically on startup |
 | **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | The bucket needs public read for `products/*`, `stores/*` and `avatars/*`, or a CloudFront URL in `AWS_S3_PUBLIC_URL` |
@@ -110,13 +114,13 @@ ledger and settled manually.
 ## Deploying (frontend and backend separately)
 
 **Backend → Render** (`render.yaml` included) or any Node host
-- Root directory: `server`, build command `npm install --omit=dev`, start command `npm start`, health check `/api/health`
+- Root directory: `server`, build command `pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/api/health`
 - Environment: `NODE_ENV=production`, `MONGO_URI` (Atlas), `JWT_SECRET`, `CLIENT_URL=https://<your-vercel-app>`,
   `SERVER_URL=https://<your-api>`, plus Redis (Upstash), Elasticsearch (Elastic Cloud), S3 and Razorpay keys.
   Use S3 in production, because the host's local disk is wiped on every deploy.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
-- Root directory: `client`, build `npm run build`, output `dist`
+- Root directory: `client`, build `pnpm build`, output `dist`
 - Environment: `VITE_API_URL=https://<your-api>`
 
 ---
@@ -149,8 +153,8 @@ ledger and settled manually.
 ## Troubleshooting
 
 - **Port 5050 is busy:** change `PORT` and `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.js`.
-- **"Cannot reach the server":** make sure the `api` process in `npm run dev` says `Vendora API ready`.
+- **"Cannot reach the server":** make sure the terminal running `pnpm --dir server dev` says `Vendora API ready`.
 - **MongoDB download is slow:** this happens once. Alternatively, set `MONGO_URI` to a free Atlas cluster.
-- **Stale pages after `npm run seed`:** restart the API so the in-memory cache is cleared. With Redis, the seed script clears it for you.
+- **Stale pages after `pnpm --dir server seed`:** restart the API so the in-memory cache is cleared. With Redis, the seed script clears it for you.
 
 Seed data comes from [DummyJSON](https://dummyjson.com), converted to INR.
