@@ -11,13 +11,16 @@ import { EmptyState, ErrorState, Skeleton, Spinner } from '../../components/ui/F
 
 const EMPTY = { code: '', description: '', type: 'percent', value: 10, minOrder: 0, maxDiscount: 0, expiresAt: '', usageLimit: 0, perUserLimit: 1, isActive: true };
 
-function CouponForm({ initial, onSubmit, saving, onCancel }) {
+function CouponForm({ initial, onSubmit, saving, onCancel, scope }) {
   const [form, setForm] = useState(initial);
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const submit = (e) => {
     e.preventDefault();
+    const { isPublic, ...rest } = form;
     onSubmit({
-      ...form,
+      ...rest,
+      // Vendors may not send isPublic at all; the server rejects it.
+      ...(scope === 'admin' ? { isPublic: isPublic !== false } : {}),
       code: form.code.trim().toUpperCase(),
       value: Number(form.value),
       minOrder: Number(form.minOrder) || 0,
@@ -80,6 +83,15 @@ function CouponForm({ initial, onSubmit, saving, onCancel }) {
         Active
         <Switch checked={form.isActive} onChange={(isActive) => setForm((f) => ({ ...f, isActive }))} label="Active" />
       </label>
+      {scope === 'admin' && (
+        <label className="flex items-center justify-between rounded-xl bg-zinc-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
+          <span>
+            Show to shoppers
+            <span className="block text-xs muted">Private codes are hidden from coupon lists but still work at checkout.</span>
+          </span>
+          <Switch checked={form.isPublic !== false} onChange={(isPublic) => setForm((f) => ({ ...f, isPublic }))} label="Show to shoppers" />
+        </label>
+      )}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onCancel} className="btn btn-ghost">Cancel</button>
         <button type="submit" disabled={saving} className="btn btn-primary">{saving && <Spinner className="h-4 w-4" />} Save coupon</button>
@@ -163,6 +175,7 @@ export default function CouponManager({ scope }) {
                 <p className="mt-2 line-clamp-2 min-h-[2.5rem] text-xs muted">{c.description || '—'}</p>
                 <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold">
                   {c.vendor && scope === 'admin' && <span className="rounded-md bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-400/10 dark:text-sky-300">{c.vendor.storeName}</span>}
+                  {c.isPublic === false && <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-violet-700 dark:bg-violet-400/10 dark:text-violet-300">Private</span>}
                   {c.minOrder > 0 && <span className="rounded-md bg-zinc-100 px-1.5 py-0.5 dark:bg-white/10">Min {money(c.minOrder)}</span>}
                   <span className="rounded-md bg-zinc-100 px-1.5 py-0.5 dark:bg-white/10">Used {c.usedCount}{c.usageLimit ? `/${c.usageLimit}` : ''}</span>
                   {c.expiresAt && <span className={cn('rounded-md px-1.5 py-0.5', expired ? 'bg-rose-100 text-rose-700 dark:bg-rose-400/10 dark:text-rose-300' : 'bg-zinc-100 dark:bg-white/10')}>{expired ? 'Expired' : `Till ${formatDate(c.expiresAt)}`}</span>}
@@ -189,6 +202,7 @@ export default function CouponManager({ scope }) {
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing?._id ? 'Edit coupon' : 'New coupon'} size="lg">
         {editing && (
           <CouponForm
+            scope={scope}
             key={editing._id || 'new'}
             initial={editing}
             saving={save.isPending}

@@ -20,13 +20,15 @@ function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
   const [commissionRate, setCommissionRate] = useState(vendor?.commissionRate ?? '');
   const [razorpayAccountId, setAccount] = useState(vendor?.razorpayAccountId || '');
   if (!vendor) return null;
-  const isReject = mode === 'reject';
+  // 'reject' and 'suspend' both need a reason that is shown to the seller.
+  const isReject = mode === 'reject' || mode === 'suspend';
+  const isSuspend = mode === 'suspend';
   return (
     <Modal
       open
       onClose={onClose}
-      title={isReject ? `Reject ${vendor.storeName}?` : `Commission & payouts · ${vendor.storeName}`}
-      description={isReject ? 'The seller will see your note and can update their application.' : 'Override the platform commission or link a Razorpay Route account.'}
+      title={isReject ? `${isSuspend ? 'Suspend' : 'Reject'} ${vendor.storeName}?` : `Commission & payouts · ${vendor.storeName}`}
+      description={isSuspend ? 'The store and its products go offline. The seller will see your note.' : isReject ? 'The seller will see your note and can update their application.' : 'Override the platform commission or link a Razorpay Route account.'}
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -37,12 +39,12 @@ function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
             onClick={() =>
               onSubmit(
                 isReject
-                  ? { status: 'rejected', rejectionReason: reason.trim() }
+                  ? { status: isSuspend ? 'suspended' : 'rejected', rejectionReason: reason.trim() }
                   : { commissionRate: commissionRate === '' ? null : Number(commissionRate), razorpayAccountId: razorpayAccountId.trim() },
               )
             }
           >
-            {saving && <Spinner className="h-4 w-4" />} {isReject ? 'Reject application' : 'Save'}
+            {saving && <Spinner className="h-4 w-4" />} {isSuspend ? 'Suspend store' : isReject ? 'Reject application' : 'Save'}
           </button>
         </>
       }
@@ -147,14 +149,14 @@ export default function Vendors() {
               {v.rejectionReason && <p className="mt-3 rounded-xl bg-rose-50 p-2.5 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">Note: {v.rejectionReason}</p>}
               <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-zinc-100 pt-4 dark:border-white/5">
                 {v.status === 'approved' && (
-                  <Link to={`/store/${v.slug}`} target="_blank" className="btn btn-ghost btn-sm"><ExternalLink className="h-3.5 w-3.5" /> Store</Link>
+                  <Link to={`/store/${v._id}`} target="_blank" className="btn btn-ghost btn-sm"><ExternalLink className="h-3.5 w-3.5" /> Store</Link>
                 )}
                 <button type="button" onClick={() => setModal({ vendor: v, mode: 'settings' })} className="btn btn-ghost btn-sm"><Settings2 className="h-3.5 w-3.5" /> Commission</button>
                 {v.status === 'pending' && (
                   <button type="button" onClick={() => setModal({ vendor: v, mode: 'reject' })} className="btn btn-secondary btn-sm text-rose-600"><X className="h-3.5 w-3.5" /> Reject</button>
                 )}
                 {v.status === 'approved' && (
-                  <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: v._id, body: { status: 'suspended' } })} className="btn btn-secondary btn-sm text-rose-600"><Ban className="h-3.5 w-3.5" /> Suspend</button>
+                  <button type="button" onClick={() => setModal({ vendor: v, mode: 'suspend' })} className="btn btn-secondary btn-sm text-rose-600"><Ban className="h-3.5 w-3.5" /> Suspend</button>
                 )}
                 {['pending', 'rejected', 'suspended'].includes(v.status) && (
                   <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: v._id, body: { status: 'approved' } })} className="btn btn-primary btn-sm">

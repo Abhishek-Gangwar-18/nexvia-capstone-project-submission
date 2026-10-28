@@ -35,9 +35,9 @@ export default function Users() {
   });
 
   const block = useMutation({
-    mutationFn: ({ id, isBlocked }) => api.patch(`/admin/users/${id}`, { isBlocked }),
-    onSuccess: (_, { isBlocked }) => {
-      toast.success(isBlocked ? 'User blocked — their sessions stop working immediately' : 'User unblocked');
+    mutationFn: ({ id, status, reason }) => api.patch(`/admin/users/${id}`, { status, reason }),
+    onSuccess: (_, { status }) => {
+      toast.success(status === 'blocked' ? 'User blocked — their sessions stop working immediately' : 'User unblocked');
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
     onError: (err) => toast.error(errorMessage(err)),
@@ -90,10 +90,19 @@ export default function Users() {
                         <td><span className={`rounded-md px-2 py-0.5 text-xs font-bold capitalize ${ROLE_STYLE[u.role]}`}>{u.role}</span></td>
                         <td className="text-xs whitespace-nowrap">{formatDate(u.createdAt)}</td>
                         <td className="text-xs whitespace-nowrap muted">{u.lastLoginAt ? timeAgo(u.lastLoginAt) : 'Never'}</td>
-                        <td><StatusBadge status={u.isBlocked ? 'blocked' : 'active'} /></td>
+                        <td title={u.blockedReason || undefined}><StatusBadge status={u.status || 'active'} /></td>
                         <td className="text-center">
                           {u.role !== 'admin' && u._id !== me._id ? (
-                            <Switch size="sm" checked={u.isBlocked} onChange={(isBlocked) => block.mutate({ id: u._id, isBlocked })} label="Block user" />
+                            <Switch
+                              size="sm"
+                              checked={u.status === 'blocked'}
+                              onChange={(blocked) => {
+                                if (!blocked) return block.mutate({ id: u._id, status: 'active' });
+                                const reason = window.prompt(`Why are you blocking ${u.name}?`)?.trim();
+                                if (reason) block.mutate({ id: u._id, status: 'blocked', reason });
+                              }}
+                              label="Block user"
+                            />
                           ) : (
                             <span className="text-xs muted">—</span>
                           )}

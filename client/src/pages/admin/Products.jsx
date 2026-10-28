@@ -28,9 +28,9 @@ export default function AdminProducts() {
   });
 
   const moderate = useMutation({
-    mutationFn: ({ id, isActive }) => api.patch(`/admin/products/${id}`, { isActive }),
-    onSuccess: (_, { isActive }) => {
-      toast.success(isActive ? 'Product restored' : 'Product hidden from the marketplace');
+    mutationFn: ({ id, status, reason }) => api.patch(`/admin/products/${id}`, { status, reason }),
+    onSuccess: (_, { status }) => {
+      toast.success(status === 'approved' ? 'Product restored' : 'Product removed from the marketplace');
       queryClient.invalidateQueries({ queryKey: ['admin-products'] });
     },
     onError: (err) => toast.error(errorMessage(err)),
@@ -65,11 +65,11 @@ export default function AdminProducts() {
                 {isLoading
                   ? Array.from({ length: 10 }, (_, i) => <tr key={i}><td colSpan={8}><Skeleton className="h-10" /></td></tr>)
                   : data.items.map((p) => (
-                      <tr key={p._id} className={cn(!p.isActive && 'opacity-60')}>
+                      <tr key={p._id} className={cn((!p.isActive || p.moderation?.status === 'removed') && 'opacity-60')}>
                         <td>
                           <div className="flex min-w-[220px] items-center gap-3">
                             <img src={p.thumbnail} alt="" className="h-10 w-10 rounded-lg bg-zinc-50 object-contain p-0.5 dark:bg-white/5" />
-                            <Link to={`/product/${p.slug}`} target="_blank" className="line-clamp-1 font-semibold hover:text-brand-600">
+                            <Link to={`/product/${p._id}`} target="_blank" className="line-clamp-1 font-semibold hover:text-brand-600">
                               {p.title} <ExternalLink className="inline h-3 w-3 text-zinc-400" />
                             </Link>
                           </div>
@@ -80,7 +80,18 @@ export default function AdminProducts() {
                         <td className={cn('text-right tabular-nums', p.stock === 0 && 'font-semibold text-rose-600')}>{p.stock}</td>
                         <td className="text-right tabular-nums">{p.rating.toFixed(1)} <span className="text-[10px] muted">({p.numReviews})</span></td>
                         <td className="text-right tabular-nums">{number(p.sold)}</td>
-                        <td className="text-center"><Switch size="sm" checked={p.isActive} onChange={(isActive) => moderate.mutate({ id: p._id, isActive })} label="Toggle product" /></td>
+                        <td className="text-center" title={p.moderation?.reason || (p.isActive ? undefined : 'Hidden by the seller')}>
+                          <Switch
+                            size="sm"
+                            checked={p.moderation?.status !== 'removed'}
+                            onChange={(keep) => {
+                              if (keep) return moderate.mutate({ id: p._id, status: 'approved' });
+                              const reason = window.prompt(`Why are you removing "${p.title}"?`)?.trim();
+                              if (reason) moderate.mutate({ id: p._id, status: 'removed', reason });
+                            }}
+                            label="Allowed on marketplace"
+                          />
+                        </td>
                       </tr>
                     ))}
               </tbody>

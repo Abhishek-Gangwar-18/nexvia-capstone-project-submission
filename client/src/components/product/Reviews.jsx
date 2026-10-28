@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BadgeCheck, MessageSquarePlus, Pencil, Star } from 'lucide-react';
+import { BadgeCheck, MessageSquarePlus, Pencil, Star, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
 import { cn, timeAgo } from '../../lib/format';
@@ -18,7 +18,10 @@ function ReviewForm({ productId, existing, onDone }) {
   const [comment, setComment] = useState(existing?.comment || '');
 
   const mutation = useMutation({
-    mutationFn: () => api.post(`/products/${productId}/reviews`, { rating, title, comment }),
+    mutationFn: () =>
+      existing
+        ? api.patch(`/products/${productId}/reviews/${existing._id}`, { rating, title, comment })
+        : api.post(`/products/${productId}/reviews`, { rating, title, comment }),
     onSuccess: () => {
       toast.success(existing ? 'Review updated' : 'Thanks for your review!');
       queryClient.invalidateQueries({ queryKey: ['reviews', productId] });
@@ -69,7 +72,18 @@ export default function Reviews({ product }) {
   const user = useAuth((s) => s.user);
   const [sort, setSort] = useState('recent');
   const [ratingFilter, setRatingFilter] = useState(null);
-  const [writing, setWriting] = useState(false);
+  // null = closed, {} = new review, a review object = editing that review.
+  const [editing, setEditing] = useState(null);
+  const queryClient = useQueryClient();
+  const remove = useMutation({
+    mutationFn: (reviewId) => api.delete(`/products/${product._id}/reviews/${reviewId}`),
+    onSuccess: () => {
+      toast.success('Review deleted');
+      queryClient.invalidateQueries({ queryKey: ['reviews', product._id] });
+      queryClient.invalidateQueries({ queryKey: ['product'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
 
   const query = useInfiniteQuery({
     queryKey: ['reviews', product._id, sort, ratingFilter, user?._id],
@@ -83,7 +97,7 @@ export default function Reviews({ product }) {
   const distribution = first?.distribution || { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   const total = Object.values(distribution).reduce((a, b) => a + b, 0);
   const reviews = query.data?.pages.flatMap((p) => p.items) || [];
-  const myReview = first?.myReview;
+  const mine = new Set(first?.myReviewIds || []);
 
   return (
     <section id="reviews" className="scroll-mt-40">
@@ -132,14 +146,14 @@ export default function Reviews({ product }) {
             <p className="font-semibold">Share your thoughts</p>
             <p className="mt-1 text-sm muted">Bought this product? Help other shoppers decide.</p>
             {!user ? (
-              <Link to="/login" state={{ from: { pathname: `/product/${product.slug}` } }} className="btn btn-secondary mt-4 w-full">
+              <Link to="/login" state={{ from: { pathname: `/product/${product._id}` } }} className="btn btn-secondary mt-4 w-full">
                 Sign in to review
               </Link>
             ) : user.role !== 'customer' ? (
               <p className="mt-3 text-xs muted">Reviews can be written from customer accounts.</p>
             ) : (
-              <button type="button" onClick={() => setWriting((w) => !w)} className="btn btn-secondary mt-4 w-full">
-                {myReview ? <Pencil className="h-4 w-4" /> : <MessageSquarePlus className="h-4 w-4" />} {myReview ? 'Edit your review' : 'Write a review'}
+              <button type="button" onClick={() => setEditing((e) => (e ? null : {}))} className="btn btn-secondary mt-4 w-full">
+                <MessageSquarePlus className="h-4 w-4" /> Write a review
               </button>
             )}
             {first && user?.role === 'customer' && (
@@ -149,7 +163,9 @@ export default function Reviews({ product }) {
         </div>
 
         <div>
-          <AnimatePresence>{writing && <ReviewForm productId={product._id} existing={myReview} onDone={() => setWriting(false)} />}</AnimatePresence>
+          <AnimatePresence>
+            {editing && <ReviewForm key={editing._id || 'new'} productId={product._id} existing={editing._id ? editing : null} onDone={() => setEditing(null)} />}
+          </AnimatePresence>
 
           <div className="mt-2 mb-4 flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm muted">
@@ -181,14 +197,14 @@ export default function Reviews({ product }) {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: (i % 5) * 0.04 }}
-                  className={cn('card p-5', review._id === myReview?._id && 'ring-2 ring-brand-500/40')}
+                  className={cn('card p-5', mine.has(review._id) && 'ring-2 ring-brand-500/40')}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3">
                       <UserAvatar user={{ name: review.name }} className="h-9 w-9" />
                       <div>
                         <p className="text-sm font-semibold">
-                          {review.name} {review._id === myReview?._id && <span className="text-xs text-brand-600">(you)</span>}
+                          {review.name} {mine.has(review._id) && <span className="text-xs text-brand-600">(you)</span>}
                         </p>
                         <div className="flex items-center gap-2">
                           <Stars value={review.rating} size="h-3 w-3" />
@@ -204,6 +220,16 @@ export default function Reviews({ product }) {
                   </div>
                   {review.title && <p className="mt-3 text-sm font-semibold">{review.title}</p>}
                   <p className="mt-1 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{review.comment}</p>
+                  {mine.has(review._id) && (
+                    <div className="mt-3 flex justify-end gap-1">
+                      <button type="button" onClick={() => setEditing(review)} className="btn btn-ghost btn-sm">
+                        <Pencil className="h-3.5 w-3.5" /> Edit
+                      </button>
+                      <button type="button" onClick={() => remove.mutate(review._id)} disabled={remove.isPending} className="btn btn-ghost btn-sm text-rose-600">
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      </button>
+                    </div>
+                  )}
                 </motion.li>
               ))}
             </ul>
