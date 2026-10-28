@@ -57,7 +57,7 @@ export default function SearchBar({ className, autoFocus = false, onDone }) {
   const options = showSuggestions
     ? [
         ...(data.categories || []).map((c) => ({ type: 'category', key: `c-${c.slug}`, label: c.name, to: `/search?category=${c.slug}`, image: c.image })),
-        ...(data.products || []).map((p) => ({ type: 'product', key: p._id, label: p.title, to: `/product/${p.slug}`, image: p.thumbnail, price: p.price })),
+        ...(data.products || []).map((p) => ({ type: 'product', key: p._id, label: p.title, to: `/product/${p._id}`, image: p.thumbnail, price: p.price })),
       ]
     : [];
 

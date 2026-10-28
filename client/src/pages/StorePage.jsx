@@ -13,13 +13,16 @@ import { ErrorState, PageLoader } from '../components/ui/Feedback';
 import { SORT_OPTIONS } from './Search';
 
 export default function StorePage() {
-  const { slug } = useParams();
+  const { storeId } = useParams();
   const categoryName = useCategoryName();
   const [category, setCategory] = useState('');
   const [sort, setSort] = useState('popular');
   const [page, setPage] = useState(1);
 
-  const storeQuery = useQuery({ queryKey: ['store', slug], queryFn: () => api.get(`/stores/${slug}`).then((r) => r.data.store) });
+  const storeQuery = useQuery({
+    queryKey: ['store', storeId],
+    queryFn: () => api.get(`/stores/${storeId}`).then((r) => r.data.store),
+  });
   const store = storeQuery.data;
 
   const products = useQuery({

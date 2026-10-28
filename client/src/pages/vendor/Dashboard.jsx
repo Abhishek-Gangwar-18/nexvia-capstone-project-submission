@@ -28,7 +28,7 @@ export default function VendorDashboard() {
         description="Here’s how your store performed over the last 30 days."
         actions={
           <>
-            <Link to={`/store/${user.vendor?.slug}`} className="btn btn-secondary">
+            <Link to={`/store/${user.vendor?._id}`} className="btn btn-secondary">
               <ExternalLink className="h-4 w-4" /> View store
             </Link>
             <Link to="/vendor/products/new" className="btn btn-primary">

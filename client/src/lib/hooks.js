@@ -47,11 +47,12 @@ export function useWishlist() {
   const ids = new Set(user?.wishlist || []);
 
   const mutation = useMutation({
-    mutationFn: (productId) => api.post(`/auth/me/wishlist/${productId}`).then((r) => r.data),
+    mutationFn: (productId) =>
+      (ids.has(productId) ? api.delete(`/auth/me/wishlist/${productId}`) : api.put(`/auth/me/wishlist/${productId}`)).then((r) => r.data),
     onSuccess: (data) => {
       setUser({ ...useAuth.getState().user, wishlist: data.wishlist });
       queryClient.invalidateQueries({ queryKey: ['wishlist'] });
-      toast.success(data.added ? 'Saved to wishlist' : 'Removed from wishlist');
+      toast.success(data.wishlisted ? 'Saved to wishlist' : 'Removed from wishlist');
     },
     onError: (error) => toast.error(errorMessage(error)),
   });

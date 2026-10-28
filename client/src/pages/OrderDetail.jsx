@@ -95,7 +95,7 @@ export default function OrderDetail({ admin = false }) {
 
   const { data: order, isLoading, error, refetch } = useQuery({
     queryKey: ['order', id],
-    queryFn: () => api.get(`/orders/${id}`).then((r) => r.data.order),
+    queryFn: () => api.get(`${admin ? '/admin' : ''}/orders/${id}`).then((r) => r.data.order),
   });
 
   if (isLoading) return <PageLoader />;
@@ -118,7 +118,7 @@ export default function OrderDetail({ admin = false }) {
   const invoice = async () => {
     setDownloading(true);
     try {
-      await downloadFile(`/orders/${order._id}/invoice`, `invoice-${order.orderNumber}.pdf`);
+      await downloadFile(`${admin ? '/admin' : ''}/orders/${order._id}/invoice`, `invoice-${order.orderNumber}.pdf`);
       toast.success('Invoice downloaded');
     } catch (err) {
       toast.error(errorMessage(err));
@@ -225,14 +225,14 @@ export default function OrderDetail({ admin = false }) {
               <ul className="divide-y divide-zinc-100 border-t border-zinc-100 dark:divide-white/5 dark:border-white/5">
                 {pkg.items.map((item) => (
                   <li key={item.product} className="flex items-center gap-4 px-5 py-3">
-                    <Link to={`/product/${item.slug}`} className="h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-zinc-50 dark:bg-white/5">
+                    <Link to={`/product/${item.product}`} className="h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-zinc-50 dark:bg-white/5">
                       <img src={item.image} alt="" className="h-full w-full object-contain p-1" />
                     </Link>
                     <div className="min-w-0 flex-1">
-                      <Link to={`/product/${item.slug}`} className="line-clamp-1 text-sm font-semibold hover:text-brand-600">{item.title}</Link>
+                      <Link to={`/product/${item.product}`} className="line-clamp-1 text-sm font-semibold hover:text-brand-600">{item.title}</Link>
                       <p className="text-xs muted">Qty {item.quantity} × {money(item.price)}</p>
                       {!admin && pkg.status === 'delivered' && (
-                        <button type="button" onClick={() => navigate(`/product/${item.slug}#reviews`)} className="mt-1 flex items-center gap-1 text-xs font-semibold text-brand-600 dark:text-brand-300">
+                        <button type="button" onClick={() => navigate(`/product/${item.product}#reviews`)} className="mt-1 flex items-center gap-1 text-xs font-semibold text-brand-600 dark:text-brand-300">
                           <MessageSquarePlus className="h-3.5 w-3.5" /> Rate & review
                         </button>
                       )}

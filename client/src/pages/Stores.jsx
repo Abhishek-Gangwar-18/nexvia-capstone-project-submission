@@ -1,14 +1,22 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Search, Store } from 'lucide-react';
 import { api } from '../lib/api';
+import { useDebounce } from '../lib/hooks';
+import Pagination from '../components/ui/Pagination';
 import { StoreCard } from './Home';
 import { EmptyState, ErrorState, Skeleton } from '../components/ui/Feedback';
 
 export default function Stores() {
   const [q, setQ] = useState('');
-  const { data, isLoading, error, refetch } = useQuery({ queryKey: ['stores'], queryFn: () => api.get('/stores').then((r) => r.data.stores) });
-  const stores = (data || []).filter((s) => `${s.storeName} ${s.tagline}`.toLowerCase().includes(q.toLowerCase()));
+  const [page, setPage] = useState(1);
+  const search = useDebounce(q.trim(), 300);
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['stores', search, page],
+    queryFn: () => api.get('/stores', { params: { q: search || undefined, page, limit: 24 } }).then((r) => r.data),
+    placeholderData: keepPreviousData,
+  });
+  const stores = data?.items || [];
 
   return (
     <div className="container-page py-8">
@@ -19,7 +27,10 @@ export default function Stores() {
           <p className="mt-2 text-indigo-100">Every store on Vendora is verified by our team before it goes live.</p>
           <div className="relative mt-6">
             <Search className="absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stores…" className="h-12 w-full rounded-2xl bg-white pl-11 text-sm text-zinc-900 outline-none focus:ring-4 focus:ring-white/30" />
+            <input value={q} onChange={(e) => {
+                setQ(e.target.value);
+                setPage(1);
+              }} placeholder="Search stores…" className="h-12 w-full rounded-2xl bg-white pl-11 text-sm text-zinc-900 outline-none focus:ring-4 focus:ring-white/30" />
           </div>
         </div>
       </div>
@@ -42,6 +53,7 @@ export default function Stores() {
             ))}
           </div>
         )}
+        {data?.pages > 1 && <Pagination page={page} pages={data.pages} onChange={setPage} className="mt-8" />}
       </div>
     </div>
   );

@@ -77,7 +77,7 @@ export default function ProductCard({ product, index = 0 }) {
       transition={{ duration: 0.35, delay: Math.min(index, 8) * 0.04 }}
     >
       <Link
-        to={`/product/${product.slug}`}
+        to={`/product/${product._id}`}
         ref={tilt.ref}
         onMouseMove={tilt.onMouseMove}
         onMouseLeave={tilt.onMouseLeave}

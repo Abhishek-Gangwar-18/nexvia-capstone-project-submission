@@ -76,7 +76,7 @@ export default function Cart() {
                 <StoreAvatar store={group.vendor} size="h-8 w-8" rounded="rounded-lg" />
                 <p className="text-sm">
                   <span className="muted">Sold by </span>
-                  <Link to={`/store/${group.vendor?.slug}`} className="font-semibold hover:text-brand-600">{group.vendor?.storeName}</Link>
+                  <Link to={`/store/${group.vendor?._id}`} className="font-semibold hover:text-brand-600">{group.vendor?.storeName}</Link>
                 </p>
                 <Store className="ml-auto h-4 w-4 text-zinc-300" />
               </div>
@@ -84,14 +84,14 @@ export default function Cart() {
                 <AnimatePresence initial={false}>
                   {group.items.map((item) => (
                     <motion.li key={item.productId} layout exit={{ opacity: 0, x: -40 }} className="flex gap-4 p-5">
-                      <Link to={`/product/${item.product.slug}`} className="h-24 w-24 shrink-0 overflow-hidden rounded-2xl bg-zinc-50 sm:h-28 sm:w-28 dark:bg-white/5">
+                      <Link to={`/product/${item.product._id}`} className="h-24 w-24 shrink-0 overflow-hidden rounded-2xl bg-zinc-50 sm:h-28 sm:w-28 dark:bg-white/5">
                         <img src={item.product.thumbnail} alt={item.product.title} className="h-full w-full object-contain p-2" />
                       </Link>
                       <div className="flex min-w-0 flex-1 flex-col">
                         <div className="flex justify-between gap-4">
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-brand-600 dark:text-brand-300">{item.product.brand}</p>
-                            <Link to={`/product/${item.product.slug}`} className="line-clamp-2 font-semibold hover:text-brand-600">{item.product.title}</Link>
+                            <Link to={`/product/${item.product._id}`} className="line-clamp-2 font-semibold hover:text-brand-600">{item.product.title}</Link>
                           </div>
                           <p className="font-display text-lg font-bold whitespace-nowrap">{money(item.lineTotal)}</p>
                         </div>

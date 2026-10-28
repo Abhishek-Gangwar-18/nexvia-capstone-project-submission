@@ -102,7 +102,7 @@ function Hero({ data }) {
             {showcase.map((p, i) => (
               <Link
                 key={p._id}
-                to={`/product/${p.slug}`}
+                to={`/product/${p._id}`}
                 style={{ '--tilt': tilts[i], animationDelay: `${-i * 2}s` }}
                 className={cn('absolute w-52 animate-float rounded-3xl bg-white p-3 text-zinc-900 shadow-2xl shadow-black/40 transition hover:z-10 hover:scale-105', positions[i])}
               >
@@ -257,7 +257,7 @@ function TopStores({ stores = [], loading }) {
 export function StoreCard({ store, index = 0 }) {
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: index * 0.05 }}>
-      <Link to={`/store/${store.slug}`} className="group card block overflow-hidden transition hover:-translate-y-1 hover:shadow-xl hover:shadow-brand-900/5">
+      <Link to={`/store/${store._id}`} className="group card block overflow-hidden transition hover:-translate-y-1 hover:shadow-xl hover:shadow-brand-900/5">
         <div className={cn('relative h-20 bg-gradient-to-br', gradientFor(store.storeName))}>
           <div className="absolute inset-0 bg-grid opacity-30" />
         </div>

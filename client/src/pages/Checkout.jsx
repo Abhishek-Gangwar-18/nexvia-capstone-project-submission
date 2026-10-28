@@ -67,6 +67,8 @@ export default function Checkout() {
   const [priced, setPriced] = useState(null);
   const [placing, setPlacing] = useState(false);
   const [mockCheckout, setMockCheckout] = useState(null);
+  // One key per visit to checkout: retries of "Place order" reuse it, so the server never creates a duplicate order.
+  const checkoutKey = useRef(crypto.randomUUID());
   const finished = useRef(false);
 
   const profile = useQuery({ queryKey: ['me'], queryFn: refreshMe });
@@ -121,7 +123,11 @@ export default function Checkout() {
     setPlacing(true);
     let created;
     try {
-      const { data } = await api.post('/orders/checkout', { addressId, couponCode: couponCode || undefined });
+      const { data } = await api.post(
+        '/orders/checkout',
+        { addressId, couponCode: couponCode || undefined },
+        { headers: { 'Idempotency-Key': checkoutKey.current } },
+      );
       created = data;
       if (data.payment.provider === 'mock') {
         setMockCheckout(data);

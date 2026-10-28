@@ -1,25 +1,10 @@
 import { api } from './api';
 import { queryClient } from './queryClient';
 import { useAuth } from '../store/auth';
-import { useCartStore } from '../store/cart';
 
 async function establish({ token, user }) {
   queryClient.clear();
   useAuth.getState().setSession(token, user);
-
-  // Carry the guest cart over into the customer's server cart.
-  const guest = useCartStore.getState().guestItems;
-  if (user.role === 'customer' && guest.length) {
-    try {
-      const { data } = await api.post('/cart/merge', {
-        items: guest.map((i) => ({ productId: i.productId, quantity: i.quantity })),
-      });
-      queryClient.setQueryData(['cart'], data);
-      useCartStore.getState().clearGuest();
-    } catch {
-      /* merge is best-effort; the guest cart stays in the browser */
-    }
-  }
   return user;
 }
 

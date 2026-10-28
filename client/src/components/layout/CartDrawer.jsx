@@ -102,11 +102,11 @@ export default function CartDrawer() {
                         exit={{ opacity: 0, x: 60, height: 0, marginTop: 0 }}
                         className="flex gap-3 rounded-2xl border border-zinc-100 p-3 dark:border-white/5"
                       >
-                        <Link to={`/product/${item.product.slug}`} onClick={close} className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-zinc-50 dark:bg-white/5">
+                        <Link to={`/product/${item.product._id}`} onClick={close} className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-zinc-50 dark:bg-white/5">
                           <img src={item.product.thumbnail} alt={item.product.title} className="h-full w-full object-contain p-1" />
                         </Link>
                         <div className="flex min-w-0 flex-1 flex-col">
-                          <Link to={`/product/${item.product.slug}`} onClick={close} className="line-clamp-2 text-sm font-semibold hover:text-brand-600">
+                          <Link to={`/product/${item.product._id}`} onClick={close} className="line-clamp-2 text-sm font-semibold hover:text-brand-600">
                             {item.product.title}
                           </Link>
                           {item.vendor?.storeName && <p className="text-xs muted">Sold by {item.vendor.storeName}</p>}

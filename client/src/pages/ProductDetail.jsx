@@ -162,7 +162,7 @@ function Offers({ vendorId }) {
 }
 
 export default function ProductDetail() {
-  const { slug } = useParams();
+  const { productId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { add } = useCartActions();
@@ -171,8 +171,8 @@ export default function ProductDetail() {
   const [adding, setAdding] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['product', slug],
-    queryFn: () => api.get(`/products/${slug}`).then((r) => r.data),
+    queryKey: ['product', productId],
+    queryFn: () => api.get(`/products/${productId}`).then((r) => r.data),
   });
   const product = data?.product;
 
@@ -189,7 +189,7 @@ export default function ProductDetail() {
     if (product) {
       document.title = `${product.title} · Vendora`;
       rememberProduct({
-        _id: product._id, slug: product.slug, title: product.title, thumbnail: product.thumbnail, price: product.price, mrp: product.mrp,
+        _id: product._id, title: product.title, thumbnail: product.thumbnail, price: product.price, mrp: product.mrp,
         rating: product.rating, numReviews: product.numReviews, stock: product.stock, storeName: product.vendor?.storeName, vendorId: product.vendor?._id,
       });
     }
@@ -209,7 +209,7 @@ export default function ProductDetail() {
 
   const discount = discountOf(product);
   const outOfStock = product.stock <= 0;
-  const cardProduct = { ...product, vendorId: product.vendor?._id, storeName: product.vendor?.storeName, storeSlug: product.vendor?.slug };
+  const cardProduct = { ...product, vendorId: product.vendor?._id, storeName: product.vendor?.storeName };
 
   const addToCart = async (buyNow = false) => {
     setAdding(true);
@@ -311,7 +311,7 @@ export default function ProductDetail() {
               <Offers vendorId={product.vendor._id} />
               <DeliveryCheck />
 
-              <Link to={`/store/${product.vendor.slug}`} className="group flex items-center gap-4 rounded-2xl border border-zinc-200 p-4 transition hover:border-brand-300 hover:bg-brand-50/30 dark:border-white/10 dark:hover:bg-brand-500/5">
+              <Link to={`/store/${product.vendor._id}`} className="group flex items-center gap-4 rounded-2xl border border-zinc-200 p-4 transition hover:border-brand-300 hover:bg-brand-50/30 dark:border-white/10 dark:hover:bg-brand-500/5">
                 <StoreAvatar store={product.vendor} />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs muted">Sold & shipped by</p>

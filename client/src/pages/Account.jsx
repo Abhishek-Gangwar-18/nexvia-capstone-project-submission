@@ -75,7 +75,7 @@ function Addresses() {
   const sync = (addresses) => setUser({ ...useAuth.getState().user, addresses });
 
   const save = useMutation({
-    mutationFn: ({ id, payload }) => (id ? api.put(`/auth/me/addresses/${id}`, payload) : api.post('/auth/me/addresses', payload)).then((r) => r.data),
+    mutationFn: ({ id, payload }) => (id ? api.patch(`/auth/me/addresses/${id}`, payload) : api.post('/auth/me/addresses', payload)).then((r) => r.data),
     onSuccess: (data) => {
       sync(data.addresses);
       setEditing(null);
@@ -150,10 +150,13 @@ function Wishlist() {
 
 function Security() {
   const [form, setForm] = useState({ currentPassword: '', newPassword: '', confirm: '' });
+  const setSession = useAuth((s) => s.setSession);
   const queryClient = useQueryClient();
   const mutation = useMutation({
-    mutationFn: () => api.put('/auth/me/password', { currentPassword: form.currentPassword, newPassword: form.newPassword }),
-    onSuccess: () => {
+    mutationFn: () => api.patch('/auth/me/password', { currentPassword: form.currentPassword, newPassword: form.newPassword }),
+    onSuccess: ({ data }) => {
+      // The old token is revoked server-side; keep this device signed in with the new one.
+      setSession(data.token, useAuth.getState().user);
       toast.success('Password updated');
       setForm({ currentPassword: '', newPassword: '', confirm: '' });
       queryClient.invalidateQueries({ queryKey: ['me'] });
@@ -173,13 +176,13 @@ function Security() {
       <Field label="Current password">
         <input type="password" value={form.currentPassword} onChange={(e) => setForm((f) => ({ ...f, currentPassword: e.target.value }))} className="input" autoComplete="current-password" />
       </Field>
-      <Field label="New password" hint="At least 6 characters">
+      <Field label="New password" hint="At least 8 characters">
         <input type="password" value={form.newPassword} onChange={(e) => setForm((f) => ({ ...f, newPassword: e.target.value }))} className="input" autoComplete="new-password" />
       </Field>
       <Field label="Confirm new password" error={mismatch ? 'Passwords don’t match' : undefined}>
         <input type="password" value={form.confirm} onChange={(e) => setForm((f) => ({ ...f, confirm: e.target.value }))} className={cn('input', mismatch && 'input-error')} autoComplete="new-password" />
       </Field>
-      <button type="submit" disabled={mutation.isPending || !form.currentPassword || form.newPassword.length < 6 || mismatch} className="btn btn-primary">
+      <button type="submit" disabled={mutation.isPending || !form.currentPassword || form.newPassword.length < 8 || mismatch} className="btn btn-primary">
         {mutation.isPending && <Spinner className="h-4 w-4" />} Update password
       </button>
     </form>

@@ -128,11 +128,15 @@ export default function VendorProducts() {
                     <td className="text-center"><StockBadge stock={p.stock} /></td>
                     <td className="text-right tabular-nums">{number(p.sold)}</td>
                     <td className="text-center">
-                      <Switch size="sm" checked={p.isActive} onChange={(isActive) => toggle.mutate({ id: p._id, isActive })} label="Toggle visibility" />
+                      {p.moderation?.status === 'removed' ? (
+                        <span className="text-xs font-semibold text-rose-600" title={p.moderation.reason}>Removed by admin</span>
+                      ) : (
+                        <Switch size="sm" checked={p.isActive} onChange={(isActive) => toggle.mutate({ id: p._id, isActive })} label="Toggle visibility" />
+                      )}
                     </td>
                     <td>
                       <div className="flex justify-end gap-1">
-                        <Link to={`/product/${p.slug}`} target="_blank" className="btn-icon h-8 w-8" title="View in store"><ExternalLink className="h-4 w-4" /></Link>
+                        <Link to={`/product/${p._id}`} target="_blank" className="btn-icon h-8 w-8" title="View in store"><ExternalLink className="h-4 w-4" /></Link>
                         <Link to={`/vendor/products/${p._id}/edit`} className="btn-icon h-8 w-8" title="Edit"><Pencil className="h-4 w-4" /></Link>
                         <button type="button" onClick={() => setDeleting(p)} className="btn-icon h-8 w-8 hover:text-rose-600" title="Delete"><Trash2 className="h-4 w-4" /></button>
                       </div>

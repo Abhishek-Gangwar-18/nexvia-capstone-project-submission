@@ -152,7 +152,7 @@ export default function Analytics() {
                   <span className="w-5 text-center text-sm font-bold text-zinc-400">{i + 1}</span>
                   <img src={p.image} alt="" className="h-11 w-11 rounded-xl bg-zinc-50 object-contain p-1 dark:bg-white/5" />
                   <div className="min-w-0 flex-1">
-                    <Link to={`/product/${p.slug}`} className="block truncate text-sm font-semibold hover:text-brand-600">{p.title}</Link>
+                    <Link to={`/product/${p._id}`} className="block truncate text-sm font-semibold hover:text-brand-600">{p.title}</Link>
                     <p className="text-xs muted">{p.store} · {p.units} units</p>
                   </div>
                   <span className="text-sm font-semibold tabular-nums">{compactMoney(p.revenue)}</span>
