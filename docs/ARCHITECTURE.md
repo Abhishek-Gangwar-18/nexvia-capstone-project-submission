@@ -65,23 +65,31 @@ erDiagram
     ObjectId _id
     string name
     string email UK
-    string password "bcrypt, select:false"
+    string password "bcrypt(12), select:false"
+    date passwordChangedAt "older JWTs rejected"
+    string phone UK "partial: only when set"
     enum role "customer | vendor | admin"
     Address[] addresses
-    ObjectId[] wishlist
-    bool isBlocked
+    ObjectId[] wishlist "max 200"
+    bool emailVerified
+    enum status "active | blocked"
+    string blockedReason
+    ObjectId blockedBy
   }
   VENDOR {
     ObjectId user UK
-    string storeName
+    string storeName UK "case-insensitive"
     string slug UK
     string email
-    string gstin
+    string phone UK "partial: only when set"
+    string gstin "validated format"
     object address
     object bank "masked account no."
     string razorpayAccountId "Route linked account acc_..."
     enum status "pending | approved | rejected | suspended"
     number commissionRate "override, null = platform default"
+    StatusChange[] statusHistory "status, reason, by, at"
+    number rating "review-weighted, updated on review writes"
   }
   PRODUCT {
     ObjectId vendor
