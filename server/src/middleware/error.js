@@ -1,0 +1,41 @@
+import multer from 'multer';
+import mongoose from 'mongoose';
+import { isProd } from '../config/env.js';
+import { logger } from '../utils/logger.js';
+
+export const notFound = (req, res) => {
+  res.status(404).json({ message: `Route not found: ${req.method} ${req.originalUrl}` });
+};
+
+// eslint-disable-next-line no-unused-vars
+export const errorHandler = (err, req, res, _next) => {
+  let status = err.status || err.statusCode || 500;
+  let message = err.message || 'Something went wrong';
+  let details = err.details;
+
+  if (err instanceof mongoose.Error.CastError) {
+    status = 400;
+    message = `Invalid ${err.path}`;
+  } else if (err instanceof mongoose.Error.ValidationError) {
+    status = 400;
+    message = Object.values(err.errors)[0]?.message || 'Validation failed';
+  } else if (err.code === 11000) {
+    status = 409;
+    const field = Object.keys(err.keyValue || {})[0] || 'value';
+    message = `That ${field} is already in use`;
+  } else if (err instanceof multer.MulterError) {
+    status = 400;
+    message = err.code === 'LIMIT_FILE_SIZE' ? 'Each image must be 5 MB or smaller' : err.message;
+  } else if (err.type === 'entity.parse.failed') {
+    status = 400;
+    message = 'Malformed JSON body';
+  }
+
+  if (status >= 500) logger.error(`${req.method} ${req.originalUrl} ->`, err);
+
+  res.status(status).json({
+    message: status >= 500 && isProd ? 'Internal server error' : message,
+    ...(details ? { details } : {}),
+    ...(!isProd && status >= 500 ? { stack: err.stack } : {}),
+  });
+};
