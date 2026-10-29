@@ -2,9 +2,9 @@ import { api } from './api';
 import { queryClient } from './queryClient';
 import { useAuth } from '../store/auth';
 
-async function establish({ token, user }) {
+async function establish({ accessToken, user }) {
   queryClient.clear();
-  useAuth.getState().setSession(token, user);
+  useAuth.getState().setSession(accessToken, user);
   return user;
 }
 
@@ -18,14 +18,26 @@ export async function register(payload) {
   return establish(data);
 }
 
+function signedOut() {
+  useAuth.getState().clear();
+  queryClient.clear();
+}
+
+/** Ends this device's session (the server reads the refresh cookie and clears it). */
 export async function logout() {
   try {
     await api.post('/auth/logout');
   } catch {
-    /* token may already be invalid — clearing locally is enough */
+    /* already signed out on the server — clearing locally is enough */
   }
-  useAuth.getState().clear();
-  queryClient.clear();
+  signedOut();
+}
+
+/** Ends every session of the account, this device included. */
+export async function logoutEverywhere() {
+  const { data } = await api.post('/auth/logout-all');
+  signedOut();
+  return data.message;
 }
 
 export async function refreshMe() {

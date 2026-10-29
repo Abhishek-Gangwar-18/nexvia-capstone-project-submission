@@ -4,7 +4,7 @@ import { Logo } from '../../components/ui/Brand';
 
 const POINTS = [
   { icon: BadgeCheck, title: 'Verified sellers', text: 'Every store is reviewed before going live' },
-  { icon: Split, title: 'Split payments', text: 'Razorpay Route pays sellers automatically' },
+  { icon: Split, title: 'Split payments', text: 'Stripe Connect pays sellers automatically' },
   { icon: Truck, title: 'Track every package', text: 'Live status from placed to delivered' },
 ];
 

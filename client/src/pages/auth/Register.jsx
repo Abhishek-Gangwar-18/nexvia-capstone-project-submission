@@ -7,7 +7,7 @@ import { errorMessage } from '../../lib/api';
 import { homeFor, register } from '../../lib/session';
 import { useAuth } from '../../store/auth';
 import { cn } from '../../lib/format';
-import { Segmented } from '../../components/ui/Controls';
+import { PasswordInput, Segmented } from '../../components/ui/Controls';
 import { Spinner } from '../../components/ui/Feedback';
 import AuthShell from './AuthShell';
 
@@ -84,10 +84,7 @@ export default function Register() {
         </div>
         <div>
           <label className="label" htmlFor="reg-password">Password</label>
-          <div className="relative">
-            <Lock className="absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-            <input id="reg-password" type="password" required minLength={8} value={form.password} onChange={set('password')} className="input pl-10" placeholder="At least 8 characters" autoComplete="new-password" />
-          </div>
+          <PasswordInput id="reg-password" icon={Lock} required minLength={8} value={form.password} onChange={set('password')} placeholder="At least 8 characters" autoComplete="new-password" />
           {form.password && (
             <div className="mt-2 flex items-center gap-2">
               <div className="flex flex-1 gap-1">

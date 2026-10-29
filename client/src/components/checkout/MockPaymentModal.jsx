@@ -13,8 +13,8 @@ const METHODS = [
 ];
 
 /**
- * Stand-in for Razorpay Checkout when no Razorpay keys are configured.
- * It goes through the same server flow (gateway order → verify) so the whole lifecycle can be demoed offline.
+ * Stand-in for the Stripe payment form when no Stripe keys are configured.
+ * It goes through the same server flow (payment attempt → verify) so the whole lifecycle can be demoed offline.
  */
 export default function MockPaymentModal({ open, amount, orderNumber, onResult, onClose }) {
   const [method, setMethod] = useState('upi');
@@ -75,11 +75,11 @@ export default function MockPaymentModal({ open, amount, orderNumber, onResult, 
                       ))}
                     </div>
                     <div className="mt-5 rounded-2xl bg-zinc-50 p-4 text-sm">
-                      {method === 'upi' && <p>UPI ID: <span className="font-mono font-semibold">success@razorpay</span></p>}
+                      {method === 'upi' && <p>UPI ID: <span className="font-mono font-semibold">success@upi</span></p>}
                       {method === 'card' && <p>Card: <span className="font-mono font-semibold">4111 1111 1111 1111</span> · 12/30 · 123</p>}
                       {method === 'netbanking' && <p>Bank: <span className="font-semibold">Test Bank (Sandbox)</span></p>}
                       {method === 'wallet' && <p>Wallet: <span className="font-semibold">Test Wallet</span></p>}
-                      <p className="mt-1 text-xs text-zinc-500">No real money moves. Configure Razorpay test keys to use real Razorpay Checkout.</p>
+                      <p className="mt-1 text-xs text-zinc-500">No real money moves. Configure Stripe test keys to use the real Stripe payment form.</p>
                     </div>
                     <button type="button" onClick={() => pay('success')} className="btn btn-primary btn-lg mt-5 w-full">
                       <Lock className="h-4 w-4" /> Pay {money(amount / 100)}
@@ -117,7 +117,7 @@ export default function MockPaymentModal({ open, amount, orderNumber, onResult, 
               </AnimatePresence>
             </div>
             <p className="flex items-center justify-center gap-1.5 border-t border-zinc-100 py-3 text-[11px] text-zinc-500">
-              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" /> Secured test gateway · Razorpay-compatible flow
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" /> Secured test gateway · Stripe-compatible flow
             </p>
           </motion.div>
         </div>

@@ -3,23 +3,63 @@ import { useAuth } from '../store/auth';
 
 const base = import.meta.env.VITE_API_URL?.replace(/\/$/, '');
 
-/** In development requests go through the Vite proxy (/api); in production VITE_API_URL points at the deployed API. */
-export const API_URL = base ? `${base}/api` : '/api';
+/** In development requests go to /api and the Vite proxy strips that prefix; in production VITE_API_URL is the API's origin. */
+export const API_URL = base || '/api';
 
-export const api = axios.create({ baseURL: API_URL, timeout: 25000 });
+// withCredentials: the refresh cookie is sent to the auth routes (also when the API is on another domain).
+export const api = axios.create({ baseURL: API_URL, timeout: 25000, withCredentials: true });
 
-api.interceptors.request.use((config) => {
-  const { token } = useAuth.getState();
+/**
+ * Access tokens last ~15 minutes. One refresh runs at a time (single flight): every request that needs
+ * a token waits for the same promise. The refresh cookie rotates on each call.
+ */
+let refreshing = null;
+export function refreshAccessToken() {
+  if (!refreshing) {
+    refreshing = axios
+      .post(`${API_URL}/auth/refresh`, null, { withCredentials: true, timeout: 15000, headers: { 'X-Requested-With': 'vendora' } })
+      .then(({ data }) => {
+        useAuth.getState().setSession(data.accessToken, data.user);
+        return data.accessToken;
+      })
+      .catch((error) => {
+        if (error.response?.status === 401) useAuth.getState().clear();
+        throw error;
+      })
+      .finally(() => {
+        refreshing = null;
+      });
+  }
+  return refreshing;
+}
+
+const isAuthCall = (url = '') => /\/auth\/(login|register|refresh|logout)$/.test(url);
+
+api.interceptors.request.use(async (config) => {
+  let { token } = useAuth.getState();
+  // Signed in (profile restored) but no token in memory yet, e.g. after a page reload.
+  if (!token && useAuth.getState().user && !isAuthCall(config.url)) token = await refreshAccessToken().catch(() => null);
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401 && useAuth.getState().token) {
-      useAuth.getState().clear();
+  async (error) => {
+    const { config, response } = error;
+    const code = response?.data?.details?.code;
+    // Expired access token: refresh once and replay the request.
+    if (response?.status === 401 && code === 'TOKEN_EXPIRED' && config && !config._retried) {
+      config._retried = true;
+      try {
+        const token = await refreshAccessToken();
+        config.headers.Authorization = `Bearer ${token}`;
+        return api(config);
+      } catch {
+        /* falls through to sign-out below */
+      }
     }
+    if (response?.status === 401 && !isAuthCall(config?.url) && useAuth.getState().user) useAuth.getState().clear();
     return Promise.reject(error);
   },
 );

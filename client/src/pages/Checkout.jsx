@@ -9,13 +9,13 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../lib/api';
 import { useCart } from '../lib/cart';
 import { refreshMe } from '../lib/session';
-import { openRazorpay } from '../lib/razorpay';
 import { cn, deliveryEstimate, money } from '../lib/format';
 import { useAuth } from '../store/auth';
 import { useCartStore } from '../store/cart';
 import AddressForm from '../components/account/AddressForm';
 import CouponBox, { PriceBreakdown } from '../components/checkout/CouponBox';
 import MockPaymentModal from '../components/checkout/MockPaymentModal';
+import StripePaymentModal from '../components/checkout/StripePaymentModal';
 import { EmptyState, PageLoader, Spinner } from '../components/ui/Feedback';
 import { StoreAvatar } from '../components/ui/Brand';
 import { groupByVendor } from './Cart';
@@ -67,6 +67,7 @@ export default function Checkout() {
   const [priced, setPriced] = useState(null);
   const [placing, setPlacing] = useState(false);
   const [mockCheckout, setMockCheckout] = useState(null);
+  const [stripeCheckout, setStripeCheckout] = useState(null);
   // One key per visit to checkout: retries of "Place order" reuse it, so the server never creates a duplicate order.
   const checkoutKey = useRef(crypto.randomUUID());
   const finished = useRef(false);
@@ -96,7 +97,7 @@ export default function Checkout() {
 
   if (isLoading || profile.isLoading) return <PageLoader label="Preparing checkout…" />;
 
-  if (!items.length && !mockCheckout && !finished.current) {
+  if (!items.length && !mockCheckout && !stripeCheckout && !finished.current) {
     return (
       <div className="container-page py-10">
         <EmptyState icon={ShoppingBag} title="Nothing to check out" description="Your cart is empty." action={<Link to="/search" className="btn btn-primary">Continue shopping</Link>} />
@@ -129,20 +130,11 @@ export default function Checkout() {
         { headers: { 'Idempotency-Key': checkoutKey.current } },
       );
       created = data;
-      if (data.payment.provider === 'mock') {
-        setMockCheckout(data);
-        return undefined;
-      }
-      const response = await openRazorpay({ ...data, onFailure: (message) => toast.error(message) });
-      const verified = await api.post(`/orders/${data.order._id}/verify`, response);
-      toast.success('Payment successful!');
-      return finish(verified.data.order);
+      if (data.payment.provider === 'mock') setMockCheckout(data);
+      else setStripeCheckout(data);
+      return undefined;
     } catch (error) {
-      if (error?.dismissed && created) {
-        toast('Payment not completed. Your order is saved — you can pay from My Orders.', { icon: '🕒' });
-        queryClient.invalidateQueries({ queryKey: ['orders'] });
-        return navigate(`/orders/${created.order._id}`);
-      }
+      if (created) return navigate(`/orders/${created.order._id}`);
       return toast.error(errorMessage(error));
     } finally {
       setPlacing(false);
@@ -295,15 +287,15 @@ export default function Checkout() {
                     ))}
                   </div>
                   <p className="mt-3 text-sm muted">
-                    {provider === 'razorpay'
-                      ? 'You’ll complete payment securely in Razorpay Checkout (test mode).'
-                      : 'Razorpay keys aren’t configured, so a built-in test gateway simulates Razorpay Checkout. No real money moves.'}
+                    {provider === 'stripe'
+                      ? 'You’ll pay securely with Stripe. Card details go straight to Stripe.'
+                      : 'Stripe keys aren’t configured, so a built-in test gateway simulates the payment. No real money moves.'}
                   </p>
                   <div className="mt-4 flex gap-3 rounded-2xl bg-gradient-to-r from-brand-50 to-indigo-50 p-4 text-sm dark:from-brand-500/10 dark:to-indigo-500/5">
                     <Split className="h-5 w-5 shrink-0 text-brand-600 dark:text-brand-300" />
                     <p className="text-zinc-700 dark:text-zinc-300">
                       <span className="font-semibold">Split payment:</span> your single payment is divided between {groups.length} seller{groups.length > 1 ? 's' : ''} and Vendora.
-                      Each seller’s share is held until their package is delivered.
+                      Each seller is paid after delivery, once the return window has passed.
                     </p>
                   </div>
                 </div>
@@ -342,6 +334,26 @@ export default function Checkout() {
         </aside>
       </div>
 
+      <StripePaymentModal
+        checkout={stripeCheckout}
+        onPaid={(order) => {
+          const id = stripeCheckout.order._id;
+          setStripeCheckout(null);
+          if (order) {
+            toast.success('Payment successful!');
+            return finish(order);
+          }
+          queryClient.invalidateQueries({ queryKey: ['orders'] });
+          return navigate(`/orders/${id}`);
+        }}
+        onClose={() => {
+          const id = stripeCheckout?.order._id;
+          setStripeCheckout(null);
+          toast('Payment not completed. Your order is saved — you can pay from My Orders.', { icon: '🕒' });
+          queryClient.invalidateQueries({ queryKey: ['orders'] });
+          navigate(`/orders/${id}`);
+        }}
+      />
       <MockPaymentModal
         open={Boolean(mockCheckout)}
         amount={mockCheckout?.payment.amount}

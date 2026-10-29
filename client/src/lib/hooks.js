@@ -36,7 +36,7 @@ export function useCategories() {
 
 export function useCategoryName() {
   const { data } = useCategories();
-  return (slug) => data?.find((c) => c.slug === slug)?.name || slug;
+  return (id) => data?.find((c) => c._id === String(id))?.name || '';
 }
 
 /** Wishlist ids live on the user profile; toggling updates the cached profile optimistically. */

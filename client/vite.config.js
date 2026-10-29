@@ -8,7 +8,13 @@ export default defineConfig({
     port: 5180,
     // In development the API is reached through this proxy, so no CORS setup is needed.
     proxy: {
-      '/api': { target: 'http://localhost:5050', changeOrigin: true },
+      // The API has no /api prefix: strip it here, and map the refresh cookie's path (/auth) to what the browser sees.
+      '/api': {
+        target: 'http://localhost:5050',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+        cookiePathRewrite: { '/auth': '/api/auth' },
+      },
     },
   },
   build: {

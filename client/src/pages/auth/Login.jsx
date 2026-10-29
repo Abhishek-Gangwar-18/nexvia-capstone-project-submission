@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Eye, EyeOff, Lock, Mail, ShoppingBag, Store } from 'lucide-react';
+import { Lock, Mail, ShoppingBag, Store } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { errorMessage } from '../../lib/api';
 import { homeFor, login } from '../../lib/session';
 import { useAuth } from '../../store/auth';
 import { cn } from '../../lib/format';
+import { PasswordInput } from '../../components/ui/Controls';
 import { Spinner } from '../../components/ui/Feedback';
 import AuthShell from './AuthShell';
 
@@ -21,7 +22,6 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const [form, setForm] = useState({ email: '', password: '' });
-  const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   // Only bounce users who arrive already signed in; a fresh login navigates itself below.
@@ -92,13 +92,7 @@ export default function Login() {
         </div>
         <div>
           <label className="label" htmlFor="password">Password</label>
-          <div className="relative">
-            <Lock className="absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-            <input id="password" type={show ? 'text' : 'password'} required autoComplete="current-password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="input px-10" placeholder="••••••••" />
-            <button type="button" onClick={() => setShow((s) => !s)} className="absolute top-1/2 right-3 -translate-y-1/2 text-zinc-400 hover:text-zinc-600" aria-label={show ? 'Hide password' : 'Show password'}>
-              {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </button>
-          </div>
+          <PasswordInput id="password" icon={Lock} required autoComplete="current-password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
         </div>
         {error && (
           <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
