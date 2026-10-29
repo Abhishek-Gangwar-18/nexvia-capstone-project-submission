@@ -1,18 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronLeft, CreditCard, Download, MapPin, MessageSquarePlus, PartyPopper, Receipt, Store, Truck, X, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, downloadFile, errorMessage } from '../lib/api';
-import { openRazorpay } from '../lib/razorpay';
 import { formatDateTime, money } from '../lib/format';
-import { NEXT_ACTION } from '../lib/status';
 import OrderTimeline from '../components/orders/OrderTimeline';
+import { AdminEventLog, AdminPackageActions, AdminPackageInfo, AdminPaymentRefs } from '../components/orders/AdminOrderPanels';
 import StatusBadge from '../components/ui/StatusBadge';
 import { ConfirmDialog } from '../components/ui/Modal';
 import { ErrorState, PageLoader, Spinner } from '../components/ui/Feedback';
 import MockPaymentModal from '../components/checkout/MockPaymentModal';
+import StripePaymentModal from '../components/checkout/StripePaymentModal';
+import PackageReturns from '../components/orders/PackageReturns';
 
 function SuccessBanner({ order, onClose }) {
   return (
@@ -49,54 +50,50 @@ function SuccessBanner({ order, onClose }) {
   );
 }
 
-function AdminPackageActions({ order, pkg, onDone }) {
-  const [busy, setBusy] = useState(false);
-  const next = NEXT_ACTION[pkg.status];
-  const run = async (status) => {
-    setBusy(true);
-    try {
-      await api.patch(`/admin/orders/${order._id}/packages/${pkg._id}`, { status });
-      toast.success(`Package marked ${status}`);
-      onDone();
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (!next && pkg.status !== 'placed') return null;
-  return (
-    <div className="flex flex-wrap gap-2 border-t border-zinc-100 px-5 py-3 dark:border-white/5">
-      {next && (
-        <button type="button" disabled={busy} onClick={() => run(next.status)} className="btn btn-primary btn-sm">
-          {busy && <Spinner className="h-3.5 w-3.5" />} {next.label}
-        </button>
-      )}
-      {['placed', 'packed'].includes(pkg.status) && (
-        <button type="button" disabled={busy} onClick={() => run('cancelled')} className="btn btn-secondary btn-sm text-rose-600">
-          Cancel package
-        </button>
-      )}
-    </div>
-  );
-}
-
 export default function OrderDetail({ admin = false }) {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [paying, setPaying] = useState(false);
   const [mockCheckout, setMockCheckout] = useState(null);
+  const [stripeCheckout, setStripeCheckout] = useState(null);
+  // null = closed, 'all' = the whole order, or one package id.
+  const [cancelTarget, setCancelTarget] = useState(null);
   const showSuccess = params.get('placed') === '1';
 
-  const { data: order, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['order', id],
-    queryFn: () => api.get(`${admin ? '/admin' : ''}/orders/${id}`).then((r) => r.data.order),
+    queryFn: () => api.get(`${admin ? '/admin' : ''}/orders/${id}`).then((r) => r.data),
   });
+  const order = data?.order;
+  const { data: returns = [] } = useQuery({
+    queryKey: ['order-returns', id],
+    queryFn: () => api.get(`/orders/${id}/returns`).then((r) => r.data.returns),
+    enabled: !admin && Boolean(order?.packages.some((p) => p.status === 'delivered')),
+  });
+
+  // Back from a redirect-based Stripe method (some bank / UPI flows, 3-D Secure): confirm it once.
+  const confirmedReturn = useRef(false);
+  useEffect(() => {
+    const intent = params.get('payment_intent');
+    if (admin || params.get('stripe') !== 'return' || !intent || confirmedReturn.current) return;
+    confirmedReturn.current = true;
+    api
+      .post(`/orders/${id}/verify`, { paymentIntentId: intent })
+      .then(() => {
+        toast.success('Payment successful!');
+        queryClient.invalidateQueries({ queryKey: ['cart'] });
+        setParams({ placed: '1' });
+      })
+      .catch((err) => {
+        toast.error(errorMessage(err));
+        setParams({});
+      })
+      .finally(() => refetch());
+  }, [admin, id, params, queryClient, refetch, setParams]);
 
   if (isLoading) return <PageLoader />;
   if (error) {
@@ -112,7 +109,11 @@ export default function OrderDetail({ admin = false }) {
     queryClient.invalidateQueries({ queryKey: ['orders'] });
   };
   const live = order.packages.filter((p) => p.status !== 'cancelled');
+  const paid = order.payment.status === 'paid';
   const canCancel = !admin && order.status !== 'cancelled' && (order.payment.status === 'pending' || (live.length > 0 && live.every((p) => ['placed', 'packed'].includes(p.status))));
+  // With several sellers, each paid package that hasn't shipped can be cancelled on its own.
+  const canCancelPackage = (pkg) => !admin && paid && live.length > 1 && ['placed', 'packed'].includes(pkg.status);
+  const targetPkg = cancelTarget && cancelTarget !== 'all' ? order.packages.find((p) => p._id === cancelTarget) : null;
   const canInvoice = ['paid', 'refunded'].includes(order.payment.status);
 
   const invoice = async () => {
@@ -130,9 +131,9 @@ export default function OrderDetail({ admin = false }) {
   const cancel = async () => {
     setCancelling(true);
     try {
-      await api.post(`/orders/${order._id}/cancel`, { reason: 'Changed my mind' });
-      toast.success(order.payment.status === 'paid' ? 'Order cancelled. Refund initiated.' : 'Order cancelled');
-      setConfirmCancel(false);
+      await api.post(`/orders/${order._id}/cancel`, { reasonCode: 'changed_mind', ...(targetPkg ? { packageIds: [targetPkg._id] } : {}) });
+      toast.success(paid ? `${targetPkg ? 'Package' : 'Order'} cancelled. Refund initiated.` : 'Order cancelled');
+      setCancelTarget(null);
       refresh();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -145,17 +146,15 @@ export default function OrderDetail({ admin = false }) {
     setPaying(true);
     try {
       const { data } = await api.get(`/orders/${order._id}/payment`);
-      if (data.payment.provider === 'mock') {
-        setMockCheckout(data);
+      if (data.alreadyPaid) {
+        toast.success('This order is already paid');
+        refresh();
         return;
       }
-      const response = await openRazorpay({ ...data, onFailure: (message) => toast.error(message) });
-      await api.post(`/orders/${order._id}/verify`, response);
-      toast.success('Payment successful!');
-      queryClient.invalidateQueries({ queryKey: ['cart'] });
-      refresh();
+      if (data.payment.provider === 'mock') setMockCheckout(data);
+      else setStripeCheckout(data);
     } catch (err) {
-      if (!err?.dismissed) toast.error(errorMessage(err));
+      toast.error(errorMessage(err));
     } finally {
       setPaying(false);
     }
@@ -181,8 +180,13 @@ export default function OrderDetail({ admin = false }) {
           </div>
           <p className="mt-1 text-sm muted">
             Placed {formatDateTime(order.createdAt)}
-            {admin && order.customer && ` · ${order.customer.name} (${order.customer.email})`}
           </p>
+          {admin && order.customer && (
+            <p className="mt-1 text-sm">
+              Customer <span className="font-semibold">{order.customer.name}</span>{' '}
+              <span className="muted">· {order.customer.email}{order.customer.phone ? ` · ${order.customer.phone}` : ''} · ID {order.customer._id}</span>
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {order.status === 'pending_payment' && !admin && (
@@ -196,7 +200,7 @@ export default function OrderDetail({ admin = false }) {
             </button>
           )}
           {canCancel && (
-            <button type="button" onClick={() => setConfirmCancel(true)} className="btn btn-secondary text-rose-600">
+            <button type="button" onClick={() => setCancelTarget('all')} className="btn btn-secondary text-rose-600">
               <XCircle className="h-4 w-4" /> Cancel order
             </button>
           )}
@@ -213,6 +217,9 @@ export default function OrderDetail({ admin = false }) {
                   Package {i + 1} · <span className="font-semibold">{pkg.storeName}</span>
                 </p>
                 <StatusBadge status={pkg.status} className="ml-auto" />
+                {canCancelPackage(pkg) && (
+                  <button type="button" onClick={() => setCancelTarget(pkg._id)} className="text-xs font-semibold text-rose-600 hover:underline">Cancel package</button>
+                )}
               </div>
               <div className="px-5 py-6">
                 <OrderTimeline pkg={pkg} />
@@ -248,6 +255,8 @@ export default function OrderDetail({ admin = false }) {
                   <div><p className="muted">Vendor payout · {pkg.payout?.status?.replace('_', ' ')}</p><p className="font-semibold">{money(pkg.vendorEarning)}</p></div>
                 </div>
               )}
+              {!admin && <PackageReturns order={order} pkg={pkg} returns={returns} windowDays={data.returnWindowDays || 7} />}
+              {admin && <AdminPackageInfo pkg={pkg} />}
               {admin && <AdminPackageActions order={order} pkg={pkg} onDone={refresh} />}
             </motion.div>
           ))}
@@ -262,16 +271,18 @@ export default function OrderDetail({ admin = false }) {
               {order.shippingAddress.line2 && <p className="muted">{order.shippingAddress.line2}</p>}
               <p className="muted">{order.shippingAddress.city}, {order.shippingAddress.state} {order.shippingAddress.pincode}</p>
               <p className="mt-1 text-xs muted">📞 {order.shippingAddress.phone}</p>
+              {admin && <p className="mt-2 text-[11px] muted">Snapshot taken at checkout. Later profile changes don't affect it.</p>}
             </div>
           </div>
           <div className="card p-5">
             <h3 className="flex items-center gap-2 font-semibold"><Receipt className="h-4 w-4 text-brand-600" /> Payment</h3>
             <div className="mt-3 space-y-2 text-sm">
               <div className="flex justify-between"><span className="muted">Status</span><StatusBadge status={order.payment.status} /></div>
-              <div className="flex justify-between"><span className="muted">Gateway</span><span className="font-semibold">{order.payment.provider === 'razorpay' ? 'Razorpay' : 'Test gateway'}</span></div>
+              <div className="flex justify-between"><span className="muted">Gateway</span><span className="font-semibold">{order.payment.provider === 'stripe' ? 'Stripe' : 'Test gateway'}</span></div>
               {order.payment.method && <div className="flex justify-between"><span className="muted">Method</span><span className="font-semibold uppercase">{order.payment.method}</span></div>}
               {order.payment.paymentId && <div className="flex justify-between gap-4"><span className="muted">Payment ID</span><span className="truncate font-mono text-xs">{order.payment.paymentId}</span></div>}
             </div>
+            {admin && <AdminPaymentRefs order={order} />}
             <div className="mt-4 space-y-2 border-t border-dashed border-zinc-200 pt-4 text-sm dark:border-white/10">
               <div className="flex justify-between"><span className="muted">Subtotal</span><span>{money(order.pricing.subtotal)}</span></div>
               {order.pricing.discount > 0 && (
@@ -281,18 +292,39 @@ export default function OrderDetail({ admin = false }) {
               <div className="flex justify-between pt-1 text-base font-bold"><span>Total</span><span className="font-display">{money(order.pricing.total)}</span></div>
             </div>
           </div>
+          {admin && <AdminEventLog order={order} />}
         </aside>
       </div>
 
       <ConfirmDialog
-        open={confirmCancel}
-        onClose={() => setConfirmCancel(false)}
+        open={Boolean(cancelTarget)}
+        onClose={() => setCancelTarget(null)}
         onConfirm={cancel}
         loading={cancelling}
         danger
-        title="Cancel this order?"
-        description={order.payment.status === 'paid' ? `All packages will be cancelled and ${money(order.pricing.total)} refunded to your original payment method.` : 'This unpaid order will be cancelled.'}
-        confirmLabel="Yes, cancel order"
+        title={targetPkg ? `Cancel the ${targetPkg.storeName} package?` : 'Cancel this order?'}
+        description={
+          targetPkg
+            ? `This package is cancelled and ${money(targetPkg.total)} is refunded to your original payment method. Your other packages are not affected.`
+            : paid
+              ? `All packages that haven't shipped are cancelled and refunded to your original payment method.`
+              : 'This unpaid order will be cancelled.'
+        }
+        confirmLabel={targetPkg ? 'Yes, cancel package' : 'Yes, cancel order'}
+      />
+
+      <StripePaymentModal
+        checkout={stripeCheckout}
+        onClose={() => setStripeCheckout(null)}
+        onPaid={(paidOrder) => {
+          setStripeCheckout(null);
+          if (paidOrder) {
+            toast.success('Payment successful!');
+            queryClient.invalidateQueries({ queryKey: ['cart'] });
+            setParams({ placed: '1' });
+          }
+          refresh();
+        }}
       />
 
       <MockPaymentModal

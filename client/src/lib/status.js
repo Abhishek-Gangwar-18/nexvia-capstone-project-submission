@@ -22,6 +22,13 @@ export const STATUS = {
   on_hold: { label: 'On hold', tone: 'amber' },
   released: { label: 'Released', tone: 'emerald' },
   reversed: { label: 'Reversed', tone: 'rose' },
+  reversal_failed: { label: 'Reversal failed', tone: 'amber' },
+  releasing: { label: 'Paying out', tone: 'sky' },
+  // returns
+  requested: { label: 'Return requested', tone: 'amber' },
+  received: { label: 'Item received', tone: 'violet' },
+  // refunds
+  succeeded: { label: 'Succeeded', tone: 'emerald' },
   // misc
   active: { label: 'Active', tone: 'emerald' },
   inactive: { label: 'Hidden', tone: 'zinc' },
@@ -56,3 +63,32 @@ export const NEXT_ACTION = {
   packed: { status: 'shipped', label: 'Mark as shipped' },
   shipped: { status: 'delivered', label: 'Mark as delivered' },
 };
+
+/** Cancel reason codes (mirrors CANCEL_REASONS_BY_ACTOR on the server). `other` needs a note. */
+export const CANCEL_REASON_LABELS = {
+  changed_mind: 'Customer changed their mind',
+  out_of_stock: 'Out of stock',
+  vendor_unable: 'Seller unable to fulfil',
+  fraud: 'Suspected fraud',
+  payment_timeout: 'Payment not received in time',
+  payment_after_cancel: 'Payment arrived after cancellation',
+  other: 'Other',
+};
+export const CANCEL_REASONS = {
+  vendor: ['out_of_stock', 'vendor_unable', 'other'],
+  admin: ['out_of_stock', 'vendor_unable', 'fraud', 'other'],
+};
+
+/** A cancel dialog may submit once a reason is picked (and described, for Other). */
+export const cancelReasonValid = ({ reasonCode, note }) => Boolean(reasonCode) && (reasonCode !== 'other' || note.trim().length >= 3);
+
+/** Return reasons (mirrors Return.RETURN_REASONS on the server). `other` needs a note. */
+export const RETURN_REASON_LABELS = {
+  damaged: 'Damaged or defective',
+  wrong_item: 'Wrong item delivered',
+  not_as_described: 'Not as described',
+  size_fit: 'Size or fit issue',
+  changed_mind: 'Changed my mind',
+  other: 'Other',
+};
+

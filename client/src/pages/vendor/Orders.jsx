@@ -5,7 +5,7 @@ import { ChevronDown, MapPin, PackageCheck, Search, Truck, XCircle } from 'lucid
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
 import { cn, formatDateTime, money } from '../../lib/format';
-import { NEXT_ACTION } from '../../lib/status';
+import { CANCEL_REASON_LABELS, CANCEL_REASONS, cancelReasonValid, NEXT_ACTION } from '../../lib/status';
 import { useDebounce } from '../../lib/hooks';
 import { PageHeader } from '../../components/layout/DashboardLayout';
 import { Segmented } from '../../components/ui/Controls';
@@ -21,6 +21,7 @@ function PackageCard({ row, onUpdate }) {
   const [shipModal, setShipModal] = useState(false);
   const [trackingId, setTrackingId] = useState('');
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancel, setCancel] = useState({ reasonCode: '', note: '' });
   const pkg = row.package;
   const next = NEXT_ACTION[pkg.status];
 
@@ -136,13 +137,19 @@ function PackageCard({ row, onUpdate }) {
       <ConfirmDialog
         open={confirmCancel}
         onClose={() => setConfirmCancel(false)}
-        onConfirm={() => update('cancelled', { note: 'Cancelled by seller' })}
+        onConfirm={() => (cancelReasonValid(cancel) ? update('cancelled', { reasonCode: cancel.reasonCode, note: cancel.note.trim() || undefined }) : toast.error('Choose a reason (and describe it for Other)'))}
         loading={busy}
         danger
         title="Cancel this package?"
         description={`Stock is restored and the customer is refunded ${money(pkg.total)}. Your payout for this package is reversed.`}
         confirmLabel="Cancel package"
-      />
+      >
+        <select value={cancel.reasonCode} onChange={(e) => setCancel({ ...cancel, reasonCode: e.target.value })} className="input mt-3">
+          <option value="">Choose a reason…</option>
+          {CANCEL_REASONS.vendor.map((c) => <option key={c} value={c}>{CANCEL_REASON_LABELS[c]}</option>)}
+        </select>
+        <textarea value={cancel.note} onChange={(e) => setCancel({ ...cancel, note: e.target.value })} maxLength={180} rows={2} placeholder={cancel.reasonCode === 'other' ? 'Describe the reason (required)' : 'Note (optional)'} className="input mt-2" />
+      </ConfirmDialog>
     </motion.div>
   );
 }

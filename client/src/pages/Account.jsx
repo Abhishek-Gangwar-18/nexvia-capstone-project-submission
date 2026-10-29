@@ -2,14 +2,15 @@ import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Heart, KeyRound, MapPin, Pencil, Plus, Trash2, User } from 'lucide-react';
+import { Heart, KeyRound, LogOut, MapPin, Monitor, Pencil, Plus, Smartphone, Trash2, User } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../lib/api';
-import { formatDate } from '../lib/format';
+import { formatDate, timeAgo } from '../lib/format';
+import { logoutEverywhere } from '../lib/session';
 import { useAuth } from '../store/auth';
 import AddressForm from '../components/account/AddressForm';
 import ImageUploader from '../components/ui/ImageUploader';
-import { Field } from '../components/ui/Controls';
+import { Field, PasswordInput } from '../components/ui/Controls';
 import { ConfirmDialog } from '../components/ui/Modal';
 import { EmptyState, Spinner } from '../components/ui/Feedback';
 import { UserAvatar } from '../components/ui/Brand';
@@ -155,8 +156,9 @@ function Security() {
   const mutation = useMutation({
     mutationFn: () => api.patch('/auth/me/password', { currentPassword: form.currentPassword, newPassword: form.newPassword }),
     onSuccess: ({ data }) => {
-      // The old token is revoked server-side; keep this device signed in with the new one.
-      setSession(data.token, useAuth.getState().user);
+      // Other devices are logged out; this one got a new session (cookie) and access token.
+      setSession(data.accessToken, useAuth.getState().user);
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
       toast.success('Password updated');
       setForm({ currentPassword: '', newPassword: '', confirm: '' });
       queryClient.invalidateQueries({ queryKey: ['me'] });
@@ -174,13 +176,13 @@ function Security() {
       className="max-w-md space-y-4"
     >
       <Field label="Current password">
-        <input type="password" value={form.currentPassword} onChange={(e) => setForm((f) => ({ ...f, currentPassword: e.target.value }))} className="input" autoComplete="current-password" />
+        <PasswordInput value={form.currentPassword} onChange={(e) => setForm((f) => ({ ...f, currentPassword: e.target.value }))} autoComplete="current-password" />
       </Field>
       <Field label="New password" hint="At least 8 characters">
-        <input type="password" value={form.newPassword} onChange={(e) => setForm((f) => ({ ...f, newPassword: e.target.value }))} className="input" autoComplete="new-password" />
+        <PasswordInput value={form.newPassword} onChange={(e) => setForm((f) => ({ ...f, newPassword: e.target.value }))} autoComplete="new-password" />
       </Field>
       <Field label="Confirm new password" error={mismatch ? 'Passwords don’t match' : undefined}>
-        <input type="password" value={form.confirm} onChange={(e) => setForm((f) => ({ ...f, confirm: e.target.value }))} className={cn('input', mismatch && 'input-error')} autoComplete="new-password" />
+        <PasswordInput value={form.confirm} onChange={(e) => setForm((f) => ({ ...f, confirm: e.target.value }))} className={cn(mismatch && 'input-error')} autoComplete="new-password" />
       </Field>
       <button type="submit" disabled={mutation.isPending || !form.currentPassword || form.newPassword.length < 8 || mismatch} className="btn btn-primary">
         {mutation.isPending && <Spinner className="h-4 w-4" />} Update password
@@ -189,11 +191,87 @@ function Security() {
   );
 }
 
+/** "Chrome on Windows" style label from a user-agent string. */
+function deviceLabel(ua = '') {
+  const browser = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
+  return { name: os ? `${browser} on ${os}` : browser, mobile: /Android|iPhone|iPad|Mobile/.test(ua) };
+}
+
+function Devices() {
+  const queryClient = useQueryClient();
+  const [confirmAll, setConfirmAll] = useState(false);
+  const { data, isLoading } = useQuery({ queryKey: ['sessions'], queryFn: () => api.get('/auth/sessions').then((r) => r.data.sessions) });
+  const revoke = useMutation({
+    mutationFn: (id) => api.delete(`/auth/sessions/${id}`),
+    onSuccess: () => {
+      toast.success('Device logged out');
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  const everywhere = useMutation({
+    mutationFn: logoutEverywhere,
+    onSuccess: (message) => toast.success(message),
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  return (
+    <div className="mt-10 max-w-xl">
+      <h3 className="font-semibold">Signed-in devices</h3>
+      <p className="mt-1 text-sm muted">Log out a device you don't recognise, or everywhere at once.</p>
+      {isLoading ? (
+        <div className="mt-4"><Spinner className="h-5 w-5" /></div>
+      ) : (
+        <ul className="mt-4 divide-y divide-zinc-100 rounded-2xl border border-zinc-200 dark:divide-white/5 dark:border-white/10">
+          {(data || []).map((s) => {
+            const device = deviceLabel(s.userAgent);
+            const Icon = device.mobile ? Smartphone : Monitor;
+            return (
+              <li key={s._id} className="flex items-center gap-3 px-4 py-3">
+                <Icon className="h-5 w-5 shrink-0 text-zinc-400" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">{device.name} {s.current && <span className="ml-1 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300">This device</span>}</p>
+                  <p className="text-xs muted">{s.ip || 'Unknown IP'} · active {timeAgo(s.lastUsedAt)} · signed in {formatDate(s.createdAt)}</p>
+                </div>
+                {!s.current && (
+                  <button type="button" disabled={revoke.isPending} onClick={() => revoke.mutate(s._id)} className="btn btn-ghost btn-sm text-rose-600">Log out</button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <button type="button" onClick={() => setConfirmAll(true)} className="btn btn-secondary mt-4 text-rose-600">
+        <LogOut className="h-4 w-4" /> Log out of all devices
+      </button>
+      <ConfirmDialog
+        open={confirmAll}
+        onClose={() => setConfirmAll(false)}
+        onConfirm={() => everywhere.mutate()}
+        loading={everywhere.isPending}
+        danger
+        title="Log out of all devices?"
+        description="Every session ends, including this one. You'll need to sign in again everywhere."
+        confirmLabel="Log out everywhere"
+      />
+    </div>
+  );
+}
+
+function SecurityTab() {
+  return (
+    <>
+      <Security />
+      <Devices />
+    </>
+  );
+}
+
 const TABS = [
   { id: 'profile', label: 'Profile', icon: User, component: Profile },
   { id: 'addresses', label: 'Addresses', icon: MapPin, component: Addresses },
   { id: 'wishlist', label: 'Wishlist', icon: Heart, component: Wishlist, customerOnly: true },
-  { id: 'security', label: 'Security', icon: KeyRound, component: Security },
+  { id: 'security', label: 'Security', icon: KeyRound, component: SecurityTab },
 ];
 
 export default function Account() {
