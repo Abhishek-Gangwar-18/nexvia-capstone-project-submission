@@ -25,7 +25,13 @@ export const env = {
   autoSeed: bool(process.env.AUTO_SEED, true),
 
   jwtSecret: process.env.JWT_SECRET || 'vendora-dev-secret-change-me',
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  /** Short-lived access token (JWT, sent as a Bearer header, kept in memory by the client). */
+  accessTokenTtl: process.env.ACCESS_TOKEN_TTL || '15m',
+  /** Refresh token (httpOnly cookie): a session stays alive while used at least every N days, up to the max. */
+  refreshIdleDays: Number(process.env.REFRESH_IDLE_DAYS) || 30,
+  sessionMaxDays: Number(process.env.SESSION_MAX_DAYS) || 90,
+  /** 'lax' when the client is served from the same site (Vite proxy); 'none' (+ Secure) for a cross-site API domain. */
+  cookieSameSite: process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
 
   redisUrl: process.env.REDIS_URL || '',
 
@@ -47,19 +53,23 @@ export const env = {
     forcePathStyle: bool(process.env.AWS_S3_FORCE_PATH_STYLE, false),
   },
 
-  razorpay: {
-    keyId: process.env.RAZORPAY_KEY_ID || '',
-    keySecret: process.env.RAZORPAY_KEY_SECRET || '',
-    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    /** Signing secret of a separate Connect webhook endpoint (events from vendor accounts), if you create one. */
+    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET || '',
+    /** Charge currency (ISO code, lowercase). Prices in the catalogue are in this currency. */
+    currency: (process.env.STRIPE_CURRENCY || 'inr').toLowerCase(),
+    /** Country for new vendor Express accounts; empty = the platform account's country. */
+    connectCountry: (process.env.STRIPE_CONNECT_COUNTRY || '').toUpperCase(),
+    /** The built-in test gateway marks orders paid without money; production refuses it unless this is set. */
+    allowTestGateway: bool(process.env.ALLOW_TEST_GATEWAY, false),
   },
 
-  smtp: {
-    host: process.env.SMTP_HOST || '',
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: bool(process.env.SMTP_SECURE, false),
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
-    from: process.env.MAIL_FROM || 'Vendora <no-reply@vendora.dev>',
+  payments: {
+    /** Days after delivery a customer can request a return; the vendor is paid only after this window. */
+    returnWindowDays: Number(process.env.RETURN_WINDOW_DAYS) || 7,
   },
 };
 

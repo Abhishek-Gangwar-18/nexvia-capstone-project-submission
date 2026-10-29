@@ -34,9 +34,13 @@ services:
         sync: false
       - key: AWS_S3_BUCKET
         sync: false
-      - key: RAZORPAY_KEY_ID
+      - key: STRIPE_SECRET_KEY
         sync: false
-      - key: RAZORPAY_KEY_SECRET
+      - key: STRIPE_PUBLISHABLE_KEY
         sync: false
-      - key: RAZORPAY_WEBHOOK_SECRET
+      - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_CONNECT_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_CURRENCY
+        value: inr

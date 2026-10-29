@@ -1,132 +1,234 @@
 import crypto from 'node:crypto';
-import Razorpay from 'razorpay';
-import { env } from '../config/env.js';
+import Stripe from 'stripe';
+import { env, isProd } from '../config/env.js';
+import { ApiError } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
 
-const { keyId, keySecret, webhookSecret } = env.razorpay;
-const razorpay = keyId && keySecret ? new Razorpay({ key_id: keyId, key_secret: keySecret }) : null;
+/**
+ * Stripe adapter: PaymentIntents for checkout, refunds, and Connect (Express accounts + transfers) for
+ * vendor payouts. Without keys a built-in test gateway runs the same flow without real money.
+ * Model: "separate charges and transfers" - the platform charges the customer, and each vendor share is
+ * transferred later, once the package's return window has passed.
+ */
+const { secretKey, publishableKey, webhookSecret, connectWebhookSecret, currency } = env.stripe;
+const stripe = secretKey ? new Stripe(secretKey, { maxNetworkRetries: 2 }) : null;
 
-export const paymentProvider = () => (razorpay ? 'razorpay' : 'mock');
+export const CURRENCY = currency;
+export const paymentProvider = () => (stripe ? 'stripe' : 'mock');
+
+/** True when the test gateway may be used: always in development, in production only with ALLOW_TEST_GATEWAY=true. */
+export const testGatewayAllowed = () => !isProd || env.stripe.allowTestGateway;
+
+/** Called at startup: production without Stripe keys would let anyone "pay" through the test gateway. */
+export function assertPaymentConfig() {
+  if (!stripe && !testGatewayAllowed()) {
+    throw new Error('STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY are required in production (or set ALLOW_TEST_GATEWAY=true for a demo deployment without real payments)');
+  }
+  if (stripe && !publishableKey) throw new Error('STRIPE_PUBLISHABLE_KEY is required when STRIPE_SECRET_KEY is set');
+}
 
 export function logPaymentProvider() {
-  if (razorpay) logger.ok(`Payments: Razorpay ${keyId.startsWith('rzp_test') ? 'TEST' : 'LIVE'} mode (Route split payments)`);
-  else logger.warn('Payments: Razorpay keys not set -> using built-in test gateway (same flow, no real money)');
+  if (stripe) {
+    logger.ok(`Payments: Stripe ${secretKey.startsWith('sk_test') ? 'TEST' : 'LIVE'} mode, ${currency.toUpperCase()} (Connect payouts)`);
+    if (!webhookSecret) logger.warn('Payments: STRIPE_WEBHOOK_SECRET not set -> webhooks are rejected; payments still confirm via the checkout callback and reconciliation');
+  } else if (isProd) {
+    logger.warn('Payments: ALLOW_TEST_GATEWAY=true -> production is using the built-in test gateway. Orders can be "paid" without money; never use this for a real store.');
+  } else {
+    logger.warn('Payments: Stripe keys not set -> using built-in test gateway (same flow, no real money)');
+  }
 }
 
-const gatewayError = (err) => err?.error?.description || err?.message || 'Payment gateway error';
-const toPaise = (rupees) => Math.round(rupees * 100);
+/** Stripe amounts are integers in the smallest currency unit (paise for INR). */
+export const toMinor = (amount) => Math.round(amount * 100);
+const fromMinor = (minor) => minor / 100;
+const mockId = (prefix) => `${prefix}_test_${crypto.randomBytes(8).toString('hex')}`;
+export const gatewayError = (err) => err?.raw?.message || err?.message || 'Payment gateway error';
+
+/* -------------------------------------------------------------- payments */
 
 /**
- * Creates a gateway order. With Razorpay Route, `transfers` split the payment to vendor linked accounts
- * at capture time (held until delivery). If Route is not enabled on the account, falls back to a plain
- * order and the split is settled manually from the ledger.
+ * Opens a payment attempt for an order. The idempotency key is per order and attempt, so a retried
+ * request gets the same PaymentIntent back instead of a second one.
  */
-export async function createGatewayOrder({ amount, receipt, notes, transfers = [] }) {
-  if (!razorpay) {
-    return { provider: 'mock', id: `mock_order_${crypto.randomBytes(8).toString('hex')}`, amount: toPaise(amount), currency: 'INR', splitApplied: false };
-  }
-  const base = { amount: toPaise(amount), currency: 'INR', receipt, notes };
-  if (transfers.length) {
-    try {
-      const order = await razorpay.orders.create({
-        ...base,
-        transfers: transfers.map((t) => ({
-          account: t.account,
-          amount: toPaise(t.amount),
-          currency: 'INR',
-          notes: t.notes,
-          on_hold: 1,
-        })),
-      });
-      return { provider: 'razorpay', id: order.id, amount: order.amount, currency: order.currency, splitApplied: true };
-    } catch (err) {
-      logger.warn(`Razorpay Route split rejected (${gatewayError(err)}) -> creating order without transfers`);
-    }
+export async function createPaymentIntent({ orderId, orderNumber, amount, email, attempt = 0 }) {
+  if (!stripe) {
+    assertPaymentConfig();
+    return { provider: 'mock', intentId: mockId('pi'), clientSecret: null };
   }
   try {
-    const order = await razorpay.orders.create(base);
-    return { provider: 'razorpay', id: order.id, amount: order.amount, currency: order.currency, splitApplied: false };
+    const intent = await stripe.paymentIntents.create(
+      {
+        amount: toMinor(amount),
+        currency,
+        automatic_payment_methods: { enabled: true },
+        receipt_email: email,
+        description: `Vendora order ${orderNumber}`,
+        transfer_group: orderNumber,
+        metadata: { orderId: String(orderId), orderNumber },
+      },
+      { idempotencyKey: `pi:${orderId}:${attempt}` },
+    );
+    return { provider: 'stripe', intentId: intent.id, clientSecret: intent.client_secret };
   } catch (err) {
-    throw new Error(gatewayError(err));
+    throw new ApiError(502, `Could not start payment: ${gatewayError(err)}`);
   }
 }
 
-/** Checkout options the frontend needs to open the payment UI. */
-export const checkoutConfig = (order) => ({
+/** Client secret of an existing intent (retry payment from the order page). */
+export async function intentClientSecret(intentId) {
+  const intent = await stripe.paymentIntents.retrieve(intentId);
+  return { status: intent.status, clientSecret: intent.client_secret };
+}
+
+/** What the frontend needs to show the payment form. */
+export const checkoutConfig = (order, clientSecret) => ({
   provider: order.payment.provider,
-  keyId: order.payment.provider === 'razorpay' ? keyId : null,
-  gatewayOrderId: order.payment.gatewayOrderId,
-  amount: toPaise(order.pricing.total),
-  currency: 'INR',
+  publishableKey: order.payment.provider === 'stripe' ? publishableKey : null,
+  clientSecret: clientSecret || null,
+  amount: toMinor(order.pricing.total),
+  currency,
 });
 
-const safeEqual = (a, b) => {
-  const left = Buffer.from(String(a));
-  const right = Buffer.from(String(b));
-  return left.length === right.length && crypto.timingSafeEqual(left, right);
-};
-
-export function verifyPaymentSignature({ gatewayOrderId, paymentId, signature }) {
-  if (!keySecret) return false;
-  const expected = crypto.createHmac('sha256', keySecret).update(`${gatewayOrderId}|${paymentId}`).digest('hex');
-  return safeEqual(expected, signature);
-}
-
-export function verifyWebhookSignature(rawBody, signature) {
-  if (!webhookSecret || !signature) return false;
-  const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-  return safeEqual(expected, signature);
-}
-
-export async function fetchPaymentMethod(paymentId) {
-  if (!razorpay) return 'test-gateway';
-  try {
-    const payment = await razorpay.payments.fetch(paymentId);
-    return payment.method;
-  } catch {
-    return undefined;
+/**
+ * Confirms that a payment really holds the money before an order is marked paid: the intent must carry
+ * this order id, be for exactly the order amount and currency, and have succeeded. An intent waiting for
+ * manual capture is captured here. Throws otherwise; returns { method, chargeId }.
+ */
+export async function confirmCapture(intentId, { provider, orderId, amount }) {
+  if (provider === 'mock') return { method: 'test-gateway', chargeId: null };
+  if (!stripe) throw new ApiError(503, 'Stripe is not configured on this server');
+  let intent = await stripe.paymentIntents.retrieve(intentId, { expand: ['latest_charge'] });
+  if (intent.metadata?.orderId !== String(orderId)) throw new ApiError(400, 'This payment belongs to a different order');
+  if (intent.amount !== toMinor(amount) || intent.currency !== currency) {
+    throw new ApiError(400, `Payment amount ${fromMinor(intent.amount)} ${intent.currency.toUpperCase()} does not match the order total ${amount} ${currency.toUpperCase()}`);
   }
+  if (intent.status === 'requires_capture') intent = await stripe.paymentIntents.capture(intentId, { expand: ['latest_charge'] });
+  if (intent.status !== 'succeeded') throw new ApiError(402, `Payment is ${intent.status.replace(/_/g, ' ')}, not completed`);
+  const charge = intent.latest_charge;
+  return { method: charge?.payment_method_details?.type, chargeId: typeof charge === 'string' ? charge : charge?.id };
 }
 
-/** Route transfers created for a payment, keyed by linked account id. */
-export async function fetchTransfers(paymentId) {
-  if (!razorpay) return new Map();
+/** Current state of an intent (reconciliation). */
+export const retrieveIntent = (intentId) => stripe.paymentIntents.retrieve(intentId);
+
+/* --------------------------------------------------------------- refunds */
+
+const REFUND_STATUS = { succeeded: 'succeeded', pending: 'pending', requires_action: 'pending', failed: 'failed', canceled: 'failed' };
+export const refundStatusOf = (stripeStatus) => REFUND_STATUS[stripeStatus] || 'pending';
+
+/**
+ * Refunds part of a payment. `refundId` (our Refund document) goes into the metadata and the idempotency
+ * key, so the same attempt can never create two refunds; a retry first looks for an earlier one.
+ */
+export async function createRefund({ provider, intentId, amount, refundId, attempt }) {
+  if (provider === 'mock') return { id: mockId('re'), status: 'succeeded' };
+  const refund = await stripe.refunds.create(
+    { payment_intent: intentId, amount: toMinor(amount), metadata: { refundId: String(refundId) } },
+    { idempotencyKey: `refund:${refundId}:${attempt}` },
+  );
+  return { id: refund.id, status: refundStatusOf(refund.status), providerStatus: refund.status, error: refund.failure_reason };
+}
+
+/** A refund this platform already created for a Refund document (lost response, crash before saving). */
+export async function findRefund({ provider, intentId, refundId, providerRefundId }) {
+  if (provider === 'mock') return null;
+  const refund = providerRefundId
+    ? await stripe.refunds.retrieve(providerRefundId)
+    : (await stripe.refunds.list({ payment_intent: intentId, limit: 100 })).data.find((r) => r.metadata?.refundId === String(refundId));
+  return refund ? { id: refund.id, status: refundStatusOf(refund.status), providerStatus: refund.status, error: refund.failure_reason } : null;
+}
+
+/* ------------------------------------------------------- Connect payouts */
+
+/**
+ * Pays a vendor share to their connected account, funded by the order charge (source_transaction), so it
+ * never depends on the platform balance. A retry first looks for an earlier transfer of the package.
+ */
+export async function createTransfer({ destination, amount, chargeId, orderNumber, packageId, attempt }) {
+  const existing = await stripe.transfers.list({ destination, transfer_group: orderNumber, limit: 100 });
+  const earlier = existing.data.find((t) => t.metadata?.packageId === String(packageId));
+  if (earlier) return { id: earlier.id };
+  const transfer = await stripe.transfers.create(
+    {
+      amount: toMinor(amount),
+      currency,
+      destination,
+      transfer_group: orderNumber,
+      ...(chargeId ? { source_transaction: chargeId } : {}),
+      metadata: { orderNumber, packageId: String(packageId) },
+    },
+    { idempotencyKey: `payout:${packageId}:${attempt}` },
+  );
+  return { id: transfer.id };
+}
+
+/** Pulls (part of) a vendor transfer back. Returns { ok } or { ok: false, error }; never pretends. */
+export async function reverseTransfer(transferId, amount, idempotencyKey) {
+  if (!stripe || !transferId) return { ok: true };
   try {
-    const res = await razorpay.payments.fetchTransfer(paymentId);
-    return new Map((res.items || []).map((t) => [t.recipient, t]));
+    await stripe.transfers.createReversal(transferId, { amount: toMinor(amount) }, { idempotencyKey });
+    return { ok: true };
   } catch (err) {
-    logger.warn(`Could not fetch Route transfers: ${gatewayError(err)}`);
-    return new Map();
+    const error = gatewayError(err);
+    logger.warn(`Stripe transfer reversal failed: ${error}`);
+    return { ok: false, error };
   }
 }
 
-/** Releases a held Route transfer to the vendor (called when a package is delivered). */
-export async function releaseTransfer(transferId) {
-  if (!razorpay || !transferId) return true;
-  try {
-    await razorpay.transfers.edit(transferId, { on_hold: 0 });
-    return true;
-  } catch (err) {
-    logger.warn(`Route transfer release failed: ${gatewayError(err)}`);
-    return false;
-  }
+/** Creates the Express account a vendor completes on Stripe's hosted onboarding. */
+export async function createConnectAccount({ vendorId, email, storeName }) {
+  if (!stripe) throw new ApiError(503, 'Stripe is not configured on this server');
+  const account = await stripe.accounts.create({
+    type: 'express',
+    ...(env.stripe.connectCountry ? { country: env.stripe.connectCountry } : {}),
+    email,
+    business_profile: { name: storeName },
+    capabilities: { transfers: { requested: true } },
+    metadata: { vendorId: String(vendorId) },
+  });
+  return account.id;
 }
 
-/** Pulls a vendor's (held) Route transfer back to the platform account, e.g. when their package is cancelled. */
-export async function reverseTransfer(transferId, amount) {
-  if (!razorpay || !transferId) return true;
-  try {
-    await razorpay.transfers.reverse(transferId, { amount: toPaise(amount) });
-    return true;
-  } catch (err) {
-    logger.warn(`Route transfer reversal failed: ${gatewayError(err)}`);
-    return false;
-  }
+/** One-time link to Stripe's hosted onboarding (or to finish it). */
+export async function onboardingLink(accountId, { refreshUrl, returnUrl }) {
+  const link = await stripe.accountLinks.create({ account: accountId, refresh_url: refreshUrl, return_url: returnUrl, type: 'account_onboarding' });
+  return link.url;
 }
 
-/** Refunds (part of) a payment back to the customer. */
-export async function refundPayment(paymentId, amount) {
-  if (!razorpay) return { id: `mock_refund_${crypto.randomBytes(6).toString('hex')}`, status: 'processed' };
-  const refund = await razorpay.payments.refund(paymentId, { amount: toPaise(amount), speed: 'normal' });
-  return { id: refund.id, status: refund.status };
+/** Login link to the vendor's Express dashboard (balances, payouts, bank account). */
+export async function dashboardLink(accountId) {
+  return (await stripe.accounts.createLoginLink(accountId)).url;
+}
+
+/** Verified state of a connected account, straight from Stripe. */
+export async function accountStatus(accountId) {
+  const account = await stripe.accounts.retrieve(accountId);
+  return {
+    accountId: account.id,
+    detailsSubmitted: Boolean(account.details_submitted),
+    chargesEnabled: Boolean(account.charges_enabled),
+    payoutsEnabled: Boolean(account.payouts_enabled),
+    transfersActive: account.capabilities?.transfers === 'active',
+    syncedAt: new Date(),
+  };
+}
+
+export const connectAvailable = () => Boolean(stripe);
+
+/* --------------------------------------------------------------- webhooks */
+
+/** Verifies the Stripe-Signature header against the raw body; returns the event or throws. */
+export function constructWebhookEvent(rawBody, signature) {
+  // Account events and Connect (connected-account) events may come from two endpoints with two secrets.
+  const secrets = [webhookSecret, connectWebhookSecret].filter(Boolean);
+  if (!stripe || !secrets.length) throw new ApiError(400, 'Stripe webhooks are not configured');
+  let lastError;
+  for (const secret of secrets) {
+    try {
+      return stripe.webhooks.constructEvent(rawBody, signature, secret);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new ApiError(400, `Invalid webhook signature: ${lastError.message}`);
 }

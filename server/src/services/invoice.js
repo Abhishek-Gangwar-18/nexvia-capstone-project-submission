@@ -50,7 +50,7 @@ export function streamInvoice(order, customer, res) {
   block(
     'Payment',
     [
-      order.payment.provider === 'razorpay' ? 'Razorpay' : 'Test gateway',
+      order.payment.provider === 'stripe' ? 'Stripe' : 'Test gateway',
       order.payment.paymentId ? `Ref: ${order.payment.paymentId}` : null,
       `Status: ${order.payment.status.toUpperCase()}`,
       order.payment.paidAt ? `Paid on ${date(order.payment.paidAt)}` : null,

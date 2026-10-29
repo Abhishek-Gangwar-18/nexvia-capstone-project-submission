@@ -1,13 +1,16 @@
 import { Settings } from '../models/Settings.js';
 import { Coupon } from '../models/Coupon.js';
 import { Vendor } from '../models/Vendor.js';
+import { liveRedemptions } from './coupons.js';
 import { cache } from './cache.js';
 import { ApiError, round2 } from '../utils/http.js';
 
+/** Platform settings (read-only here: a cache miss is a plain read; the defaults apply until an admin saves). */
 export async function getSettings() {
-  return cache.remember('settings', 300, () =>
-    Settings.findOneAndUpdate({ key: 'platform' }, { $setOnInsert: { key: 'platform' } }, { upsert: true, new: true, lean: true }),
-  );
+  return cache.remember('settings', 300, async () => {
+    const doc = await Settings.findOne({ key: 'platform' }).select('-history').lean();
+    return doc || new Settings().toObject({ versionKey: false });
+  });
 }
 
 export const shippingFor = (amount, settings) =>
@@ -22,10 +25,12 @@ const inr = (n) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 export async function evaluateCoupon(code, lines, userId) {
   const coupon = await Coupon.findOne({ code: String(code || '').trim().toUpperCase() });
   if (!coupon || !coupon.isActive) throw new ApiError(404, 'That coupon code is not valid');
-  if (coupon.expiresAt && coupon.expiresAt < new Date()) throw new ApiError(400, 'This coupon has expired');
-  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) throw new ApiError(400, 'This coupon has reached its usage limit');
-  const timesUsed = coupon.usedBy.filter((id) => String(id) === String(userId)).length;
-  if (timesUsed >= coupon.perUserLimit) throw new ApiError(400, 'You have already used this coupon');
+  const now = new Date();
+  if (coupon.startsAt && coupon.startsAt > now) throw new ApiError(400, 'This coupon is not active yet');
+  if (coupon.expiresAt && coupon.expiresAt < now) throw new ApiError(400, 'This coupon has expired');
+  // Early, friendly checks; the binding ones are atomic in holdCoupon() at checkout.
+  if (coupon.usageLimit != null && coupon.usedCount >= coupon.usageLimit) throw new ApiError(400, 'This coupon has reached its usage limit');
+  if ((await liveRedemptions(coupon._id, userId)).length >= coupon.perUserLimit) throw new ApiError(400, 'You have already used this coupon');
 
   const eligible = coupon.vendor ? lines.filter((l) => String(l.vendorId) === String(coupon.vendor)) : lines;
   if (!eligible.length) {

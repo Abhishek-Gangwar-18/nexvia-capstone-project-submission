@@ -1,11 +1,13 @@
 import { env } from './config/env.js';
 import { connectDB, supportsTransactions } from './config/db.js';
 import { initCache } from './services/cache.js';
-import { restoreRevokedSessions } from './services/session.js';
 import { initSearch, syncIndexIfNeeded } from './services/search.js';
 import { logStorageDriver } from './services/storage.js';
-import { logPaymentProvider } from './services/payment.js';
+import { assertPaymentConfig, logPaymentProvider } from './services/payment.js';
 import { Product } from './models/Product.js';
+import { releaseExpiredReservations, RESERVATION_MINUTES } from './services/orders.js';
+import { releaseDuePayouts, RETURN_WINDOW_DAYS } from './services/payouts.js';
+import { runReconciliation } from './services/reconcile.js';
 import { createApp } from './app.js';
 import { logger } from './utils/logger.js';
 
@@ -17,10 +19,10 @@ async function start() {
       : 'MongoDB: standalone server -> transactions unavailable, payments use atomic single-document claims',
   );
   await initCache();
-  const restored = await restoreRevokedSessions();
-  if (restored) logger.info(`Sessions: restored ${restored} revoked session(s) from MongoDB`);
+  logger.info(`Auth: ${env.accessTokenTtl} access tokens, refresh cookie rotated on use (idle ${env.refreshIdleDays}d, max ${env.sessionMaxDays}d)`);
   await initSearch();
   logStorageDriver();
+  assertPaymentConfig();
   logPaymentProvider();
 
   if (env.autoSeed && (await Product.estimatedDocumentCount()) === 0) {
@@ -30,6 +32,24 @@ async function start() {
   }
   await syncIndexIfNeeded();
 
+  // Unpaid orders hold stock for RESERVATION_MINUTES; this returns it once the window passes.
+  // Each release is an atomic claim, so running it on several instances at once is safe.
+  const sweep = () => releaseExpiredReservations().catch((err) => logger.warn(`Reservation sweep failed: ${err.message}`));
+  sweep();
+  const sweeper = setInterval(sweep, 60 * 1000);
+  logger.info(`Orders: unpaid orders hold stock for ${RESERVATION_MINUTES} min`);
+
+  // Vendor payouts after the return window (hourly) and Stripe reconciliation (every 6 hours).
+  // Both claim their work atomically, so several instances can run them at once.
+  const job = (name, fn) => () => fn().catch((err) => logger.warn(`${name} failed: ${err.message}`));
+  const payoutJob = job('Payout job', releaseDuePayouts);
+  const reconcileJob = job('Reconciliation', runReconciliation);
+  const payoutTimer = setInterval(payoutJob, 60 * 60 * 1000);
+  const reconcileTimer = setInterval(reconcileJob, 6 * 60 * 60 * 1000);
+  setTimeout(payoutJob, 30 * 1000).unref();
+  setTimeout(reconcileJob, 2 * 60 * 1000).unref();
+  logger.info(`Payouts: vendors are paid ${RETURN_WINDOW_DAYS} days after delivery (return window), checked hourly`);
+
   const app = createApp();
   const server = app.listen(env.port, () => {
     logger.ok(`Vendora API ready on ${env.serverUrl}  (client: ${env.clientUrls[0]})`);
@@ -37,6 +57,9 @@ async function start() {
 
   const shutdown = (signal) => {
     logger.info(`${signal} received, shutting down`);
+    clearInterval(sweeper);
+    clearInterval(payoutTimer);
+    clearInterval(reconcileTimer);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };

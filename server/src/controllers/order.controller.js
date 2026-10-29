@@ -7,17 +7,36 @@ import { cache } from '../services/cache.js';
 import { addressSchema } from './auth.controller.js';
 import { getCart } from '../services/cart.js';
 import { applyCommission, distributeDiscount, evaluateCoupon, getSettings, shippingFor } from '../services/pricing.js';
+import { Payment } from '../models/Payment.js';
 import {
   checkoutConfig,
-  createGatewayOrder,
+  constructWebhookEvent,
+  createPaymentIntent,
+  CURRENCY,
+  intentClientSecret,
   paymentProvider,
-  verifyPaymentSignature,
-  verifyWebhookSignature,
+  testGatewayAllowed,
 } from '../services/payment.js';
-import { finalizePayment, newOrderNumber, transitionPackage } from '../services/orders.js';
+import { handleStripeEvent } from '../services/webhooks.js';
+import { RETURN_WINDOW_DAYS } from '../services/payouts.js';
+import {
+  afterStockChange,
+  cancelUnpaidOrder,
+  finalizePayment,
+  recordPaymentFailure,
+  newOrderNumber,
+  releaseStock,
+  reserveStock,
+  RESERVATION_MINUTES,
+  transitionPackage,
+} from '../services/orders.js';
 import { streamInvoice } from '../services/invoice.js';
 import { ApiError, paginated, parsePagination, round2 } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
+import { holdCoupon, releaseCoupon } from '../services/coupons.js';
+import { cancelReason } from '../utils/validators.js';
+
+const customerCancelSchema = cancelReason('customer');
 
 export const checkoutSchema = z
   .object({
@@ -28,19 +47,28 @@ export const checkoutSchema = z
   .refine((d) => d.addressId || d.address, { message: 'Choose a delivery address', path: ['address'] });
 
 export const verifySchema = z.object({
-  razorpay_payment_id: z.string().optional(),
-  razorpay_order_id: z.string().optional(),
-  razorpay_signature: z.string().optional(),
+  /** Stripe: the PaymentIntent the client confirmed. */
+  paymentIntentId: z.string().regex(/^pi_[A-Za-z0-9_]+$/, 'Invalid payment id').optional(),
   /** Only used by the built-in test gateway to simulate success or a declined card. */
   outcome: z.enum(['success', 'failure']).optional(),
+});
+
+export const cancelSchema = z.object({
+  /** Packages to cancel; left out = every package that can still be cancelled. */
+  packageIds: z.array(z.string().regex(/^[a-f\d]{24}$/i, 'Invalid package id')).min(1).max(20).optional(),
+  reasonCode: z.string().optional(),
+  note: z.string().trim().max(200).optional(),
+  /** Older clients send a free-text reason only. */
+  reason: z.string().trim().max(200).optional(),
 });
 
 const prefill = (user) => ({ name: user.name, email: user.email, contact: user.phone || '' });
 
 /**
  * Creates an order from the cart: groups items into one package per vendor, applies the coupon,
- * computes the platform commission and vendor earnings per package, and opens a gateway order whose
- * Razorpay Route transfers send each vendor's share to their linked account.
+ * computes the platform commission and vendor earnings per package, and opens a Stripe PaymentIntent.
+ * The platform collects the whole payment; each vendor share is transferred after delivery + the
+ * return window (services/payouts.js).
  */
 async function placeOrder(req) {
   const userId = req.user._id;
@@ -95,48 +123,78 @@ async function placeOrder(req) {
   const total = round2(subtotal - discount + shipping);
 
   const order = new Order({
-    orderNumber: newOrderNumber(),
     customer: userId,
     packages,
     shippingAddress,
     pricing: { subtotal, discount, shipping, total },
-    coupon: coupon ? { code: coupon.coupon.code, discount, vendor: coupon.vendorId } : undefined,
-    payment: { provider: paymentProvider(), status: 'pending' },
+    coupon: coupon ? { id: coupon.coupon._id, code: coupon.coupon.code, discount, vendor: coupon.vendorId } : undefined,
+    payment: { provider: paymentProvider(), status: 'pending', currency: CURRENCY },
+    reservation: { status: 'held', expiresAt: new Date(Date.now() + RESERVATION_MINUTES * 60 * 1000) },
   });
 
-  const transfers = order.packages
-    .filter((p) => vendors.get(String(p.vendor))?.razorpayAccountId)
-    .map((p) => ({
-      account: vendors.get(String(p.vendor)).razorpayAccountId,
-      amount: p.vendorEarning,
-      notes: { order: order.orderNumber, store: p.storeName },
-    }));
-
-  let gateway;
+  // Hold the stock first (atomic per line), then persist the order. Nothing has been sent to the
+  // payment gateway yet, so an order-number collision can simply be retried.
+  const items = order.packages.flatMap((p) => p.items);
+  await reserveStock(items);
+  let saved = false;
+  let clientSecret;
   try {
-    gateway = await createGatewayOrder({
-      amount: total,
-      receipt: order.orderNumber,
-      notes: { orderNumber: order.orderNumber, customer: req.user.email },
-      transfers,
-    });
+    if (coupon) await holdCoupon(coupon.coupon, userId, order._id);
+    await insertWithUniqueNumber(order);
+    saved = true;
+    clientSecret = await openPayment(order, req.user.email);
   } catch (err) {
-    throw new ApiError(502, `Could not start payment: ${err.message}`);
+    await releaseStock(items);
+    if (coupon) await releaseCoupon(order._id);
+    if (saved) await Order.deleteOne({ _id: order._id });
+    throw err;
   }
-
-  order.payment.gatewayOrderId = gateway.id;
-  order.payment.splitApplied = gateway.splitApplied;
-  order.packages.forEach((pkg) => {
-    const linked = Boolean(vendors.get(String(pkg.vendor))?.razorpayAccountId);
-    pkg.payout = { mode: gateway.splitApplied && linked ? 'route' : 'manual', status: 'pending' };
-  });
-  await order.save();
+  await afterStockChange(items);
 
   return {
     order: { _id: order._id, orderNumber: order.orderNumber, pricing: order.pricing },
-    payment: checkoutConfig(order),
+    payment: checkoutConfig(order, clientSecret),
     prefill: prefill(req.user),
   };
+}
+
+const ORDER_NUMBER_ATTEMPTS = 5;
+
+/** Inserts the order, regenerating orderNumber on a unique-index collision (bounded retry). */
+async function insertWithUniqueNumber(order) {
+  for (let attempt = 1; ; attempt++) {
+    order.orderNumber = newOrderNumber();
+    try {
+      await order.save();
+      return;
+    } catch (err) {
+      if (err.code !== 11000 || !err.keyPattern?.orderNumber || attempt >= ORDER_NUMBER_ATTEMPTS) throw err;
+    }
+  }
+}
+
+/**
+ * Opens a payment attempt (Stripe PaymentIntent, or the test gateway) and records it as a Payment.
+ * Returns the client secret the browser needs to show the Stripe payment form.
+ */
+async function openPayment(order, email, attempt = 0) {
+  const intent = await createPaymentIntent({ orderId: order._id, orderNumber: order.orderNumber, amount: order.pricing.total, email, attempt });
+  await Payment.create({
+    order: order._id,
+    customer: order.customer,
+    provider: intent.provider,
+    intentId: intent.intentId,
+    amount: order.pricing.total,
+    currency: CURRENCY,
+    events: [{ type: 'created', status: 'created' }],
+  });
+  order.payment.provider = intent.provider;
+  order.payment.intentId = intent.intentId;
+  order.packages.forEach((pkg) => {
+    pkg.payout = { mode: 'manual', status: 'pending' };
+  });
+  await order.save();
+  return intent.clientSecret;
 }
 
 const IDEMPOTENCY_TTL = 24 * 60 * 60;
@@ -164,68 +222,66 @@ export async function checkout(req, res) {
   }
 }
 
-/** Payment config for an order still awaiting payment (retry from the order page). */
+/**
+ * Payment form for an order still awaiting payment (retry from the order page). A Stripe intent that is
+ * still usable is reused; a cancelled one (or a switch from the test gateway) gets a new attempt.
+ */
 export async function paymentConfig(req, res) {
   const order = await Order.findOne({ _id: req.params.id, customer: req.user._id });
   if (!order) throw new ApiError(404, 'Order not found');
   if (order.payment.status === 'paid') throw new ApiError(400, 'This order is already paid');
   if (order.status === 'cancelled') throw new ApiError(400, 'This order was cancelled');
 
-  if (order.payment.provider !== paymentProvider()) {
-    const gateway = await createGatewayOrder({ amount: order.pricing.total, receipt: order.orderNumber, notes: { orderNumber: order.orderNumber } });
-    order.payment.provider = gateway.provider;
-    order.payment.gatewayOrderId = gateway.id;
-    order.payment.splitApplied = false;
-    order.packages.forEach((pkg) => {
-      pkg.payout.mode = 'manual';
-    });
-    await order.save();
+  let clientSecret = null;
+  if (order.payment.provider === 'stripe' && paymentProvider() === 'stripe' && order.payment.intentId) {
+    const current = await intentClientSecret(order.payment.intentId);
+    if (current.status === 'succeeded') {
+      return res.json({ order: await finalizePayment(order._id, { intentId: order.payment.intentId }), alreadyPaid: true });
+    }
+    if (current.status !== 'canceled') clientSecret = current.clientSecret;
   }
-  res.json({ order: { _id: order._id, orderNumber: order.orderNumber, pricing: order.pricing }, payment: checkoutConfig(order), prefill: prefill(req.user) });
+  if (!clientSecret && (order.payment.provider !== paymentProvider() || paymentProvider() === 'stripe')) {
+    const attempts = await Payment.countDocuments({ order: order._id });
+    clientSecret = await openPayment(order, req.user.email, attempts);
+  }
+  res.json({ order: { _id: order._id, orderNumber: order.orderNumber, pricing: order.pricing }, payment: checkoutConfig(order, clientSecret), prefill: prefill(req.user) });
 }
 
+/**
+ * Called by the browser after Stripe confirmed the payment (or the test gateway simulated it). The
+ * payment is checked with Stripe itself before anything is marked paid; the webhook is the backup path.
+ */
 export async function verifyPayment(req, res) {
   const order = await Order.findOne({ _id: req.params.id, customer: req.user._id });
   if (!order) throw new ApiError(404, 'Order not found');
   if (order.payment.status === 'paid') return res.json({ order });
   if (order.status === 'cancelled') throw new ApiError(400, 'This order was cancelled');
 
-  let paymentId;
-  let signature;
+  const intentId = order.payment.intentId;
   if (order.payment.provider === 'mock') {
-    if (req.body.outcome === 'failure') throw new ApiError(402, 'Payment was declined by the bank (simulated). You can try again.');
-    paymentId = `pay_test_${order._id.toString().slice(-10)}${Date.now().toString(36)}`;
+    // Second line of defence: the simulated "success" must never settle an order in a real store.
+    if (!testGatewayAllowed()) throw new ApiError(503, 'Test payments are disabled on this server');
+    if (req.body.outcome === 'failure') {
+      await recordPaymentFailure(intentId, 'Declined by the bank (simulated)');
+      throw new ApiError(402, 'Payment was declined by the bank (simulated). You can try again.');
+    }
   } else {
-    const { razorpay_order_id: gatewayOrderId, razorpay_payment_id: rzpPaymentId, razorpay_signature: rzpSignature } = req.body;
-    if (!rzpPaymentId || !rzpSignature || gatewayOrderId !== order.payment.gatewayOrderId) {
-      throw new ApiError(400, 'Incomplete payment details');
-    }
-    if (!verifyPaymentSignature({ gatewayOrderId, paymentId: rzpPaymentId, signature: rzpSignature })) {
-      throw new ApiError(400, 'Payment signature verification failed');
-    }
-    paymentId = rzpPaymentId;
-    signature = rzpSignature;
+    // Only the current attempt of this order can settle it.
+    if (!req.body.paymentIntentId || req.body.paymentIntentId !== intentId) throw new ApiError(400, 'This payment does not belong to the order');
   }
 
-  const paid = await finalizePayment(order._id, { paymentId, signature });
+  const paid = await finalizePayment(order._id, { intentId });
   res.json({ order: paid });
 }
 
-/** Razorpay webhook (raw body) — confirms payments even if the customer closes the browser mid-checkout. */
-export async function razorpayWebhook(req, res) {
-  if (!verifyWebhookSignature(req.body, req.headers['x-razorpay-signature'])) {
-    return res.status(400).json({ message: 'Invalid webhook signature' });
-  }
-  const event = JSON.parse(req.body.toString('utf8'));
-  if (['payment.captured', 'order.paid'].includes(event.event)) {
-    const payment = event.payload?.payment?.entity;
-    const order = payment && (await Order.findOne({ 'payment.gatewayOrderId': payment.order_id }));
-    if (order && order.payment.status !== 'paid') {
-      await finalizePayment(order._id, { paymentId: payment.id });
-      logger.info(`Webhook confirmed payment for ${order.orderNumber}`);
-    }
-  }
-  return res.json({ received: true });
+/**
+ * Stripe webhook (raw body, Stripe-Signature verified). Confirms payments even if the customer closed the
+ * browser, tracks refund outcomes, vendor onboarding and bank changes. Duplicates are skipped.
+ */
+export async function stripeWebhook(req, res) {
+  const event = constructWebhookEvent(req.body, req.headers['stripe-signature']);
+  const result = await handleStripeEvent(event);
+  return res.json({ received: true, ...result });
 }
 
 export async function listMyOrders(req, res) {
@@ -264,7 +320,7 @@ function sendInvoice(order, res) {
 }
 
 export async function getOrder(req, res) {
-  res.json({ order: await ownOrder(req) });
+  res.json({ order: await ownOrder(req), returnWindowDays: RETURN_WINDOW_DAYS });
 }
 
 export async function invoice(req, res) {
@@ -279,29 +335,40 @@ export async function adminInvoice(req, res) {
   sendInvoice(await findOrder(req.params.id), res);
 }
 
-/** Customers can cancel until a package ships. Paid orders are refunded package by package. */
+/**
+ * POST /orders/:id/cancel { packageIds?, reasonCode, note }. An unpaid order is cancelled as a whole.
+ * A paid order: the chosen packages (default: all that haven't shipped) are cancelled and each one is
+ * refunded on its own; shipping is refunded with the last live package.
+ */
 export async function cancelOrder(req, res) {
   const order = await Order.findOne({ _id: req.params.id, customer: req.user._id });
   if (!order) throw new ApiError(404, 'Order not found');
+  const { packageIds, reasonCode, note: givenNote, reason: legacyReason } = req.body || {};
+  const parsed = customerCancelSchema.safeParse({ reasonCode: reasonCode || (legacyReason ? 'other' : 'changed_mind'), note: givenNote || legacyReason });
+  if (!parsed.success) throw new ApiError(400, parsed.error.issues[0].message);
+  const reason = parsed.data;
 
-  if (order.payment.status === 'pending') {
-    order.packages.forEach((pkg) => {
-      pkg.status = 'cancelled';
-      pkg.timeline.push({ status: 'cancelled', note: 'Cancelled before payment' });
-    });
-    order.payment.status = 'failed';
-    order.status = 'cancelled';
-    await order.save();
-    return res.json({ order });
+  if (['pending', 'failed'].includes(order.payment.status)) {
+    if (packageIds) throw new ApiError(400, 'An unpaid order can only be cancelled as a whole');
+    // Atomic: releases the held stock once, and loses cleanly to a payment being confirmed right now.
+    const cancelled = await cancelUnpaidOrder(order._id, { note: reason.note || 'Cancelled before payment', cancellation: { by: 'customer', actorId: req.user._id, ...reason } });
+    if (cancelled) return res.json({ order: cancelled });
+    return res.json({ order: await Order.findById(order._id) });
   }
 
   const live = order.packages.filter((p) => p.status !== 'cancelled');
   if (!live.length) throw new ApiError(400, 'This order is already cancelled');
-  if (live.some((p) => !['placed', 'packed'].includes(p.status))) {
-    throw new ApiError(400, 'Part of this order has already shipped and can no longer be cancelled');
+  const targets = packageIds ? packageIds.map((id) => order.packages.id(id)) : live;
+  if (targets.some((p) => !p)) throw new ApiError(404, 'Package not found in this order');
+  if (targets.some((p) => p.status === 'cancelled')) throw new ApiError(400, 'One of these packages is already cancelled');
+  if (targets.some((p) => !['placed', 'packed'].includes(p.status))) {
+    throw new ApiError(400, packageIds ? 'A package that has shipped can no longer be cancelled' : 'Part of this order has already shipped. Choose the packages to cancel.');
   }
-  for (const pkg of live) {
-    await transitionPackage(order, pkg, 'cancelled', { note: req.body?.reason ? `Cancelled by customer: ${req.body.reason}` : 'Cancelled by customer' });
+  for (const pkg of targets) {
+    await transitionPackage(order, pkg, 'cancelled', {
+      note: reason.note ? `Cancelled by customer: ${reason.note}` : 'Cancelled by customer',
+      cancellation: { by: 'customer', actorId: req.user._id, ...reason },
+    });
   }
   await order.save();
   res.json({ order });

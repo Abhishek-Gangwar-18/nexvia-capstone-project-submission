@@ -10,7 +10,7 @@ import { cache } from './services/cache.js';
 import { searchEngine } from './services/search.js';
 import { storageDriver, UPLOAD_DIR } from './services/storage.js';
 import { paymentProvider } from './services/payment.js';
-import { razorpayWebhook } from './controllers/order.controller.js';
+import { stripeWebhook } from './controllers/order.controller.js';
 import authRoutes from './routes/auth.routes.js';
 import catalogRoutes from './routes/catalog.routes.js';
 import shopRoutes from './routes/shop.routes.js';
@@ -39,16 +39,16 @@ export function createApp() {
   app.use(compression());
   if (!isProd) app.use(morgan('dev'));
 
-  // Razorpay signs the raw request body, so the webhook must be registered before the JSON parser.
-  app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), asyncHandler(razorpayWebhook));
+  // Stripe signs the raw request body, so the webhook must be registered before the JSON parser.
+  app.post('/payments/webhook', express.raw({ type: 'application/json' }), asyncHandler(stripeWebhook));
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '30d', immutable: true }));
 
-  app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
+  app.use(rateLimit({ windowMs: 60 * 1000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
 
-  app.get('/api/health', (_req, res) => {
+  app.get('/health', (_req, res) => {
     res.json({
       status: 'ok',
       uptime: Math.round(process.uptime()),
@@ -62,13 +62,14 @@ export function createApp() {
     });
   });
 
-  app.use('/api/auth', authRoutes);
-  app.use('/api', catalogRoutes);
-  app.use('/api', shopRoutes);
-  app.use('/api/vendor', vendorRoutes);
-  app.use('/api/admin', adminRoutes);
+  // Routes sit at the root (no /api prefix): this server only serves the API; the client is deployed separately.
+  app.use('/auth', authRoutes);
+  app.use('/', catalogRoutes);
+  app.use('/', shopRoutes);
+  app.use('/vendor', vendorRoutes);
+  app.use('/admin', adminRoutes);
 
-  app.get('/', (_req, res) => res.json({ name: 'Vendora API', docs: '/api/health', client: env.clientUrls[0] }));
+  app.get('/', (_req, res) => res.json({ name: 'Vendora API', docs: '/health', client: env.clientUrls[0] }));
 
   app.use(notFound);
   app.use(errorHandler);
