@@ -4,9 +4,9 @@ An Amazon-style marketplace where many sellers list products, customers buy from
 the platform splits each payment between the sellers and its own commission.
 
 **Stack:** React 19 (Vite, Tailwind CSS v4, Framer Motion, TanStack Query, Zustand, Recharts) · Node.js + Express ·
-MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Razorpay Orders + Route (test mode)
+MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Element + Connect)
 
-> The architecture, database schema, order lifecycle, payment-split flow and full API list are in
+> The architecture, database schema, concurrency rules, auth flow, order lifecycle, payment split and full API list are in
 > **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
@@ -16,47 +16,45 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Razorpay Orders + Ro
 **Customers**
 - Storefront with an animated hero, categories, deals of the day with a live countdown, trending products, top stores and recently viewed items
 - Search with typeahead (Elasticsearch `search_as_you_type`), faceted filters (category, brand, price slider, rating, in stock), seven sort orders, shareable URLs
-- Product page with a zoomable gallery, offers, pincode delivery check, seller card, specs, and reviews with a rating breakdown and verified-purchase badges
-- Cart stored in Redis (the guest cart is merged after login), free-shipping meter, coupons, save for later
-- Two-step checkout with address book, per-seller package preview, and Razorpay Checkout (or the built-in test gateway)
-- Order tracking timeline for each package, PDF invoices, cancel and refund, retry payment, wishlist, profile, dark mode
+- Product page with a zoomable gallery, offers, pincode delivery check, seller card, specs, star ratings (one per customer) and reviews with photos, helpful votes and seller replies; both need a delivered order
+- Cart for signed-in customers (cached in Redis), price-rise/drop and low-stock notices, free-shipping meter, coupons, save for later
+- Two-step checkout with address book, per-seller package preview, stock held for 15 minutes while paying, and the Stripe Payment Element (or the built-in test gateway)
+- Order tracking timeline for each package, PDF invoices, cancel and refund, retry payment, wishlist, profile, email verification, signed-in devices with log out everywhere, dark mode
 
 **Sellers**
-- Four-step onboarding (store, business, payouts and Route account), then admin approval and a live store page
+- Four-step onboarding (store, business, bank details), admin approval and a live store page; Stripe Connect for automatic payouts
 - Dashboard with KPIs vs the previous period, a sales chart, payouts on hold and released, top products and low-stock alerts
 - Product editor with drag-and-drop S3 uploads (reorder, pick cover), tags, specs, an earnings estimate and live preview
-- Fulfilment: packed, then shipped (tracking id), then delivered, which releases the payout; or cancel, which restocks, refunds and reverses the payout
-- Store coupons, payout ledger, store settings
+- Fulfilment: packed, then shipped (tracking id), then delivered, which releases the payout; or cancel with a reason, which restocks, refunds and reverses the payout
+- Review replies, store coupons, payout ledger, store settings
 
 **Admin**
 - Analytics (7D, 30D, 90D, 1Y): GMV, commission revenue, orders, AOV with change, revenue trend, package fulfilment, sales by category, top sellers and products
-- Seller approvals (approve, reject with reason, suspend), per-seller commission override, Razorpay linked account
-- Order management with package controls, product moderation, user blocking (revokes sessions immediately), platform coupons
-- Settings (commission, shipping rules) with a live **system status** panel and an Elasticsearch reindex button
+- Seller approvals (approve, reject or suspend with a reason), per-seller commission override, payout holds after a payout account change
+- Order management with package controls, category management, product and review moderation, user blocking (ends their sessions immediately), platform coupons
+- Settings (commission, shipping rules) with a change history, a live **system status** panel and an Elasticsearch reindex button
 
 ---
 
 ## Run it locally
 
-**Requirements:** Node.js 18.18 or newer (tested on Node 24). Nothing else: MongoDB, Redis, Elasticsearch, S3 and
-Razorpay all fall back to local equivalents automatically.
+**Requirements:** Node.js 18.18 or newer (tested on Node 24) and a MongoDB database (a free MongoDB Atlas cluster,
+or `docker compose up -d`). Redis, Elasticsearch, S3 and Stripe all fall back to local equivalents automatically.
 
 ```bash
 pnpm --dir server install; pnpm --dir client install   # install dependencies
+cp server/.env.example server/.env                      # then set MONGO_URI
 
 # then, each in its own terminal:
-pnpm --dir server db     # local MongoDB (skip when MONGO_URI points to Atlas)
 pnpm --dir server dev    # API on http://localhost:5050
 pnpm --dir client dev    # web app on http://localhost:5180
 ```
 
 Open **http://localhost:5180**.
 
-- **First run:** `pnpm --dir server db` downloads a MongoDB binary (about 600 MB, one time only) and stores data in `server/.data/`.
 - **Empty database:** the API seeds demo data automatically: 20 customers, 5 stores, 184 products from DummyJSON,
-  about 1,170 reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
-- Run `pnpm smoke` in `server/` while the API is up for an end-to-end test of the API. To include the admin checks,
-  set `SMOKE_ADMIN_EMAIL` and `SMOKE_ADMIN_PASSWORD` to your admin login first.
+  about 1,180 ratings and reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
+- **Tests:** `pnpm --dir server test` runs the API unit tests.
 
 ### Seeded accounts
 
@@ -88,36 +86,64 @@ Edit `server/.env` (copy it from `server/.env.example`) and restart the API. The
 
 | Service | Variables | Notes |
 |---|---|---|
-| **MongoDB Atlas** | `MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/vendora?retryWrites=true&w=majority` | Add your IP under Atlas → Network Access. `pnpm db` stays idle, an empty database is seeded on first start, and payments are finalized in multi-document transactions (Atlas is a replica set). If Node can't resolve the SRV record (`querySrv ECONNREFUSED` on some Windows setups), the API retries via public DNS automatically |
-| **Redis** | `REDIS_URL=redis://localhost:6379` (or Upstash `rediss://...`) | Cart, session and page cache |
+| **MongoDB Atlas** | `MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/vendora?retryWrites=true&w=majority` | Add your IP under Atlas → Network Access. An empty database is seeded on first start, and payments are finalized in multi-document transactions (Atlas is a replica set). If Node can't resolve the SRV record (`querySrv ECONNREFUSED` on some Windows setups), the API retries via public DNS automatically |
+| **Redis** | `REDIS_URL=redis://localhost:6379` (or Upstash `rediss://...`) | Cart, session-check and page cache, checkout idempotency, locks |
 | **Elasticsearch** | `ELASTICSEARCH_NODE=http://localhost:9200` (+ `ELASTICSEARCH_API_KEY` for Elastic Cloud) | The index is created and filled automatically on startup |
-| **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | The bucket needs public read for `products/*`, `stores/*` and `avatars/*`, or a CloudFront URL in `AWS_S3_PUBLIC_URL` |
-| **Razorpay** | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` (test keys) | Real Razorpay Checkout opens instead of the test gateway |
+| **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | The bucket needs public read for `products/*`, `stores/*`, `avatars/*` and `reviews/*`, or a CloudFront URL in `AWS_S3_PUBLIC_URL` |
+| **Stripe** | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (test keys) | The Stripe Payment Element replaces the test gateway; see *Stripe setup* below |
 
 If you have Docker, `docker compose up -d` starts MongoDB 7, Redis 7 and Elasticsearch 8.19.
 
-### Razorpay Route (split payments)
+### Stripe setup (payments, refunds, vendor payouts)
 
-1. In the Razorpay Dashboard (test mode), copy the API keys into `server/.env`.
-2. Enable **Route**, then create a **linked account** for each seller (Route → Linked accounts). You get an id like `acc_XXXXXXXX`.
-3. Enter that id in the seller's onboarding/store settings, or as admin under **Vendors → Commission**.
-4. At checkout the API creates the Razorpay order with a `transfers[]` entry for each linked seller (the seller's share
-   after commission, `on_hold`). Marking a package **delivered** releases that transfer. Cancelling **reverses** it and
-   refunds the customer.
-5. Optional webhook: point `payment.captured` at `https://<api>/api/payments/webhook` and set `RAZORPAY_WEBHOOK_SECRET`.
+1. **Account:** sign up at <https://dashboard.stripe.com/register> and switch on **Test mode** (top right). Test mode
+   works before the account is activated. Stripe is invite-only for new businesses in India, so you may need another
+   country for the account (see *Currency* below).
+2. **API keys:** Developers → API keys. Copy the **Publishable key** (`pk_test_…`) to `STRIPE_PUBLISHABLE_KEY` and the
+   **Secret key** (`sk_test_…`) to `STRIPE_SECRET_KEY` in `server/.env`. The client needs no key of its own: the API
+   sends the publishable key with each payment.
+3. **Connect (vendor payouts):** Connect → Get started → choose a *marketplace* with **Express** accounts, then fill in
+   Connect settings → Branding (name, icon, colour; Express onboarding needs them). Optional: `STRIPE_CONNECT_COUNTRY`
+   (e.g. `IN`, `US`) for vendor accounts; empty uses your account's country.
+4. **Webhooks, local:** install the Stripe CLI (Windows: `scoop install stripe`, or the zip from
+   <https://github.com/stripe/stripe-cli/releases>), then:
+   ```bash
+   stripe login
+   stripe listen --forward-to localhost:5050/payments/webhook --forward-connect-to localhost:5050/payments/webhook
+   ```
+   It prints a signing secret `whsec_…`: put it in `STRIPE_WEBHOOK_SECRET` and keep the command running.
+5. **Webhooks, deployed:** Developers → Webhooks → Add endpoint `https://<your-api>/payments/webhook`:
+   - *Events on your account*: `payment_intent.succeeded`, `payment_intent.processing`, `payment_intent.payment_failed`,
+     `payment_intent.canceled`, `refund.created`, `refund.updated`, `refund.failed`, `charge.refund.updated`
+     → its signing secret goes in `STRIPE_WEBHOOK_SECRET`.
+   - A second endpoint (same URL) for *Events on connected accounts*: `account.updated`,
+     `account.external_account.created`, `account.external_account.updated`, `account.external_account.deleted`
+     → `STRIPE_CONNECT_WEBHOOK_SECRET`.
+6. **Restart the API.** The log says `Payments: Stripe TEST mode`, and Admin → Settings & system shows Stripe as live.
+7. **Pay:** card `4242 4242 4242 4242`, any future date, any CVC. 3-D Secure: `4000 0025 0000 3155`. Declined:
+   `4000 0000 0000 0002`.
+8. **Vendor payouts:** as a seller open **Payouts → Connect Stripe** and finish Stripe's test onboarding (it offers test
+   data). Vendors are paid `RETURN_WINDOW_DAYS` (default 7) after delivery; set `RETURN_WINDOW_DAYS=0` while testing,
+   then use Admin → Payments → *Release due payouts*.
 
-Sellers without a linked account, or accounts without Route enabled, still work: the split is recorded in the payout
-ledger and settled manually.
+**Currency:** prices are charged in `STRIPE_CURRENCY` (default `inr`). Charging INR works on any test account, but a
+transfer to a vendor must be possible in that currency for your account's country. With a non-Indian test account,
+set `STRIPE_CURRENCY` to your account's currency (e.g. `usd`) to try the full Connect flow; amounts are then charged
+as the same numbers in that currency (test money only). If a transfer fails, the payout stays on hold with Stripe's
+error and shows in Admin → Payments.
 
 ---
 
 ## Deploying (frontend and backend separately)
 
 **Backend → Render** (`render.yaml` included) or any Node host
-- Root directory: `server`, build command `pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/api/health`
+- Root directory: `server`, build command `pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/health`
 - Environment: `NODE_ENV=production`, `MONGO_URI` (Atlas), `JWT_SECRET`, `CLIENT_URL=https://<your-vercel-app>`,
-  `SERVER_URL=https://<your-api>`, plus Redis (Upstash), Elasticsearch (Elastic Cloud), S3 and Razorpay keys.
+  `SERVER_URL=https://<your-api>`, plus Redis (Upstash), Elasticsearch (Elastic Cloud), S3 and Stripe keys.
+  In production the refresh cookie defaults to `SameSite=None; Secure`, which an API on a separate domain needs (HTTPS only).
   Use S3 in production, because the host's local disk is wiped on every deploy.
+  With `NODE_ENV=production` the API refuses to start without Stripe keys, because the test gateway marks orders
+  paid without money. For a demo deployment without real payments, set `ALLOW_TEST_GATEWAY=true`.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
 - Root directory: `client`, build `pnpm build`, output `dist`
@@ -132,20 +158,21 @@ ledger and settled manually.
 │   └── src/
 │       ├── components/      layout, product, checkout, dashboard, orders, ui
 │       ├── pages/           storefront, account, vendor/*, admin/*, auth/*
-│       ├── lib/             api client, session, cart hooks, formatting, Razorpay loader
-│       └── store/           Zustand stores (auth, guest cart, theme)
+│       ├── lib/             api client, session, cart hooks, formatting, Stripe loader
+│       └── store/           Zustand stores (auth profile, theme)
 ├── server/                  Express API
 │   ├── src/
 │   │   ├── config/          env, MongoDB connection
-│   │   ├── models/          User, Vendor, Product, Category, Review, Coupon, Cart, Order, Settings
-│   │   ├── services/        cache (Redis), search (Elasticsearch), storage (S3), payment (Razorpay),
-│   │   │                    cart, pricing, orders, invoice (PDFKit), session, catalog
-│   │   ├── controllers/     auth, catalog, cart, order, vendor, coupon, admin
+│   │   ├── models/          User, Session, Vendor, Product, Category, Rating, Review, ReviewVote,
+│   │   │                    Coupon, CouponRedemption, Cart, Order, Settings
+│   │   ├── services/        cache (Redis), search (Elasticsearch), storage (S3), payment (Stripe), mail,
+│   │   │                    cart, pricing, coupons, orders, reviews, invoice (PDFKit), session, catalog
+│   │   ├── controllers/     auth, catalog, review, cart, order, vendor, coupon, category, admin
 │   │   ├── routes/          route definitions with zod validation + RBAC middleware
 │   │   ├── middleware/      auth/RBAC, validation, uploads, errors
 │   │   └── seed/            seed script + DummyJSON snapshot
-│   └── scripts/             local-db (embedded MongoDB), smoke-test
-├── docs/ARCHITECTURE.md     roles, schema, lifecycle, payment split, API list
+│   └── test/                node:test unit tests
+├── docs/ARCHITECTURE.md     roles, schema, concurrency, auth, lifecycle, payment split, API list
 ├── docker-compose.yml       optional MongoDB / Redis / Elasticsearch
 └── render.yaml              backend deploy blueprint
 ```
@@ -154,7 +181,7 @@ ledger and settled manually.
 
 - **Port 5050 is busy:** change `PORT` and `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.js`.
 - **"Cannot reach the server":** make sure the terminal running `pnpm --dir server dev` says `Vendora API ready`.
-- **MongoDB download is slow:** this happens once. Alternatively, set `MONGO_URI` to a free Atlas cluster.
+- **Signed out after updating:** sessions now use refresh tokens; sign in again once.
 - **Stale pages after `pnpm --dir server seed`:** restart the API so the in-memory cache is cleared. With Redis, the seed script clears it for you.
 
 Seed data comes from [DummyJSON](https://dummyjson.com), converted to INR.
