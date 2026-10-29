@@ -4,15 +4,16 @@ import { STORE_NAME_COLLATION, Vendor } from '../models/Vendor.js';
 import { User } from '../models/User.js';
 import { Product, PRODUCT_LIMITS } from '../models/Product.js';
 import { Category } from '../models/Category.js';
-import { Review } from '../models/Review.js';
 import { Order } from '../models/Order.js';
 import { invalidateUser } from '../services/session.js';
 import { indexProducts, removeFromIndex } from '../services/search.js';
-import { invalidateCatalog, invalidateProducts, recalcVendorRating } from '../services/catalog.js';
+import { invalidateCatalog, invalidateProducts } from '../services/catalog.js';
 import { deleteFile } from '../services/storage.js';
-import { transitionPackage } from '../services/orders.js';
+import { transitionPackage, withPackageLock } from '../services/orders.js';
+import { logger } from '../utils/logger.js';
+import { freezePayoutsIfPending, RETURN_WINDOW_DAYS } from '../services/payouts.js';
 import { ApiError, escapeRegex, paginated, parsePagination, round2 } from '../utils/http.js';
-import { address, email, gstin, phone } from '../utils/validators.js';
+import { address, cancelReason, email, gstin, phone } from '../utils/validators.js';
 import { bucketFormat, fillSeries, percentChange, rangeStart, TIMEZONE } from '../utils/analytics.js';
 
 const optionalUrl = z.string().url().or(z.literal('')).optional();
@@ -33,16 +34,32 @@ export const onboardSchema = z.object({
   logo: optionalUrl,
   banner: optionalUrl,
   address,
+  /** Bank details for manual settlement; vendors on Stripe Connect keep theirs in Stripe. */
   bank: bankSchema,
-  razorpayAccountId: z
-    .string()
-    .trim()
-    .regex(/^acc_[A-Za-z0-9]{6,}$/, 'Linked account ids look like acc_XXXXXXXXXXXX')
-    .or(z.literal(''))
-    .optional(),
 });
 
-export const storeUpdateSchema = onboardSchema.omit({ bank: true }).partial().extend({ bank: bankSchema.optional() });
+export const storeUpdateSchema = onboardSchema
+  .omit({ bank: true })
+  .partial()
+  .extend({ bank: bankSchema.optional(), currentPassword: z.string().optional() });
+
+/**
+ * On an approved store, changing where payouts go needs the account password, and every change is
+ * recorded. A stolen session token alone can't redirect payouts. (The Stripe account is changed through
+ * /vendor/stripe/*, with the same rules.)
+ */
+async function guardPayoutChange(req, vendor) {
+  const fields = [];
+  if (req.body.bank) fields.push('bank');
+  if (!fields.length || vendor.status !== 'approved') return fields;
+
+  if (!req.body.currentPassword) {
+    throw new ApiError(403, 'Enter your account password to change payout details', { code: 'PASSWORD_REQUIRED', fields });
+  }
+  const user = await User.findById(req.user._id).select('+password');
+  if (!(await user.comparePassword(req.body.currentPassword))) throw new ApiError(403, 'Incorrect password', { code: 'PASSWORD_REQUIRED', fields });
+  return fields;
+}
 
 const maskBank = ({ accountHolder, accountNumber, ifsc }) => ({
   accountHolder,
@@ -87,12 +104,19 @@ export async function myStore(req, res) {
 }
 
 export async function updateStore(req, res) {
-  const { bank, ...rest } = req.body;
   const vendor = req.vendor;
+  const payoutFields = await guardPayoutChange(req, vendor);
+  const { bank, currentPassword: _password, ...rest } = req.body;
   const renamed = rest.storeName && rest.storeName !== vendor.storeName;
   await assertStoreAvailable(rest, vendor._id);
   Object.assign(vendor, rest);
   if (bank) vendor.bank = maskBank(bank);
+  if (payoutFields.length) {
+    vendor.payoutChanges.push({ fields: payoutFields, by: req.user._id, ip: req.ip });
+    logger.warn(`Payout details changed for store ${vendor.storeName} (${payoutFields.join(', ')}) by user ${req.user._id}`);
+  }
+  // Money still waiting to be paid out stays frozen until an admin confirms the new destination.
+  if (payoutFields.length && vendor.status === 'approved') await freezePayoutsIfPending(vendor, 'Bank details changed');
   if (vendor.status === 'rejected') {
     vendor.setStatus('pending', { reason: 'Resubmitted after rejection', by: req.user._id });
     vendor.rejectionReason = undefined;
@@ -192,9 +216,9 @@ export async function dashboard(req, res) {
   ]);
 
   const [productCount, outOfStock, lowStock] = await Promise.all([
-    Product.countDocuments({ vendor: vendorId }),
-    Product.countDocuments({ vendor: vendorId, stock: 0 }),
-    Product.find({ vendor: vendorId, stock: { $gt: 0, $lte: 10 } }).sort({ stock: 1 }).limit(6).select('title thumbnail stock').lean(),
+    Product.countDocuments({ vendor: vendorId, deletedAt: null }),
+    Product.countDocuments({ vendor: vendorId, deletedAt: null, stock: 0 }),
+    Product.find({ vendor: vendorId, deletedAt: null, stock: { $gt: 0, $lte: 10 } }).sort({ stock: 1 }).limit(6).select('title thumbnail stock').lean(),
   ]);
 
   const period = (id) => agg.periods.find((p) => p._id === id) || { revenue: 0, earnings: 0, orders: 0 };
@@ -227,7 +251,7 @@ const productBase = z.object({
   title: z.string().trim().min(3, 'Title must be at least 3 characters').max(PRODUCT_LIMITS.title, `Title can be up to ${PRODUCT_LIMITS.title} characters`),
   description: z.string().trim().max(PRODUCT_LIMITS.description, `Description can be up to ${PRODUCT_LIMITS.description} characters`).default(''),
   brand: z.string().trim().max(60).default('Generic'),
-  category: z.string().trim().min(2, 'Choose a category'),
+  category: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a category'),
   price: z.coerce.number().positive('Price must be greater than 0').max(10000000).transform(round2),
   mrp: z.coerce.number().min(0).transform(round2).optional(),
   stock: z.coerce.number().int('Stock must be a whole number').min(0).max(100000),
@@ -250,29 +274,30 @@ export const productUpdateSchema = productBase.partial().refine(...mrpRule);
 
 async function ownProduct(req) {
   if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(400, 'Invalid product id');
-  const product = await Product.findOne({ _id: req.params.id, vendor: req.vendor._id });
+  const product = await Product.findOne({ _id: req.params.id, vendor: req.vendor._id, deletedAt: null });
   if (!product) throw new ApiError(404, 'Product not found');
   return product;
 }
 
 async function assertSkuFree(vendorId, sku, exceptId) {
-  if (sku && (await Product.exists({ vendor: vendorId, sku, ...(exceptId ? { _id: { $ne: exceptId } } : {}) }))) {
+  if (sku && (await Product.exists({ vendor: vendorId, sku, deletedAt: null, ...(exceptId ? { _id: { $ne: exceptId } } : {}) }))) {
     throw new ApiError(409, `You already have a product with SKU ${sku}`);
   }
 }
 
-async function assertCategory(slug) {
-  if (slug && !(await Category.exists({ slug }))) throw new ApiError(400, 'Unknown category');
+/** New or moved products must go into a category shoppers can see. */
+async function assertCategory(id) {
+  if (id && !(await Category.exists({ _id: id, isActive: true }))) throw new ApiError(400, 'Unknown category');
 }
 
 export async function listMyProducts(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 12 });
-  const filter = { vendor: req.vendor._id };
+  const filter = { vendor: req.vendor._id, deletedAt: null };
   if (req.query.q) {
     const rx = new RegExp(escapeRegex(req.query.q), 'i');
     filter.$or = [{ title: rx }, { sku: rx }, { brand: rx }];
   }
-  if (req.query.category) filter.category = req.query.category;
+  if (mongoose.isValidObjectId(req.query.category)) filter.category = req.query.category;
   const statusFilters = {
     active: { isActive: true },
     inactive: { isActive: false },
@@ -323,6 +348,8 @@ export async function updateProduct(req, res) {
     product.images.filter((img) => img.key && !kept.has(img.key)).forEach((img) => deleteFile(img.key));
   }
   Object.assign(product, req.body);
+  // Moving out of a hidden or deleted category lists the product again (assertCategory checked the new one).
+  if (req.body.category) product.categoryHidden = false;
   await product.save();
   await invalidateProducts([product]);
   await invalidateCatalog();
@@ -330,11 +357,12 @@ export async function updateProduct(req, res) {
   res.json({ product });
 }
 
+/** Soft delete: images, reviews and sales history are kept; admins still see the product as deleted. */
 export async function deleteProduct(req, res) {
   const product = await ownProduct(req);
-  product.images.forEach((img) => deleteFile(img.key));
-  await Promise.all([product.deleteOne(), Review.deleteMany({ product: product._id })]);
-  await recalcVendorRating(product.vendor);
+  product.deletedAt = new Date();
+  product.deletedBy = req.user._id;
+  await product.save();
   await invalidateProducts([product]);
   await invalidateCatalog();
   await removeFromIndex(product._id);
@@ -377,19 +405,35 @@ export async function listOrders(req, res) {
   });
 }
 
-export const statusSchema = z.object({
-  status: z.enum(['packed', 'shipped', 'delivered', 'cancelled']),
-  trackingId: z.string().trim().max(40).optional(),
-  note: z.string().trim().max(200).optional(),
-});
+export const statusSchema = z
+  .object({
+    status: z.enum(['packed', 'shipped', 'delivered', 'cancelled']),
+    trackingId: z.string().trim().max(40).optional(),
+    note: z.string().trim().max(200).optional(),
+    reasonCode: z.string().optional(),
+  })
+  .superRefine((b, ctx) => {
+    if (b.status !== 'cancelled') return;
+    const r = cancelReason('vendor').safeParse(b);
+    if (!r.success) r.error.issues.forEach((issue) => ctx.addIssue(issue));
+  });
 
 export async function updateOrderStatus(req, res) {
   if (!mongoose.isValidObjectId(req.params.orderId)) throw new ApiError(400, 'Invalid order id');
-  const order = await Order.findOne({ _id: req.params.orderId, 'packages.vendor': req.vendor._id });
-  if (!order) throw new ApiError(404, 'Order not found');
-  const pkg = order.packages.find((p) => String(p.vendor) === String(req.vendor._id));
-  await transitionPackage(order, pkg, req.body.status, { note: req.body.note, trackingId: req.body.trackingId });
-  await order.save();
+  // Checkout creates exactly one package per vendor, so the order id identifies this vendor's package.
+  const probe = await Order.findOne({ _id: req.params.orderId, 'packages.vendor': req.vendor._id }).select('packages._id packages.vendor').lean();
+  if (!probe) throw new ApiError(404, 'Order not found');
+  const packageId = probe.packages.find((p) => String(p.vendor) === String(req.vendor._id))._id;
+  const { order, pkg } = await withPackageLock(packageId, async () => {
+    // Re-read inside the lock so the transition check sees the latest status.
+    const fresh = await Order.findById(req.params.orderId);
+    const own = fresh.packages.id(packageId);
+    const { status, note, trackingId, reasonCode } = req.body;
+    const cancellation = status === 'cancelled' ? { by: 'vendor', actorId: req.user._id, reasonCode, note } : undefined;
+    await transitionPackage(fresh, own, status, { note: status === 'cancelled' ? `Cancelled by seller${note ? `: ${note}` : ''}` : note, trackingId, cancellation });
+    await fresh.save();
+    return { order: fresh, pkg: own };
+  });
   res.json({ order: { _id: order._id, orderNumber: order.orderNumber, status: order.status }, package: pkg });
 }
 
@@ -443,7 +487,9 @@ export async function payouts(req, res) {
   res.json({
     ...paginated(result.items, result.total[0]?.n || 0, page, limit),
     summary,
-    linkedAccount: req.vendor.razorpayAccountId || null,
+    stripe: { connected: Boolean(req.vendor.stripe?.accountId), payoutsEnabled: Boolean(req.vendor.stripe?.payoutsEnabled) },
+    payoutHold: req.vendor.payoutHold?.active ? { reason: req.vendor.payoutHold.reason, since: req.vendor.payoutHold.since } : null,
+    returnWindowDays: RETURN_WINDOW_DAYS,
     commissionRate: req.vendor.commissionRate,
   });
 }
