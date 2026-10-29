@@ -9,10 +9,12 @@ import { Field, Segmented, Switch } from '../../components/ui/Controls';
 import { ConfirmDialog, Modal } from '../../components/ui/Modal';
 import { EmptyState, ErrorState, Skeleton, Spinner } from '../../components/ui/Feedback';
 
-const EMPTY = { code: '', description: '', type: 'percent', value: 10, minOrder: 0, maxDiscount: 0, expiresAt: '', usageLimit: 0, perUserLimit: 1, isActive: true };
+const EMPTY = { code: '', description: '', type: 'percent', value: 10, minOrder: 0, maxDiscount: 0, startsAt: '', expiresAt: '', usageLimit: 0, perUserLimit: 1, isActive: true };
 
 function CouponForm({ initial, onSubmit, saving, onCancel, scope }) {
   const [form, setForm] = useState(initial);
+  // Code, type and value are locked once the coupon has been redeemed (the server enforces it too).
+  const locked = initial.usedCount > 0;
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const submit = (e) => {
     e.preventDefault();
@@ -24,9 +26,10 @@ function CouponForm({ initial, onSubmit, saving, onCancel, scope }) {
       code: form.code.trim().toUpperCase(),
       value: Number(form.value),
       minOrder: Number(form.minOrder) || 0,
-      maxDiscount: form.type === 'percent' ? Number(form.maxDiscount) || 0 : 0,
-      usageLimit: Number(form.usageLimit) || 0,
+      maxDiscount: form.type === 'percent' ? Number(form.maxDiscount) || null : null,
+      usageLimit: Number(form.usageLimit) || null,
       perUserLimit: Number(form.perUserLimit) || 1,
+      startsAt: form.startsAt ? new Date(`${form.startsAt}T00:00:00`).toISOString() : null,
       expiresAt: form.expiresAt ? new Date(`${form.expiresAt}T23:59:59`).toISOString() : null,
     });
   };
@@ -44,12 +47,13 @@ function CouponForm({ initial, onSubmit, saving, onCancel, scope }) {
           <p className="text-xs muted">{preview}{Number(form.minOrder) ? ` on orders above ${money(form.minOrder)}` : ''}</p>
         </div>
       </div>
+      {locked && <p className="rounded-xl bg-amber-50 px-4 py-2.5 text-xs text-amber-800 dark:bg-amber-400/10 dark:text-amber-300">Used {initial.usedCount} time(s): the code, type and value can no longer change.</p>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Code" required hint="3–20 letters, numbers, - or _">
-          <input value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, '') }))} maxLength={20} className="input font-mono uppercase" required />
+          <input disabled={locked} value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, '') }))} maxLength={20} className="input font-mono uppercase" required />
         </Field>
         <Field label="Discount type">
-          <Segmented className="w-full [&>button]:flex-1" value={form.type} onChange={(type) => setForm((f) => ({ ...f, type }))} options={[{ value: 'percent', label: 'Percentage' }, { value: 'flat', label: 'Flat ₹' }]} />
+          <Segmented className={cn('w-full [&>button]:flex-1', locked && 'pointer-events-none opacity-60')} value={form.type} onChange={(type) => setForm((f) => ({ ...f, type }))} options={[{ value: 'percent', label: 'Percentage' }, { value: 'flat', label: 'Flat ₹' }]} />
         </Field>
       </div>
       <Field label="Description">
@@ -57,7 +61,7 @@ function CouponForm({ initial, onSubmit, saving, onCancel, scope }) {
       </Field>
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label={form.type === 'percent' ? 'Percent off' : 'Amount off (₹)'} required>
-          <input type="number" min="1" max={form.type === 'percent' ? 90 : undefined} value={form.value} onChange={set('value')} className="input" required />
+          <input disabled={locked} type="number" min="1" max={form.type === 'percent' ? 90 : undefined} value={form.value} onChange={set('value')} className="input" required />
         </Field>
         <Field label="Min. order (₹)">
           <input type="number" min="0" value={form.minOrder} onChange={set('minOrder')} className="input" />
@@ -68,7 +72,10 @@ function CouponForm({ initial, onSubmit, saving, onCancel, scope }) {
           </Field>
         )}
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-4">
+        <Field label="Starts on" hint="Empty = now">
+          <input type="date" value={form.startsAt} onChange={set('startsAt')} className="input" />
+        </Field>
         <Field label="Expires on">
           <input type="date" value={form.expiresAt} onChange={set('expiresAt')} className="input" />
         </Field>
@@ -116,7 +123,7 @@ export default function CouponManager({ scope }) {
     queryClient.invalidateQueries({ queryKey: ['coupons'] });
   };
   const save = useMutation({
-    mutationFn: (payload) => (editing?._id ? api.put(`${base}/${editing._id}`, payload) : api.post(base, payload)),
+    mutationFn: (payload) => (editing?._id ? api.patch(`${base}/${editing._id}`, payload) : api.post(base, payload)),
     onSuccess: () => {
       toast.success('Coupon saved');
       setEditing(null);
@@ -125,7 +132,7 @@ export default function CouponManager({ scope }) {
     onError: (err) => toast.error(errorMessage(err)),
   });
   const toggle = useMutation({
-    mutationFn: ({ id, isActive }) => api.put(`${base}/${id}`, { isActive }),
+    mutationFn: ({ id, isActive }) => api.patch(`${base}/${id}`, { isActive }),
     onSuccess: invalidate,
     onError: (err) => toast.error(errorMessage(err)),
   });
@@ -184,14 +191,18 @@ export default function CouponManager({ scope }) {
                 <div className="mt-4 flex justify-end gap-1 border-t border-dashed border-zinc-200 pt-3 dark:border-white/10">
                   <button
                     type="button"
-                    onClick={() => setEditing({ ...EMPTY, ...c, expiresAt: c.expiresAt ? c.expiresAt.slice(0, 10) : '' })}
+                    onClick={() => setEditing({ ...EMPTY, ...c, maxDiscount: c.maxDiscount ?? 0, usageLimit: c.usageLimit ?? 0, startsAt: c.startsAt ? c.startsAt.slice(0, 10) : '', expiresAt: c.expiresAt ? c.expiresAt.slice(0, 10) : '' })}
                     className="btn btn-ghost btn-sm"
                   >
                     <Pencil className="h-3.5 w-3.5" /> Edit
                   </button>
-                  <button type="button" onClick={() => setDeleting(c)} className="btn btn-ghost btn-sm text-rose-600">
-                    <Trash2 className="h-3.5 w-3.5" /> Delete
-                  </button>
+                  {c.usedCount > 0 ? (
+                    <span className="self-center text-xs muted" title="Used coupons keep their history">Used — switch off to stop it</span>
+                  ) : (
+                    <button type="button" onClick={() => setDeleting(c)} className="btn btn-ghost btn-sm text-rose-600">
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
+                    </button>
+                  )}
                 </div>
               </div>
             );

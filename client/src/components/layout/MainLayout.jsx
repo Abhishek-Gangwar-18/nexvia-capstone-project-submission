@@ -3,7 +3,6 @@ import { Outlet, useLocation } from 'react-router-dom';
 import Navbar from './Navbar';
 import Footer from './Footer';
 import CartDrawer from './CartDrawer';
-import VerifyEmailBanner from './VerifyEmailBanner';
 
 export default function MainLayout() {
   const { pathname } = useLocation();
@@ -14,7 +13,6 @@ export default function MainLayout() {
   return (
     <div className="flex min-h-screen flex-col">
       <Navbar />
-      <VerifyEmailBanner />
       <main className="flex-1">
         <Outlet />
       </main>

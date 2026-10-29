@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
 import { refreshMe } from '../../lib/session';
 import { PageHeader } from '../../components/layout/DashboardLayout';
+import { PasswordInput } from '../../components/ui/Controls';
 import { PageLoader, Spinner } from '../../components/ui/Feedback';
 import { BusinessSection, EMPTY_STORE, PayoutSection, StoreSection, storePayload, validateStore } from './StoreForm';
 
@@ -13,6 +14,7 @@ export default function StoreSettings() {
   const [form, setForm] = useState(EMPTY_STORE);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [password, setPassword] = useState('');
 
   useEffect(() => {
     if (vendor) {
@@ -27,14 +29,20 @@ export default function StoreSettings() {
 
   if (isLoading) return <PageLoader />;
 
+  // Changing where payouts go needs the account password once the store is approved.
+  const payoutChanged = Boolean(form.bank.accountNumber);
+  const needsPassword = payoutChanged && vendor.status === 'approved';
+
   const save = async (e) => {
     e.preventDefault();
     const found = validateStore(form, ['store', 'business', 'payout'], { bankRequired: false });
     setErrors(found);
     if (Object.keys(found).length) return toast.error('Please fix the highlighted fields');
+    if (needsPassword && !password) return toast.error('Enter your password to change payout details');
     setSaving(true);
     try {
-      await api.put('/vendor/store', storePayload(form));
+      await api.patch('/vendor/store', { ...storePayload(form), ...(needsPassword ? { currentPassword: password } : {}) });
+      setPassword('');
       await Promise.all([refreshMe(), refetch()]);
       toast.success('Store settings saved');
     } catch (err) {
@@ -70,6 +78,13 @@ export default function StoreSettings() {
               Platform commission on your sales: <span className="font-semibold">{vendor.commissionRate ?? 'default'}{vendor.commissionRate !== null ? '%' : ' rate'}</span> (set by Vendora)
             </p>
             <PayoutSection form={form} setForm={setForm} errors={errors} currentBank={vendor.bank} />
+            {needsPassword && (
+              <label className="mt-4 block rounded-xl bg-amber-50 p-4 text-sm dark:bg-amber-400/10">
+                <span className="font-semibold">Confirm with your password</span>
+                <span className="mt-0.5 block text-xs muted">For your security, changing where payouts go needs your account password.</span>
+                <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" wrapperClassName="mt-3" />
+              </label>
+            )}
           </div>
         </div>
       </div>

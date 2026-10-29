@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BadgeCheck, MessageSquarePlus, Pencil, Star, Trash2 } from 'lucide-react';
+import { BadgeCheck, MessageSquarePlus, Pencil, Star, Store, ThumbsUp, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
 import { cn, timeAgo } from '../../lib/format';
@@ -10,22 +10,22 @@ import { useAuth } from '../../store/auth';
 import { Stars, StarPicker } from '../ui/Rating';
 import { Spinner } from '../ui/Feedback';
 import { UserAvatar } from '../ui/Brand';
+import ImageUploader from '../ui/ImageUploader';
 
 function ReviewForm({ productId, existing, onDone }) {
   const queryClient = useQueryClient();
-  const [rating, setRating] = useState(existing?.rating || 0);
   const [title, setTitle] = useState(existing?.title || '');
   const [comment, setComment] = useState(existing?.comment || '');
+  const [photos, setPhotos] = useState(existing?.photos || []);
 
   const mutation = useMutation({
     mutationFn: () =>
       existing
-        ? api.patch(`/products/${productId}/reviews/${existing._id}`, { rating, title, comment })
-        : api.post(`/products/${productId}/reviews`, { rating, title, comment }),
+        ? api.patch(`/products/${productId}/reviews/${existing._id}`, { title, comment, photos })
+        : api.post(`/products/${productId}/reviews`, { title, comment, photos }),
     onSuccess: () => {
       toast.success(existing ? 'Review updated' : 'Thanks for your review!');
       queryClient.invalidateQueries({ queryKey: ['reviews', productId] });
-      queryClient.invalidateQueries({ queryKey: ['product'] });
       onDone();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -38,16 +38,12 @@ function ReviewForm({ productId, existing, onDone }) {
       exit={{ opacity: 0, height: 0 }}
       onSubmit={(e) => {
         e.preventDefault();
-        if (!rating) return toast.error('Pick a star rating');
+        if (comment.trim().length < 10) return toast.error('Tell others a little more (at least 10 characters)');
         return mutation.mutate();
       }}
       className="overflow-hidden"
     >
       <div className="card mt-4 space-y-4 p-5">
-        <div>
-          <p className="label">Your rating</p>
-          <StarPicker value={rating} onChange={setRating} />
-        </div>
         <div>
           <label className="label" htmlFor="review-title">Headline</label>
           <input id="review-title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} className="input" placeholder="What stood out?" />
@@ -57,6 +53,10 @@ function ReviewForm({ productId, existing, onDone }) {
           <textarea id="review-comment" value={comment} onChange={(e) => setComment(e.target.value)} rows={4} maxLength={2000} className="input resize-none" placeholder="How was the quality, fit, delivery…? (min. 10 characters)" />
           <p className="mt-1 text-right text-xs muted">{comment.length}/2000</p>
         </div>
+        <div>
+          <p className="label">Photos (up to 5)</p>
+          <ImageUploader value={photos} onChange={setPhotos} max={5} folder="reviews" />
+        </div>
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onDone} className="btn btn-ghost">Cancel</button>
           <button type="submit" disabled={mutation.isPending} className="btn btn-primary">
@@ -65,6 +65,26 @@ function ReviewForm({ productId, existing, onDone }) {
         </div>
       </div>
     </motion.form>
+  );
+}
+
+/** The customer's single star rating; changing the stars saves it right away. */
+function MyRating({ productId, value }) {
+  const queryClient = useQueryClient();
+  const save = useMutation({
+    mutationFn: (stars) => api.put(`/products/${productId}/rating`, { value: stars }),
+    onSuccess: () => {
+      toast.success('Rating saved');
+      queryClient.invalidateQueries({ queryKey: ['reviews', productId] });
+      queryClient.invalidateQueries({ queryKey: ['product'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  return (
+    <div className="mt-3">
+      <StarPicker value={value || 0} onChange={(stars) => save.mutate(stars)} />
+      <p className="mt-1 text-[11px] muted">{value ? 'Tap the stars to change your rating' : 'Tap to rate — one rating per customer'}</p>
+    </div>
   );
 }
 
@@ -80,8 +100,13 @@ export default function Reviews({ product }) {
     onSuccess: () => {
       toast.success('Review deleted');
       queryClient.invalidateQueries({ queryKey: ['reviews', product._id] });
-      queryClient.invalidateQueries({ queryKey: ['product'] });
     },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const helpful = useMutation({
+    mutationFn: ({ reviewId, voted }) => (voted ? api.delete : api.post)(`/products/${product._id}/reviews/${reviewId}/helpful`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['reviews', product._id] }),
     onError: (error) => toast.error(errorMessage(error)),
   });
 
@@ -98,6 +123,7 @@ export default function Reviews({ product }) {
   const total = Object.values(distribution).reduce((a, b) => a + b, 0);
   const reviews = query.data?.pages.flatMap((p) => p.items) || [];
   const mine = new Set(first?.myReviewIds || []);
+  const voted = new Set(query.data?.pages.flatMap((p) => p.myVotes || []) || []);
 
   return (
     <section id="reviews" className="scroll-mt-40">
@@ -143,21 +169,28 @@ export default function Reviews({ product }) {
           </div>
 
           <div className="card mt-4 p-5">
-            <p className="font-semibold">Share your thoughts</p>
-            <p className="mt-1 text-sm muted">Bought this product? Help other shoppers decide.</p>
+            <p className="font-semibold">Rate & review</p>
             {!user ? (
-              <Link to="/login" state={{ from: { pathname: `/product/${product._id}` } }} className="btn btn-secondary mt-4 w-full">
-                Sign in to review
-              </Link>
-            ) : user.role !== 'customer' ? (
-              <p className="mt-3 text-xs muted">Reviews can be written from customer accounts.</p>
+              <>
+                <p className="mt-1 text-sm muted">Bought this product? Help other shoppers decide.</p>
+                <Link to="/login" state={{ from: { pathname: `/product/${product._id}` } }} className="btn btn-secondary mt-4 w-full">
+                  Sign in to rate & review
+                </Link>
+              </>
+            ) : !first ? null : !first.canReview ? (
+              <p className="mt-1 text-sm muted">You can rate and review this product once an order with it has been delivered to you.</p>
             ) : (
-              <button type="button" onClick={() => setEditing((e) => (e ? null : {}))} className="btn btn-secondary mt-4 w-full">
-                <MessageSquarePlus className="h-4 w-4" /> Write a review
-              </button>
-            )}
-            {first && user?.role === 'customer' && (
-              <p className="mt-2 text-center text-[11px] muted">{first.hasPurchased ? '✓ Your review will show as a verified purchase' : 'Reviews from delivered orders get a verified badge'}</p>
+              <>
+                <p className="mt-1 text-sm muted">Your rating</p>
+                <MyRating productId={product._id} value={first.myRating} />
+                {first.reviewsLeft > 0 ? (
+                  <button type="button" onClick={() => setEditing((e) => (e ? null : {}))} className="btn btn-secondary mt-4 w-full">
+                    <MessageSquarePlus className="h-4 w-4" /> Write a review
+                  </button>
+                ) : (
+                  <p className="mt-3 text-xs muted">You have written the maximum of 20 reviews for this product.</p>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -180,6 +213,7 @@ export default function Reviews({ product }) {
               <option value="recent">Most recent</option>
               <option value="top">Highest rated</option>
               <option value="low">Lowest rated</option>
+              <option value="helpful">Most helpful</option>
             </select>
           </div>
 
@@ -207,7 +241,7 @@ export default function Reviews({ product }) {
                           {review.name} {mine.has(review._id) && <span className="text-xs text-brand-600">(you)</span>}
                         </p>
                         <div className="flex items-center gap-2">
-                          <Stars value={review.rating} size="h-3 w-3" />
+                          {review.authorRating && <Stars value={review.authorRating} size="h-3 w-3" />}
                           <span className="text-[11px] muted">{timeAgo(review.createdAt)}</span>
                         </div>
                       </div>
@@ -220,6 +254,32 @@ export default function Reviews({ product }) {
                   </div>
                   {review.title && <p className="mt-3 text-sm font-semibold">{review.title}</p>}
                   <p className="mt-1 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{review.comment}</p>
+                  {review.photos?.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {review.photos.map((photo) => (
+                        <a key={photo.url} href={photo.url} target="_blank" rel="noreferrer" className="h-16 w-16 overflow-hidden rounded-lg bg-zinc-50 dark:bg-white/5">
+                          <img src={photo.url} alt="Review photo" loading="lazy" className="h-full w-full object-cover" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                  {review.reply?.text && (
+                    <div className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm dark:bg-white/[0.04]">
+                      <p className="flex items-center gap-1.5 text-xs font-semibold"><Store className="h-3.5 w-3.5" /> Response from the seller <span className="font-normal muted">· {timeAgo(review.reply.at)}</span></p>
+                      <p className="mt-1 text-zinc-600 dark:text-zinc-300">{review.reply.text}</p>
+                    </div>
+                  )}
+                  {!mine.has(review._id) && (
+                    <button
+                      type="button"
+                      disabled={!user || helpful.isPending}
+                      onClick={() => helpful.mutate({ reviewId: review._id, voted: voted.has(review._id) })}
+                      className={cn('mt-3 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition', voted.has(review._id) ? 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-400/30 dark:bg-brand-500/10 dark:text-brand-300' : 'border-zinc-200 text-zinc-500 hover:border-zinc-300 dark:border-white/10')}
+                      title={user ? 'Mark as helpful' : 'Sign in to vote'}
+                    >
+                      <ThumbsUp className="h-3.5 w-3.5" /> Helpful{review.helpfulCount ? ` (${review.helpfulCount})` : ''}
+                    </button>
+                  )}
                   {mine.has(review._id) && (
                     <div className="mt-3 flex justify-end gap-1">
                       <button type="button" onClick={() => setEditing(review)} className="btn btn-ghost btn-sm">

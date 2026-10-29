@@ -8,7 +8,7 @@ import { money } from '../lib/format';
 const FEATURES = [
   { icon: Upload, title: 'Easy product listing', text: 'Drag-and-drop images to S3, rich specs, live preview.' },
   { icon: Truck, title: 'Simple fulfilment', text: 'Pack → ship → deliver with one click per package.' },
-  { icon: Coins, title: 'Automatic payouts', text: 'Razorpay Route transfers your share on delivery.' },
+  { icon: Coins, title: 'Automatic payouts', text: 'Stripe Connect transfers your share after delivery.' },
   { icon: BarChart3, title: 'Real-time analytics', text: 'Revenue, earnings, top products and low-stock alerts.' },
   { icon: Ticket, title: 'Your own coupons', text: 'Run store-specific discounts to boost sales.' },
   { icon: ShieldCheck, title: 'Protected payments', text: 'Customers pay upfront — no cash collection risk.' },

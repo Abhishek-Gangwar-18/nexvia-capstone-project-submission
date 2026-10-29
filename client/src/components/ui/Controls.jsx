@@ -1,5 +1,6 @@
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import { motion } from 'framer-motion';
+import { Eye, EyeOff } from 'lucide-react';
 import { cn } from '../../lib/format';
 
 export function Switch({ checked, onChange, disabled, label, size = 'md' }) {
@@ -65,6 +66,26 @@ export function Segmented({ options, value, onChange, className, size = 'md' }) 
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/** Password input, hidden by default, with an eye button to show or hide it. `icon` adds a leading icon. */
+export function PasswordInput({ icon: Icon, className, wrapperClassName, ...props }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className={cn('relative', wrapperClassName)}>
+      {Icon && <Icon className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-zinc-400" />}
+      <input {...props} type={show ? 'text' : 'password'} className={cn('input pr-10', Icon && 'pl-10', className)} />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        className="absolute top-1/2 right-3 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+        aria-label={show ? 'Hide password' : 'Show password'}
+        aria-pressed={show}
+      >
+        {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </button>
     </div>
   );
 }

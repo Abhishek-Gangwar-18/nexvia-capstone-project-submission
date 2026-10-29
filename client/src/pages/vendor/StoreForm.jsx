@@ -13,7 +13,6 @@ export const EMPTY_STORE = {
   gstin: '',
   address: { line1: '', city: '', state: '', pincode: '' },
   bank: { accountHolder: '', accountNumber: '', ifsc: '' },
-  razorpayAccountId: '',
 };
 
 /** Client-side mirror of the API's onboarding rules, grouped by form section. */
@@ -39,7 +38,6 @@ export function validateStore(form, sections, { bankRequired = true } = {}) {
       if (!/^\d{9,18}$/.test(bank.accountNumber)) e['bank.accountNumber'] = 'Account number must be 9–18 digits';
       if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(bank.ifsc.toUpperCase())) e['bank.ifsc'] = 'Enter a valid IFSC code (e.g. HDFC0001234)';
     }
-    if (form.razorpayAccountId && !/^acc_[A-Za-z0-9]{6,}$/.test(form.razorpayAccountId)) e.razorpayAccountId = 'Linked account ids look like acc_XXXXXXXXXXXX';
   }
   return e;
 }
@@ -57,7 +55,6 @@ export function storePayload(form, { includeBank = true } = {}) {
     phone: form.phone.trim(),
     gstin: form.gstin.trim().toUpperCase(),
     address: form.address,
-    razorpayAccountId: form.razorpayAccountId.trim(),
     ...(includeBank && bankFilled ? { bank: { ...form.bank, ifsc: form.bank.ifsc.toUpperCase() } } : {}),
   };
 }
@@ -145,9 +142,10 @@ export function PayoutSection({ form, setForm, errors, currentBank }) {
           <input value={form.bank.ifsc} onChange={(e) => setForm((f) => ({ ...f, bank: { ...f.bank, ifsc: e.target.value.toUpperCase() } }))} maxLength={11} className={cn('input font-mono uppercase', errors['bank.ifsc'] && 'input-error')} placeholder="HDFC0001234" />
         </Field>
       </div>
-      <Field label="Razorpay Route linked account" error={errors.razorpayAccountId} hint="Optional. With a linked account (acc_…), your share is transferred automatically by Razorpay on delivery. Without one, Vendora settles payouts to your bank.">
-        <input value={form.razorpayAccountId} onChange={(e) => setForm((f) => ({ ...f, razorpayAccountId: e.target.value.trim() }))} className={cn('input font-mono', errors.razorpayAccountId && 'input-error')} placeholder="acc_XXXXXXXXXXXX" />
-      </Field>
+      <p className="rounded-xl bg-zinc-50 p-3 text-xs muted dark:bg-white/[0.03]">
+        Once your store is approved, you can connect a Stripe account under <span className="font-semibold">Payouts</span> for automatic transfers.
+        Without one, Vendora settles your earnings to this bank account.
+      </p>
     </div>
   );
 }

@@ -41,11 +41,11 @@ export default function AdminProducts() {
       <PageHeader title="Products" description={data ? `${number(data.total)} products across all stores` : 'Moderate the catalogue'} />
       <div className="card overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-zinc-100 p-4 lg:flex-row lg:items-center lg:justify-between dark:border-white/5">
-          <Segmented size="sm" value={status} onChange={(v) => { setStatus(v); setPage(1); }} options={[{ value: '', label: 'All' }, { value: 'active', label: 'Live' }, { value: 'inactive', label: 'Hidden' }]} />
+          <Segmented size="sm" value={status} onChange={(v) => { setStatus(v); setPage(1); }} options={[{ value: '', label: 'All' }, { value: 'active', label: 'Live' }, { value: 'inactive', label: 'Hidden' }, { value: 'deleted', label: 'Deleted' }]} />
           <div className="flex gap-2">
             <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} className="input w-auto py-2">
               <option value="">All categories</option>
-              {categories.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
+              {categories.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
             </select>
             <div className="relative lg:w-64">
               <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400" />
@@ -65,20 +65,25 @@ export default function AdminProducts() {
                 {isLoading
                   ? Array.from({ length: 10 }, (_, i) => <tr key={i}><td colSpan={8}><Skeleton className="h-10" /></td></tr>)
                   : data.items.map((p) => (
-                      <tr key={p._id} className={cn((!p.isActive || p.moderation?.status === 'removed') && 'opacity-60')}>
+                      <tr key={p._id} className={cn((!p.isActive || p.deletedAt || p.moderation?.status === 'removed') && 'opacity-60')}>
                         <td>
                           <div className="flex min-w-[220px] items-center gap-3">
                             <img src={p.thumbnail} alt="" className="h-10 w-10 rounded-lg bg-zinc-50 object-contain p-0.5 dark:bg-white/5" />
                             <Link to={`/product/${p._id}`} target="_blank" className="line-clamp-1 font-semibold hover:text-brand-600">
                               {p.title} <ExternalLink className="inline h-3 w-3 text-zinc-400" />
                             </Link>
+                            {p.deletedAt && (
+                              <span title={`Deleted by the seller on ${new Date(p.deletedAt).toLocaleDateString('en-IN')}`} className="shrink-0 rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-400/10 dark:text-rose-300">
+                                Deleted by seller
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="text-xs whitespace-nowrap">{p.vendor?.storeName}</td>
                         <td className="text-xs whitespace-nowrap">{categoryName(p.category)}</td>
                         <td className="text-right tabular-nums">{money(p.price)}</td>
                         <td className={cn('text-right tabular-nums', p.stock === 0 && 'font-semibold text-rose-600')}>{p.stock}</td>
-                        <td className="text-right tabular-nums">{p.rating.toFixed(1)} <span className="text-[10px] muted">({p.numReviews})</span></td>
+                        <td className="text-right tabular-nums">{p.rating.toFixed(1)} <span className="text-[10px] muted">({p.numRatings})</span></td>
                         <td className="text-right tabular-nums">{number(p.sold)}</td>
                         <td className="text-center" title={p.moderation?.reason || (p.isActive ? undefined : 'Hidden by the seller')}>
                           <Switch

@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Home, Search } from 'lucide-react';
 
-export default function NotFound() {
+export default function NotFound({ title = 'This page took a wrong turn', message = 'The page you’re looking for doesn’t exist or has been moved.' }) {
   return (
     <div className="container-page flex min-h-[60vh] flex-col items-center justify-center py-16 text-center">
       <motion.p
@@ -13,8 +13,8 @@ export default function NotFound() {
       >
         404
       </motion.p>
-      <h1 className="mt-4 font-display text-2xl font-bold">This page took a wrong turn</h1>
-      <p className="mt-2 max-w-sm muted">The page you’re looking for doesn’t exist or has been moved.</p>
+      <h1 className="mt-4 font-display text-2xl font-bold">{title}</h1>
+      <p className="mt-2 max-w-sm muted">{message}</p>
       <div className="mt-8 flex gap-3">
         <Link to="/" className="btn btn-primary"><Home className="h-4 w-4" /> Go home</Link>
         <Link to="/search" className="btn btn-secondary"><Search className="h-4 w-4" /> Browse products</Link>

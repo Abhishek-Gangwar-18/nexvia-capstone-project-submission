@@ -43,7 +43,7 @@ export default function VendorProducts() {
   });
 
   const toggle = useMutation({
-    mutationFn: ({ id, isActive }) => api.put(`/vendor/products/${id}`, { isActive }),
+    mutationFn: ({ id, isActive }) => api.patch(`/vendor/products/${id}`, { isActive }),
     onMutate: async ({ id, isActive }) => {
       queryClient.setQueryData(queryKey, (old) => old && { ...old, items: old.items.map((p) => (p._id === id ? { ...p, isActive } : p)) });
     },

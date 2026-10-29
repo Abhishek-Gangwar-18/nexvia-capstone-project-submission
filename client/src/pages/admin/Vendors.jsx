@@ -18,7 +18,6 @@ import { EmptyState, ErrorState, Skeleton, Spinner } from '../../components/ui/F
 function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
   const [reason, setReason] = useState('');
   const [commissionRate, setCommissionRate] = useState(vendor?.commissionRate ?? '');
-  const [razorpayAccountId, setAccount] = useState(vendor?.razorpayAccountId || '');
   if (!vendor) return null;
   // 'reject' and 'suspend' both need a reason that is shown to the seller.
   const isReject = mode === 'reject' || mode === 'suspend';
@@ -27,8 +26,8 @@ function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
     <Modal
       open
       onClose={onClose}
-      title={isReject ? `${isSuspend ? 'Suspend' : 'Reject'} ${vendor.storeName}?` : `Commission & payouts · ${vendor.storeName}`}
-      description={isSuspend ? 'The store and its products go offline. The seller will see your note.' : isReject ? 'The seller will see your note and can update their application.' : 'Override the platform commission or link a Razorpay Route account.'}
+      title={isReject ? `${isSuspend ? 'Suspend' : 'Reject'} ${vendor.storeName}?` : `Commission · ${vendor.storeName}`}
+      description={isSuspend ? 'The store and its products go offline. The seller will see your note.' : isReject ? 'The seller will see your note and can update their application.' : 'Override the platform commission for this store.'}
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -40,7 +39,7 @@ function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
               onSubmit(
                 isReject
                   ? { status: isSuspend ? 'suspended' : 'rejected', rejectionReason: reason.trim() }
-                  : { commissionRate: commissionRate === '' ? null : Number(commissionRate), razorpayAccountId: razorpayAccountId.trim() },
+                  : { commissionRate: commissionRate === '' ? null : Number(commissionRate) },
               )
             }
           >
@@ -57,9 +56,6 @@ function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
         <div className="space-y-4">
           <Field label="Commission rate (%)" hint="Leave empty to use the platform default">
             <input type="number" min="0" max="50" step="0.5" value={commissionRate} onChange={(e) => setCommissionRate(e.target.value)} className="input" />
-          </Field>
-          <Field label="Razorpay Route linked account" hint="acc_… id from Razorpay Dashboard → Route → Linked accounts">
-            <input value={razorpayAccountId} onChange={(e) => setAccount(e.target.value)} className="input font-mono" placeholder="acc_XXXXXXXXXXXX" />
           </Field>
         </div>
       )}
@@ -140,11 +136,11 @@ export default function Vendors() {
                 <div className="rounded-xl bg-zinc-50 p-2.5 dark:bg-white/[0.03]"><p className="muted">Products</p><p className="font-bold">{v.productCount}</p></div>
                 <div className="rounded-xl bg-zinc-50 p-2.5 dark:bg-white/[0.03]"><p className="muted">Units sold</p><p className="font-bold">{compactNumber(v.unitsSold)}</p></div>
                 <div className="rounded-xl bg-zinc-50 p-2.5 dark:bg-white/[0.03]"><p className="muted">Commission</p><p className="font-bold">{v.commissionRate ?? 'Default'}{v.commissionRate !== null && v.commissionRate !== undefined ? '%' : ''}</p></div>
-                <div className="rounded-xl bg-zinc-50 p-2.5 dark:bg-white/[0.03]"><p className="muted">Route</p><p className="truncate font-bold">{v.razorpayAccountId || 'Manual'}</p></div>
+                <div className="rounded-xl bg-zinc-50 p-2.5 dark:bg-white/[0.03]"><p className="muted">Payouts</p><p className="truncate font-bold">{v.payoutLinked ? 'Linked' : 'Manual'}</p></div>
               </div>
               <div className="mt-3 space-y-1 text-xs muted">
                 <p className="flex items-center gap-1.5"><Mail className="h-3.5 w-3.5" /> {v.email} <Phone className="ml-2 h-3.5 w-3.5" /> {v.phone}</p>
-                <p className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5" /> {v.address?.city}, {v.address?.state} · GSTIN {v.gstin || '—'} · Bank {v.bank?.accountNumberMasked || '—'}</p>
+                <p className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5" /> {v.address?.city}, {v.address?.state} · GSTIN {v.gstin || '—'}</p>
               </div>
               {v.rejectionReason && <p className="mt-3 rounded-xl bg-rose-50 p-2.5 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">Note: {v.rejectionReason}</p>}
               <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-zinc-100 pt-4 dark:border-white/5">
@@ -158,7 +154,7 @@ export default function Vendors() {
                 {v.status === 'approved' && (
                   <button type="button" onClick={() => setModal({ vendor: v, mode: 'suspend' })} className="btn btn-secondary btn-sm text-rose-600"><Ban className="h-3.5 w-3.5" /> Suspend</button>
                 )}
-                {['pending', 'rejected', 'suspended'].includes(v.status) && (
+                {['pending', 'suspended'].includes(v.status) && (
                   <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: v._id, body: { status: 'approved' } })} className="btn btn-primary btn-sm">
                     {v.status === 'suspended' ? <RotateCcw className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />} {v.status === 'suspended' ? 'Reactivate' : 'Approve'}
                   </button>

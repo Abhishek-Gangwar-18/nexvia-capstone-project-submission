@@ -94,7 +94,7 @@ export default function ProductForm() {
     };
     setSaving(true);
     try {
-      if (editing) await api.put(`/vendor/products/${id}`, payload);
+      if (editing) await api.patch(`/vendor/products/${id}`, payload);
       else await api.post('/vendor/products', payload);
       toast.success(editing ? 'Product updated' : 'Product published! It’s now searchable.');
       queryClient.invalidateQueries({ queryKey: ['vendor-products'] });
@@ -136,7 +136,7 @@ export default function ProductForm() {
                     {['Electronics', 'Fashion', 'Beauty', 'Home', 'Grocery', 'Sports'].map((group) => (
                       <optgroup key={group} label={group}>
                         {categories.filter((c) => c.group === group).map((c) => (
-                          <option key={c.slug} value={c.slug}>{c.name}</option>
+                          <option key={c._id} value={c._id}>{c.name}</option>
                         ))}
                       </optgroup>
                     ))}

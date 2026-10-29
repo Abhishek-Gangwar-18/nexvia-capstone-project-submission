@@ -142,8 +142,8 @@ function CategoryStrip() {
         </NavLink>
         {categories.map((c) => (
           <Link
-            key={c.slug}
-            to={`/search?category=${c.slug}`}
+            key={c._id}
+            to={`/search?category=${c._id}`}
             className="shrink-0 rounded-lg px-3 py-1.5 text-[13px] font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white"
           >
             {c.name}
@@ -182,7 +182,7 @@ export default function Navbar() {
     <header className={cn('glass sticky top-0 z-40 border-b transition-shadow', scrolled && 'shadow-lg shadow-zinc-900/[0.03]')}>
       <div className="bg-gradient-to-r from-brand-700 via-indigo-600 to-brand-600 text-white">
         <div className="container-page flex h-8 items-center justify-center gap-2 text-center text-xs font-medium sm:justify-between">
-          <p className="truncate">🚚 Free delivery on orders above ₹999 · Secure payments by Razorpay</p>
+          <p className="truncate">🚚 Free delivery on orders above ₹999 · Secure payments by Stripe</p>
           <Link to="/sell" className="hidden font-semibold underline-offset-4 hover:underline sm:block">
             Sell on Vendora →
           </Link>
@@ -269,7 +269,7 @@ function MobileMenu({ user, onClose }) {
           <Link to="/search" className="block rounded-xl px-3 py-2.5 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-white/5">All products</Link>
           <Link to="/stores" className="block rounded-xl px-3 py-2.5 text-sm font-semibold hover:bg-zinc-100 dark:hover:bg-white/5">All stores</Link>
           {categories.map((c) => (
-            <Link key={c.slug} to={`/search?category=${c.slug}`} className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-white/5">
+            <Link key={c._id} to={`/search?category=${c._id}`} className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-white/5">
               <img src={c.image} alt="" className="h-8 w-8 rounded-lg bg-zinc-100 object-contain dark:bg-white/5" />
               {c.name}
             </Link>

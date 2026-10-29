@@ -7,7 +7,7 @@ import { cn } from '../../lib/format';
 import { Spinner } from './Feedback';
 
 /**
- * Drag & drop image uploader. Files go to POST /api/uploads (S3 in production, local disk in dev).
+ * Drag & drop image uploader. Files go to POST /uploads (S3 in production, local disk in dev).
  * `value` is [{ url, key }]; the first image is the cover. Images can be reordered by dragging.
  */
 export default function ImageUploader({ value = [], onChange, max = 8, folder = 'products', single = false }) {

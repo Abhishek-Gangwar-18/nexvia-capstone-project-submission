@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import NotFound from './NotFound';
 import { useParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -33,6 +34,7 @@ export default function StorePage() {
   });
 
   if (storeQuery.isLoading) return <PageLoader />;
+  if (storeQuery.error?.response?.status === 404) return <NotFound title="Store not available" message="This store doesn’t exist or is no longer available." />;
   if (storeQuery.error) {
     return (
       <div className="container-page py-16">

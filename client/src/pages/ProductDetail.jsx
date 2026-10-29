@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import NotFound from './NotFound';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -190,7 +191,7 @@ export default function ProductDetail() {
       document.title = `${product.title} · Vendora`;
       rememberProduct({
         _id: product._id, title: product.title, thumbnail: product.thumbnail, price: product.price, mrp: product.mrp,
-        rating: product.rating, numReviews: product.numReviews, stock: product.stock, storeName: product.vendor?.storeName, vendorId: product.vendor?._id,
+        rating: product.rating, numRatings: product.numRatings, stock: product.stock, storeName: product.vendor?.storeName, vendorId: product.vendor?._id,
       });
     }
     return () => {
@@ -199,6 +200,7 @@ export default function ProductDetail() {
   }, [product]);
 
   if (isLoading) return <PageLoader />;
+  if (error?.response?.status === 404) return <NotFound title="Product not available" message="This product doesn’t exist or is no longer available." />;
   if (error) {
     return (
       <div className="container-page py-16">
@@ -237,7 +239,7 @@ export default function ProductDetail() {
         <nav className="mb-5 flex flex-wrap items-center gap-1 text-xs muted">
           <Link to="/" className="hover:text-brand-600">Home</Link>
           <ChevronRight className="h-3 w-3" />
-          <Link to={`/search?category=${product.category}`} className="hover:text-brand-600">{data.category?.name || product.category}</Link>
+          <Link to={`/search?category=${product.category}`} className="hover:text-brand-600">{data.category?.name || 'Category'}</Link>
           <ChevronRight className="h-3 w-3" />
           <span className="line-clamp-1 text-zinc-700 dark:text-zinc-300">{product.title}</span>
         </nav>
@@ -265,7 +267,7 @@ export default function ProductDetail() {
               <a href="#reviews" className="flex items-center gap-1.5 hover:underline">
                 <Stars value={product.rating} />
                 <span className="font-semibold">{product.rating.toFixed(1)}</span>
-                <span className="muted">({product.numReviews} reviews)</span>
+                <span className="muted">({product.numRatings} ratings)</span>
               </a>
               <span className="h-4 w-px bg-zinc-200 dark:bg-white/10" />
               <span className="flex items-center gap-1 muted">
@@ -335,7 +337,7 @@ export default function ProductDetail() {
                 {[
                   [Truck, 'Free delivery', 'over ₹999'],
                   [RotateCcw, '7-day returns', 'easy pickup'],
-                  [ShieldCheck, 'Secure payment', 'via Razorpay'],
+                  [ShieldCheck, 'Secure payment', 'via Stripe'],
                 ].map(([Icon, title, sub]) => (
                   <div key={title} className="rounded-2xl bg-zinc-50 p-3 dark:bg-white/[0.03]">
                     <Icon className="mx-auto h-5 w-5 text-brand-600 dark:text-brand-300" />
@@ -376,7 +378,7 @@ export default function ProductDetail() {
                 <dl className="divide-y divide-zinc-100 dark:divide-white/5">
                   {[
                     { label: 'Brand', value: product.brand },
-                    { label: 'Category', value: data.category?.name || product.category },
+                    { label: 'Category', value: data.category?.name || '—' },
                     product.sku && { label: 'SKU', value: product.sku },
                     ...(product.specs || []),
                   ]

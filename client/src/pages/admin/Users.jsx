@@ -36,8 +36,10 @@ export default function Users() {
 
   const block = useMutation({
     mutationFn: ({ id, status, reason }) => api.patch(`/admin/users/${id}`, { status, reason }),
-    onSuccess: (_, { status }) => {
+    onSuccess: ({ data }, { status }) => {
       toast.success(status === 'blocked' ? 'User blocked — their sessions stop working immediately' : 'User unblocked');
+      if (data.store?.changed) toast(data.store.status === 'suspended' ? 'Their store was suspended and is now hidden' : 'Their store is live again');
+      queryClient.invalidateQueries({ queryKey: ['admin-vendors'] });
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
     onError: (err) => toast.error(errorMessage(err)),

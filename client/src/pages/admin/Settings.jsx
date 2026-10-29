@@ -4,7 +4,10 @@ import { motion } from 'framer-motion';
 import { CheckCircle2, CircleDashed, CreditCard, Database, HardDrive, RefreshCw, Save, Search, Zap } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
-import { cn, money } from '../../lib/format';
+import { cn, formatDateTime, money } from '../../lib/format';
+
+const CHANGE_LABELS = { commissionRate: 'Commission', shippingFee: 'Shipping fee', freeShippingThreshold: 'Free shipping above' };
+const formatValue = (field, v) => (field === 'commissionRate' ? `${v}%` : money(v));
 import { PageHeader } from '../../components/layout/DashboardLayout';
 import { Field } from '../../components/ui/Controls';
 import { PageLoader, Spinner } from '../../components/ui/Feedback';
@@ -29,7 +32,9 @@ function ServiceCard({ icon: Icon, name, live, liveLabel, fallbackLabel, detail,
 
 export default function AdminSettings() {
   const queryClient = useQueryClient();
-  const settings = useQuery({ queryKey: ['admin-settings'], queryFn: () => api.get('/admin/settings').then((r) => r.data.settings) });
+  const settingsQuery = useQuery({ queryKey: ['admin-settings'], queryFn: () => api.get('/admin/settings').then((r) => r.data) });
+  const settings = { ...settingsQuery, data: settingsQuery.data?.settings };
+  const history = settingsQuery.data?.history || [];
   const system = useQuery({ queryKey: ['admin-system'], queryFn: () => api.get('/admin/system').then((r) => r.data), refetchInterval: 15000 });
   const [form, setForm] = useState(null);
 
@@ -38,7 +43,7 @@ export default function AdminSettings() {
   }, [settings.data]);
 
   const save = useMutation({
-    mutationFn: () => api.put('/admin/settings', { commissionRate: Number(form.commissionRate), shippingFee: Number(form.shippingFee), freeShippingThreshold: Number(form.freeShippingThreshold) }),
+    mutationFn: () => api.patch('/admin/settings', { commissionRate: Number(form.commissionRate), shippingFee: Number(form.shippingFee), freeShippingThreshold: Number(form.freeShippingThreshold) }),
     onSuccess: () => {
       toast.success('Platform settings saved');
       queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
@@ -100,6 +105,21 @@ export default function AdminSettings() {
               {save.isPending ? <Spinner className="h-4 w-4" /> : <Save className="h-4 w-4" />} Save settings
             </button>
           </div>
+          {history.length > 0 && (
+            <div className="border-t border-zinc-100 pt-4 dark:border-white/5">
+              <p className="text-sm font-semibold">Recent changes</p>
+              <ul className="mt-2 space-y-1.5 text-xs">
+                {history.map((h, i) => (
+                  <li key={`${h.at}-${h.field}-${i}`} className="flex flex-wrap justify-between gap-2">
+                    <span>
+                      <span className="font-semibold">{CHANGE_LABELS[h.field] || h.field}</span>: {formatValue(h.field, h.from)} → {formatValue(h.field, h.to)}
+                    </span>
+                    <span className="muted">{h.by?.name || 'Admin'} · {formatDateTime(h.at)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </form>
 
         <div className="card space-y-4 p-6">
@@ -118,7 +138,7 @@ export default function AdminSettings() {
               <ServiceCard index={1} icon={Zap} name="Redis cache" live={s.cache.driver === 'redis'} liveLabel="Connected (cart + sessions)" fallbackLabel="In-memory fallback" detail="Set REDIS_URL to enable" />
               <ServiceCard index={2} icon={Search} name="Elasticsearch" live={s.search.engine === 'elasticsearch'} liveLabel={`${s.search.documents ?? 0} docs indexed`} fallbackLabel="MongoDB search fallback" detail={s.search.index || 'Set ELASTICSEARCH_NODE to enable'} />
               <ServiceCard index={3} icon={HardDrive} name="AWS S3" live={s.storage.driver === 's3'} liveLabel="Uploading to S3" fallbackLabel="Local disk fallback" detail="Set AWS_S3_BUCKET + keys to enable" />
-              <ServiceCard index={4} icon={CreditCard} name="Razorpay Route" live={s.payments.provider === 'razorpay'} liveLabel="Test mode keys active" fallbackLabel="Built-in test gateway" detail="Set RAZORPAY_KEY_ID / SECRET to enable" />
+              <ServiceCard index={4} icon={CreditCard} name="Stripe" live={s.payments.provider === 'stripe'} liveLabel="Payments + Connect payouts" fallbackLabel="Built-in test gateway" detail="Set STRIPE_SECRET_KEY / PUBLISHABLE_KEY to enable" />
             </div>
           ) : (
             <Spinner className="h-6 w-6 text-brand-600" />

@@ -7,6 +7,7 @@ import { useAuth } from '../../store/auth';
 import { useCart, useCartActions } from '../../lib/cart';
 import { money } from '../../lib/format';
 import QuantityStepper from '../ui/QuantityStepper';
+import CartLineNotices from '../cart/CartLineNotices';
 import { EmptyState } from '../ui/Feedback';
 
 export function FreeShippingMeter({ summary }) {
@@ -110,6 +111,7 @@ export default function CartDrawer() {
                             {item.product.title}
                           </Link>
                           {item.vendor?.storeName && <p className="text-xs muted">Sold by {item.vendor.storeName}</p>}
+                          <CartLineNotices item={item} />
                           {!item.inStock && <p className="text-xs font-semibold text-rose-600">Out of stock</p>}
                           <div className="mt-auto flex items-center justify-between pt-2">
                             <QuantityStepper size="sm" allowRemove value={item.quantity} max={item.maxQuantity || 10} onChange={(q) => (q <= 0 ? remove(item.productId) : update(item.productId, q))} />

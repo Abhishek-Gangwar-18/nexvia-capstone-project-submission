@@ -12,6 +12,7 @@ import { EmptyState, PageLoader } from '../components/ui/Feedback';
 import { StoreAvatar } from '../components/ui/Brand';
 import CouponBox, { PriceBreakdown } from '../components/checkout/CouponBox';
 import { FreeShippingMeter } from '../components/layout/CartDrawer';
+import CartLineNotices from '../components/cart/CartLineNotices';
 
 export function groupByVendor(items) {
   const groups = new Map();
@@ -96,6 +97,7 @@ export default function Cart() {
                           <p className="font-display text-lg font-bold whitespace-nowrap">{money(item.lineTotal)}</p>
                         </div>
                         <Price price={item.product.price} mrp={item.product.mrp} size="sm" className="mt-1" />
+                        <CartLineNotices item={item} className="mt-1" />
                         {!item.inStock && <p className="mt-1 text-xs font-semibold text-rose-600">Out of stock — remove to continue</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
                           <QuantityStepper size="sm" value={item.quantity} max={item.maxQuantity || 10} onChange={(q) => update(item.productId, q)} disabled={!item.inStock} />
@@ -133,7 +135,7 @@ export default function Cart() {
             >
               <Lock className="h-4 w-4" /> {user ? 'Proceed to checkout' : 'Sign in to checkout'}
             </button>
-            <p className="text-center text-[11px] muted">Payments are split securely between sellers and Vendora via Razorpay Route.</p>
+            <p className="text-center text-[11px] muted">Payments are split securely between sellers and Vendora via Stripe Connect.</p>
           </div>
         </aside>
       </div>

@@ -135,7 +135,7 @@ export default function ProductCard({ product, index = 0 }) {
           <h3 className="line-clamp-2 min-h-[2.5rem] text-sm leading-5 font-semibold text-zinc-800 group-hover:text-brand-700 dark:text-zinc-100 dark:group-hover:text-brand-200">
             {product.title}
           </h3>
-          <RatingPill value={product.rating || 0} count={product.numReviews || 0} />
+          <RatingPill value={product.rating || 0} count={product.numRatings || 0} />
           <div className="mt-auto pt-1">
             <Price price={product.price} mrp={product.mrp} size="sm" />
             {!outOfStock && product.stock <= 5 && <p className="mt-1 text-[11px] font-semibold text-orange-600 dark:text-orange-400">Only {product.stock} left</p>}

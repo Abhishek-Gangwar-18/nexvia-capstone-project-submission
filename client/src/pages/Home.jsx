@@ -93,7 +93,7 @@ function Hero({ data }) {
                 <Star className="h-4 w-4 fill-amber-300 text-amber-300" /> <span className="font-semibold text-white">4.5/5</span> average rating
               </div>
               <div className="flex items-center gap-1.5">
-                <ShieldCheck className="h-4 w-4 text-emerald-300" /> Razorpay secured
+                <ShieldCheck className="h-4 w-4 text-emerald-300" /> Stripe secured
               </div>
             </div>
           </div>
@@ -155,8 +155,8 @@ function Categories({ categories, loading }) {
         {loading
           ? Array.from({ length: 16 }, (_, i) => <Skeleton key={i} className="aspect-[4/5]" />)
           : categories.slice(0, 16).map((c, i) => (
-              <motion.div key={c.slug} initial={{ opacity: 0, scale: 0.9 }} whileInView={{ opacity: 1, scale: 1 }} viewport={{ once: true }} transition={{ delay: i * 0.025 }}>
-                <Link to={`/search?category=${c.slug}`} className="group card flex flex-col items-center gap-2 p-3 text-center transition hover:-translate-y-1 hover:border-brand-200 hover:shadow-lg hover:shadow-brand-900/5 dark:hover:border-brand-400/30">
+              <motion.div key={c._id} initial={{ opacity: 0, scale: 0.9 }} whileInView={{ opacity: 1, scale: 1 }} viewport={{ once: true }} transition={{ delay: i * 0.025 }}>
+                <Link to={`/search?category=${c._id}`} className="group card flex flex-col items-center gap-2 p-3 text-center transition hover:-translate-y-1 hover:border-brand-200 hover:shadow-lg hover:shadow-brand-900/5 dark:hover:border-brand-400/30">
                   <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-gradient-to-br from-brand-50 to-indigo-50 dark:from-white/[0.04] dark:to-white/[0.02]">
                     <img src={c.image} alt={c.name} loading="lazy" className="h-full w-full object-contain p-2 transition duration-500 group-hover:scale-110 group-hover:rotate-3" />
                   </div>
@@ -199,7 +199,9 @@ function Countdown() {
 }
 
 function Promos({ categories }) {
-  const image = (slug) => categories?.find((c) => c.slug === slug)?.image;
+  // The Tech Fest banner features the Smartphones category (looked up by name; ids differ per database).
+  const phones = categories?.find((c) => c.name === 'Smartphones');
+  const image = () => phones?.image;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText('WELCOME10');
@@ -210,7 +212,7 @@ function Promos({ categories }) {
   };
   return (
     <section className="container-page grid gap-4 md:grid-cols-3">
-      <Link to="/search?category=smartphones" className="group relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 to-brand-700 p-6 text-white md:col-span-2">
+      <Link to={phones ? `/search?category=${phones._id}` : '/search?q=smartphone'} className="group relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 to-brand-700 p-6 text-white md:col-span-2">
         <div className="relative z-10 max-w-xs">
           <span className="rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-bold tracking-wide uppercase">Tech Fest</span>
           <h3 className="mt-3 font-display text-2xl font-bold sm:text-3xl">Flagship phones & laptops, up to 20% off</h3>
@@ -218,7 +220,7 @@ function Promos({ categories }) {
             Shop electronics <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
           </span>
         </div>
-        {image('smartphones') && <img src={image('smartphones')} alt="" className="absolute -right-4 -bottom-6 h-52 object-contain drop-shadow-2xl transition duration-500 group-hover:scale-105 group-hover:-rotate-3 sm:h-60" />}
+        {image() && <img src={image()} alt="" className="absolute -right-4 -bottom-6 h-52 object-contain drop-shadow-2xl transition duration-500 group-hover:scale-105 group-hover:-rotate-3 sm:h-60" />}
         <Zap className="absolute top-6 right-6 h-24 w-24 text-white/5" />
       </Link>
       <button type="button" onClick={copy} className="group relative overflow-hidden rounded-3xl bg-gradient-to-br from-amber-300 to-orange-400 p-6 text-left text-zinc-900">
@@ -292,7 +294,7 @@ function SellerCta() {
   const steps = [
     { icon: Rocket, title: 'Register your store', text: 'Business & bank details in 3 minutes' },
     { icon: PackageCheck, title: 'List & fulfil orders', text: 'Upload products, ship packages' },
-    { icon: Wallet, title: 'Get paid automatically', text: 'Razorpay Route splits every payment' },
+    { icon: Wallet, title: 'Get paid automatically', text: 'Stripe Connect splits every payment' },
   ];
   return (
     <section className="container-page">

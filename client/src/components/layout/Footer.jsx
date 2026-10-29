@@ -3,7 +3,7 @@ import { CreditCard, Headphones, RotateCcw, ShieldCheck } from 'lucide-react';
 import { Logo } from '../ui/Brand';
 
 const PERKS = [
-  { icon: ShieldCheck, title: 'Secure payments', text: 'Razorpay-protected checkout' },
+  { icon: ShieldCheck, title: 'Secure payments', text: 'Stripe-protected checkout' },
   { icon: RotateCcw, title: 'Easy returns', text: '7-day hassle-free returns' },
   { icon: CreditCard, title: 'Split payouts', text: 'Sellers paid after delivery' },
   { icon: Headphones, title: '24×7 support', text: 'We’re here to help' },
@@ -56,7 +56,7 @@ export default function Footer() {
       </div>
       <div className="border-t border-zinc-100 py-5 dark:border-white/5">
         <p className="container-page text-center text-xs muted">
-          © {new Date().getFullYear()} Vendora Marketplace · Built with React, Node.js, MongoDB, Elasticsearch, Redis, AWS S3 & Razorpay Route
+          © {new Date().getFullYear()} Vendora Marketplace · Built with React, Node.js, MongoDB, Elasticsearch, Redis, AWS S3 & Stripe Connect
         </p>
       </div>
     </footer>

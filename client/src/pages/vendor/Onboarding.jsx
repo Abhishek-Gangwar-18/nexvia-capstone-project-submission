@@ -54,7 +54,7 @@ function Wizard({ initial, existing, onDone }) {
     }
     setSubmitting(true);
     try {
-      if (existing) await api.put('/vendor/store', storePayload(form));
+      if (existing) await api.patch('/vendor/store', storePayload(form));
       else await api.post('/vendor/onboard', storePayload(form));
       await refreshMe();
       toast.success(existing ? 'Application updated' : 'Application submitted!');
@@ -121,7 +121,7 @@ function Wizard({ initial, existing, onDone }) {
                       ['GSTIN', form.gstin || '—'],
                       ['Address', `${form.address.line1}, ${form.address.city}, ${form.address.state} ${form.address.pincode}`],
                       ['Bank account', form.bank.accountNumber ? `${form.bank.accountHolder} · ••••${form.bank.accountNumber.slice(-4)} · ${form.bank.ifsc}` : existing?.bank?.accountNumberMasked ? 'Unchanged' : '—'],
-                      ['Razorpay Route', form.razorpayAccountId || 'Not linked (manual settlement)'],
+                      ['Automatic payouts', 'Connect Stripe under Payouts after approval (optional)'],
                     ].map(([k, v]) => (
                       <div key={k} className="rounded-xl border border-zinc-100 p-3 dark:border-white/5">
                         <dt className="text-xs muted">{k}</dt>

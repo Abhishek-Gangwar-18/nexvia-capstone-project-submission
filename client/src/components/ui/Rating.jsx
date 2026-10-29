@@ -23,7 +23,7 @@ export function Stars({ value = 0, size = 'h-3.5 w-3.5', className }) {
 }
 
 export function RatingPill({ value, count, className }) {
-  if (!count) return <span className={cn('text-xs muted', className)}>No reviews yet</span>;
+  if (!count) return <span className={cn('text-xs muted', className)}>No ratings yet</span>;
   return (
     <span className={cn('inline-flex items-center gap-1.5 text-xs', className)}>
       <span className="inline-flex items-center gap-0.5 rounded-md bg-emerald-600 px-1.5 py-0.5 font-bold text-white">
