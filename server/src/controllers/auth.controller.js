@@ -2,10 +2,19 @@ import { z } from 'zod';
 import { User, WISHLIST_MAX } from '../models/User.js';
 import { Vendor } from '../models/Vendor.js';
 import { Product } from '../models/Product.js';
-import { createSession, invalidateUser, revokeSession } from '../services/session.js';
+import mongoose from 'mongoose';
+import {
+  createSession,
+  invalidateUser,
+  listSessions,
+  refreshSession,
+  revokeAllSessions,
+  revokeByRefreshToken,
+  revokeSession,
+  revokeUserSession,
+} from '../services/session.js';
+import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../utils/cookies.js';
 import { CARD_FIELDS, toCard } from '../services/catalog.js';
-import { confirmVerification, issueVerification } from '../services/emailVerification.js';
-import { cache } from '../services/cache.js';
 import { ApiError } from '../utils/http.js';
 import { address as addressFields, email, password, phone } from '../utils/validators.js';
 
@@ -40,12 +49,17 @@ export const addressSchema = addressFields.extend({
   isDefault: z.boolean().optional().default(false),
 });
 
-export const verifyEmailSchema = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/, 'Invalid verification link') });
-
 // Partial update: absent fields are left untouched (optional() skips the defaults above).
 export const addressUpdateSchema = addressSchema
   .partial()
   .refine((body) => Object.keys(body).length > 0, 'Send at least one field to update');
+
+/** Starts a session: the refresh token goes in the httpOnly cookie, the access token in the body. */
+async function signIn(res, user, req) {
+  const { accessToken, refreshToken, refreshExpiresAt } = await createSession(user, req);
+  setRefreshCookie(res, refreshToken, refreshExpiresAt);
+  return accessToken;
+}
 
 async function profile(userDoc) {
   const user = userDoc.toSafeJSON();
@@ -57,9 +71,8 @@ export async function register(req, res) {
   const { name, email: mail, password, role } = req.body;
   if (await User.exists({ email: mail })) throw new ApiError(409, 'An account with this email already exists');
   const user = await User.create({ name, email: mail, password, role });
-  await issueVerification(user);
-  const token = await createSession(user);
-  res.status(201).json({ token, user: await profile(user) });
+  const accessToken = await signIn(res, user, req);
+  res.status(201).json({ accessToken, user: await profile(user) });
 }
 
 export async function login(req, res) {
@@ -68,13 +81,54 @@ export async function login(req, res) {
   if (user.status === 'blocked') throw new ApiError(403, 'Your account has been suspended. Please contact support.');
   user.lastLoginAt = new Date();
   await user.save();
-  const token = await createSession(user);
-  res.json({ token, user: await profile(user) });
+  const accessToken = await signIn(res, user, req);
+  res.json({ accessToken, user: await profile(user) });
 }
 
+/**
+ * POST /auth/refresh (refresh cookie only): new access token + rotated refresh cookie.
+ * The custom header is a CSRF guard: another site can't send it without passing CORS.
+ */
+export async function refresh(req, res) {
+  if (req.get('x-requested-with') !== 'vendora') throw new ApiError(403, 'Missing X-Requested-With header');
+  try {
+    const result = await refreshSession(readRefreshCookie(req));
+    if (result.refreshToken) setRefreshCookie(res, result.refreshToken, result.refreshExpiresAt);
+    res.json({ accessToken: result.accessToken, user: await profile(result.user) });
+  } catch (err) {
+    clearRefreshCookie(res);
+    throw err;
+  }
+}
+
+/** Ends this device's session. Works from the cookie even when the access token has already expired. */
 export async function logout(req, res) {
-  await revokeSession(req.auth);
+  const cookie = readRefreshCookie(req);
+  if (cookie) await revokeByRefreshToken(cookie);
+  else if (req.auth?.sid) await revokeSession(req.auth.sid);
+  clearRefreshCookie(res);
   res.json({ message: 'Logged out' });
+}
+
+/** Ends every session of the account, this device included. */
+export async function logoutAll(req, res) {
+  const count = await revokeAllSessions(req.user._id, 'logout_all');
+  clearRefreshCookie(res);
+  res.json({ message: `Logged out of ${count} device(s)` });
+}
+
+export async function sessions(req, res) {
+  const list = await listSessions(req.user._id);
+  res.json({ sessions: list.map((s) => ({ ...s, current: String(s._id) === String(req.auth.sid) })) });
+}
+
+/** Logs out one of your other devices. */
+export async function revokeDevice(req, res) {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(400, 'Invalid session id');
+  const count = await revokeUserSession(req.user._id, req.params.id);
+  if (!count) throw new ApiError(404, 'Session not found');
+  if (String(req.params.id) === String(req.auth.sid)) clearRefreshCookie(res);
+  res.json({ message: 'Device logged out' });
 }
 
 export async function me(req, res) {
@@ -103,34 +157,11 @@ export async function changePassword(req, res) {
   user.password = req.body.newPassword;
   user.passwordChangedAt = new Date();
   await user.save();
-  // Every older token (other devices included) now fails in protect(); hand this device a fresh one.
-  await revokeSession(req.auth);
+  // Every other device is logged out; this one gets a fresh session (older access tokens fail the iat check).
+  await revokeAllSessions(user._id, 'password_change');
   await invalidateUser(user._id);
-  const token = await createSession(user);
-  res.json({ message: 'Password updated. Other devices have been logged out.', token });
-}
-
-/* ------------------------------------------------------ email verification */
-
-export async function verifyEmail(req, res) {
-  const user = await confirmVerification(req.body.token);
-  if (!user) throw new ApiError(400, 'This verification link is invalid or has expired. Request a new one.');
-  res.json({ message: 'Email verified', user: await profile(user) });
-}
-
-const RESEND_COOLDOWN = 60;
-const RESEND_DAILY_MAX = 5;
-
-export async function resendVerification(req, res) {
-  if (req.user.emailVerified) throw new ApiError(400, 'Your email is already verified');
-  const id = req.user._id;
-  if (await cache.exists(`verify-cooldown:${id}`)) throw new ApiError(429, 'Please wait a minute before requesting another email');
-  if ((await cache.incrWithTtl(`verify-daily:${id}`, 24 * 60 * 60)) > RESEND_DAILY_MAX) {
-    throw new ApiError(429, 'Daily limit reached for verification emails. Try again tomorrow.');
-  }
-  await cache.set(`verify-cooldown:${id}`, '1', RESEND_COOLDOWN);
-  await issueVerification(req.user);
-  res.json({ message: `Verification email sent to ${req.user.email}` });
+  const accessToken = await signIn(res, user, req);
+  res.json({ message: 'Password updated. Other devices have been logged out.', accessToken });
 }
 
 /* ------------------------------------------------------------- addresses */

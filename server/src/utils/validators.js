@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CANCEL_REASONS_BY_ACTOR } from '../models/Order.js';
 
 /** Shared field rules so users, vendors and addresses validate contact details the same way. */
 
@@ -31,3 +32,9 @@ export const address = z.object({
   pincode,
   country: z.string().trim().default('India'),
 });
+
+/** Cancel reason for a given actor: a code from their list, and a note when the code is `other`. */
+export const cancelReason = (actor) =>
+  z
+    .object({ reasonCode: z.enum(CANCEL_REASONS_BY_ACTOR[actor]), note: z.string().trim().max(200).optional() })
+    .refine((b) => b.reasonCode !== 'other' || (b.note && b.note.length >= 3), { message: 'Describe the reason (at least 3 characters)', path: ['note'] });

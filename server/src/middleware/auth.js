@@ -1,10 +1,13 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { Vendor } from '../models/Vendor.js';
-import { isRevoked, loadSessionUser } from '../services/session.js';
+import { isSessionActive, loadSessionUser } from '../services/session.js';
 import { ApiError, asyncHandler } from '../utils/http.js';
 
-/** Requires a valid Bearer token whose session has not been revoked. Sets req.user and req.auth. */
+/**
+ * Requires a valid access token (Bearer) whose session is still active. Sets req.user and req.auth.
+ * 401 codes tell the client what to do: TOKEN_EXPIRED -> call /auth/refresh and retry; anything else -> log in.
+ */
 export const protect = asyncHandler(async (req, _res, next) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -13,17 +16,18 @@ export const protect = asyncHandler(async (req, _res, next) => {
   let payload;
   try {
     payload = jwt.verify(token, env.jwtSecret);
-  } catch {
-    throw new ApiError(401, 'Your session has expired. Please log in again.');
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') throw new ApiError(401, 'Access token expired', { code: 'TOKEN_EXPIRED' });
+    throw new ApiError(401, 'Please log in to continue', { code: 'INVALID_TOKEN' });
   }
-  if (await isRevoked(payload.sid)) throw new ApiError(401, 'You have been logged out. Please log in again.');
+  if (!(await isSessionActive(payload.sid))) throw new ApiError(401, 'You have been logged out. Please log in again.', { code: 'SESSION_ENDED' });
 
   const user = await loadSessionUser(payload.sub);
   if (!user) throw new ApiError(401, 'Account not found');
   if (user.status === 'blocked') throw new ApiError(403, 'Your account has been suspended. Please contact support.');
   // Tokens issued before the last password change are no longer valid.
   if (user.passwordChangedAt && payload.iat < Math.floor(new Date(user.passwordChangedAt).getTime() / 1000)) {
-    throw new ApiError(401, 'Your password was changed. Please log in again.');
+    throw new ApiError(401, 'Your password was changed. Please log in again.', { code: 'SESSION_ENDED' });
   }
 
   req.user = user;
@@ -38,12 +42,6 @@ export const optionalAuth = (req, res, next) => {
     if (err) req.user = undefined;
     next();
   });
-};
-
-/** Gates actions that need a confirmed email (checkout, opening a store). Admins are exempt. */
-export const requireVerifiedEmail = (req, _res, next) => {
-  if (req.user.role === 'admin' || req.user.emailVerified) return next();
-  return next(new ApiError(403, 'Please verify your email address first. Check your inbox or resend the link from your account.', { code: 'EMAIL_NOT_VERIFIED' }));
 };
 
 /** Role-based access control. */

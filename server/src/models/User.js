@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import { addressSchema, presentString } from './address.js';
+import { addressSchema, presentString } from './Address.js';
 
 export const ROLES = ['customer', 'vendor', 'admin'];
 export const USER_STATUSES = ['active', 'blocked'];
@@ -30,11 +30,6 @@ const userSchema = new mongoose.Schema(
       validate: { validator: (v) => v.length <= WISHLIST_MAX, message: `Wishlist can hold up to ${WISHLIST_MAX} products` },
     },
 
-    emailVerified: { type: Boolean, default: false },
-    /** SHA-256 of the emailed token; the raw token is never stored. */
-    emailVerifyTokenHash: { type: String, select: false },
-    emailVerifyExpires: { type: Date, select: false },
-
     status: { type: String, enum: USER_STATUSES, default: 'active', index: true },
     blockedReason: String,
     blockedAt: Date,
@@ -45,7 +40,6 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ phone: 1 }, { unique: true, partialFilterExpression: presentString('phone') });
-userSchema.index({ emailVerifyTokenHash: 1 }, { sparse: true });
 
 userSchema.pre('save', async function hashPassword() {
   if (!this.isModified('password')) return;
@@ -62,7 +56,6 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     _id: this._id.toString(),
     name: this.name,
     email: this.email,
-    emailVerified: Boolean(this.emailVerified),
     role: this.role,
     phone: this.phone || '',
     avatar: this.avatar || '',

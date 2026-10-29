@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import * as auth from '../controllers/auth.controller.js';
-import { protect } from '../middleware/auth.js';
+import { optionalAuth, protect } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/http.js';
 
@@ -15,6 +15,15 @@ const authLimiter = rateLimit({
   message: { message: 'Too many attempts. Please try again in a few minutes.' },
 });
 
+// Every open tab refreshes about every 15 minutes; this only stops scripted hammering.
+const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many requests. Please try again in a few minutes.' },
+});
+
 // Stricter limit: a wrong current password is a guessing attempt.
 const passwordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -26,19 +35,12 @@ const passwordLimiter = rateLimit({
 
 router.post('/register', authLimiter, validate(auth.registerSchema), asyncHandler(auth.register));
 router.post('/login', authLimiter, validate(auth.loginSchema), asyncHandler(auth.login));
-router.post('/logout', protect, asyncHandler(auth.logout));
-
-// Hourly cap on top of the per-user cooldown/daily limit in the controller.
-const verifyLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  limit: 10,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  message: { message: 'Too many verification requests. Please try again later.' },
-});
-
-router.post('/verify-email', verifyLimiter, validate(auth.verifyEmailSchema), asyncHandler(auth.verifyEmail));
-router.post('/verify-email/resend', protect, verifyLimiter, asyncHandler(auth.resendVerification));
+// Access token: short-lived JWT (Bearer). Refresh token: httpOnly cookie on /auth, rotated on every use.
+router.post('/refresh', refreshLimiter, asyncHandler(auth.refresh));
+router.post('/logout', optionalAuth, asyncHandler(auth.logout));
+router.post('/logout-all', protect, asyncHandler(auth.logoutAll));
+router.get('/sessions', protect, asyncHandler(auth.sessions));
+router.delete('/sessions/:id', protect, asyncHandler(auth.revokeDevice));
 
 router.get('/me', protect, asyncHandler(auth.me));
 router.patch('/me', protect, validate(auth.profileSchema), asyncHandler(auth.updateMe));
