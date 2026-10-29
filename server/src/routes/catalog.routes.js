@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as catalog from '../controllers/catalog.controller.js';
+import * as reviews from '../controllers/review.controller.js';
 import { optionalAuth, protect } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { imageUpload } from '../middleware/upload.js';
@@ -13,10 +14,15 @@ router.get('/categories', asyncHandler(catalog.listCategories));
 router.get('/products', asyncHandler(catalog.listProducts));
 router.get('/products/suggest', asyncHandler(catalog.suggestProducts));
 router.get('/products/:productId', optionalAuth, asyncHandler(catalog.getProduct));
-router.get('/products/:productId/reviews', optionalAuth, asyncHandler(catalog.getReviews));
-router.post('/products/:productId/reviews', protect, validate(catalog.reviewSchema), asyncHandler(catalog.createReview));
-router.patch('/products/:productId/reviews/:reviewId', protect, validate(catalog.reviewUpdateSchema), asyncHandler(catalog.updateReview));
-router.delete('/products/:productId/reviews/:reviewId', protect, asyncHandler(catalog.deleteReview));
+// Ratings (stars, one per customer) and reviews (comments, up to 20) are separate; both need a delivered order.
+router.put('/products/:productId/rating', protect, validate(reviews.ratingSchema), asyncHandler(reviews.rateProduct));
+router.delete('/products/:productId/rating', protect, asyncHandler(reviews.unrateProduct));
+router.get('/products/:productId/reviews', optionalAuth, asyncHandler(reviews.listReviews));
+router.post('/products/:productId/reviews', protect, validate(reviews.reviewSchema), asyncHandler(reviews.createReview));
+router.patch('/products/:productId/reviews/:reviewId', protect, validate(reviews.reviewUpdateSchema), asyncHandler(reviews.updateReview));
+router.delete('/products/:productId/reviews/:reviewId', protect, asyncHandler(reviews.deleteReview));
+router.post('/products/:productId/reviews/:reviewId/helpful', protect, asyncHandler(reviews.voteHelpful));
+router.delete('/products/:productId/reviews/:reviewId/helpful', protect, asyncHandler(reviews.unvoteHelpful));
 
 router.get('/coupons', asyncHandler(catalog.publicCoupons));
 

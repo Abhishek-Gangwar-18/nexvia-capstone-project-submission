@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { Coupon } from '../models/Coupon.js';
+import { CouponRedemption } from '../models/CouponRedemption.js';
 import { ApiError, paginated, parsePagination } from '../utils/http.js';
+
+/** 0 or empty means "no limit" in the form; stored as null. */
+const optionalLimit = z.preprocess((v) => (v === '' || v === 0 || v === '0' || v == null ? null : v), z.coerce.number().int().min(1).nullable());
 
 const couponBase = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9_-]{3,20}$/, 'Use 3–20 letters, numbers, - or _'),
@@ -8,17 +12,19 @@ const couponBase = z.object({
   type: z.enum(['percent', 'flat']),
   value: z.coerce.number().positive('Value must be greater than 0'),
   minOrder: z.coerce.number().min(0).default(0),
-  maxDiscount: z.coerce.number().min(0).default(0),
+  maxDiscount: optionalLimit.default(null),
+  startsAt: z.coerce.date().nullable().optional(),
   expiresAt: z.coerce.date().nullable().optional(),
-  usageLimit: z.coerce.number().int().min(0).default(0),
+  usageLimit: optionalLimit.default(null),
   perUserLimit: z.coerce.number().int().min(1).default(1),
   isActive: z.boolean().default(true),
   isPublic: z.boolean().optional(),
 });
 
-const percentRule = [(c) => c.type !== 'percent' || !c.value || c.value <= 90, { message: 'A percentage discount cannot exceed 90%', path: ['value'] }];
-export const couponCreateSchema = couponBase.refine(...percentRule);
-export const couponUpdateSchema = couponBase.partial().refine(...percentRule);
+// The rules themselves live in the Coupon schema; flat coupons simply drop maxDiscount.
+const dropCapForFlat = (c) => (c.type === 'flat' ? { ...c, maxDiscount: null } : c);
+export const couponCreateSchema = couponBase.transform(dropCapForFlat);
+export const couponUpdateSchema = couponBase.partial().transform(dropCapForFlat);
 
 /**
  * Coupon CRUD shared by admins (platform-wide coupons, vendor = null)
@@ -35,7 +41,7 @@ export async function listCoupons(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 20 });
   const filter = req.vendor ? { vendor: req.vendor._id } : req.query.scope === 'all' ? {} : { vendor: null };
   const [items, total] = await Promise.all([
-    Coupon.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('vendor', 'storeName').select('-usedBy').lean(),
+    Coupon.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('vendor', 'storeName').lean(),
     Coupon.countDocuments(filter),
   ]);
   res.json(paginated(items, total, page, limit));
@@ -67,8 +73,12 @@ export async function updateCoupon(req, res) {
   res.json({ coupon });
 }
 
+/** Only never-used coupons can be deleted; used ones keep their history and can be switched off instead. */
 export async function deleteCoupon(req, res) {
   const coupon = await ownCoupon(req);
+  if (coupon.usedCount > 0 || (await CouponRedemption.exists({ coupon: coupon._id }))) {
+    throw new ApiError(409, 'This coupon has been used, so it can only be deactivated');
+  }
   await coupon.deleteOne();
   res.json({ message: 'Coupon deleted' });
 }

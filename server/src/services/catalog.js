@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Category } from '../models/Category.js';
 import { LISTED, Product } from '../models/Product.js';
 import { Vendor } from '../models/Vendor.js';
@@ -5,19 +6,20 @@ import { cache } from './cache.js';
 import { escapeRegex, paginated, parsePagination, round2 } from '../utils/http.js';
 
 /**
- * Store rating = review-weighted average of its product ratings (a product with 40 reviews counts
- * more than one with 2). Runs only on review writes, using the per-product aggregates already stored.
+ * Recounts a store's rating from its products' rating totals. Rating writes keep it current with $inc
+ * (services/reviews.js); this full recount is for repairs and migrations.
  */
 export async function recalcVendorRating(vendorId) {
   const [stats] = await Product.aggregate([
-    { $match: { vendor: vendorId, numReviews: { $gt: 0 } } },
-    { $group: { _id: null, weighted: { $sum: { $multiply: ['$rating', '$numReviews'] } }, count: { $sum: '$numReviews' } } },
+    { $match: { vendor: vendorId } },
+    { $group: { _id: null, sum: { $sum: '$ratingSum' }, count: { $sum: '$numRatings' } } },
   ]);
   const count = stats?.count || 0;
-  await Vendor.updateOne({ _id: vendorId }, { rating: count ? round2(stats.weighted / count) : 0, numReviews: count });
+  const sum = stats?.sum || 0;
+  await Vendor.updateOne({ _id: vendorId }, { ratingSum: sum, numRatings: count, rating: count ? round2(sum / count) : 0 });
 }
 
-export const CARD_FIELDS = 'title brand category price mrp rating numReviews sold stock thumbnail vendor createdAt';
+export const CARD_FIELDS = 'title brand category price mrp rating numRatings sold stock thumbnail vendor createdAt';
 
 /** Flattens a product (with populated vendor) into the shape product cards use. */
 export const toCard = (p) => ({
@@ -29,7 +31,7 @@ export const toCard = (p) => ({
   mrp: p.mrp,
   discount: p.mrp > p.price ? Math.round(((p.mrp - p.price) / p.mrp) * 100) : 0,
   rating: p.rating,
-  numReviews: p.numReviews,
+  numRatings: p.numRatings,
   sold: p.sold,
   stock: p.stock,
   thumbnail: p.thumbnail,
@@ -44,17 +46,14 @@ export async function approvedVendorIds() {
 
 export async function categoriesWithCounts() {
   return cache.remember('categories', 600, async () => {
-    const vendorIds = await approvedVendorIds();
+    const vendorIds = (await approvedVendorIds()).map((id) => new mongoose.Types.ObjectId(id));
     const [categories, counts] = await Promise.all([
-      Category.find().sort({ order: 1, name: 1 }).lean(),
-      Product.aggregate([
-        { $match: LISTED },
-        { $match: { $expr: { $in: [{ $toString: '$vendor' }, vendorIds] } } },
-        { $group: { _id: '$category', count: { $sum: 1 } } },
-      ]),
+      Category.find({ isActive: true }).sort({ order: 1, name: 1 }).lean(),
+      // Plain $in on the ObjectIds (no per-document $toString), so the vendor index can be used.
+      Product.aggregate([{ $match: { ...LISTED, vendor: { $in: vendorIds } } }, { $group: { _id: '$category', count: { $sum: 1 } } }]),
     ]);
-    const byCategory = new Map(counts.map((c) => [c._id, c.count]));
-    return categories.map((c) => ({ _id: c._id, name: c.name, slug: c.slug, image: c.image, group: c.group, productCount: byCategory.get(c.slug) || 0 }));
+    const byCategory = new Map(counts.map((c) => [String(c._id), c.count]));
+    return categories.map((c) => ({ _id: c._id, name: c.name, image: c.image, group: c.group, productCount: byCategory.get(String(c._id)) || 0 }));
   });
 }
 
@@ -76,7 +75,7 @@ function vendorStatsPipeline(match = {}) {
         localField: '_id',
         foreignField: 'vendor',
         as: 'products',
-        pipeline: [{ $match: LISTED }, { $sort: { sold: -1 } }, { $project: { rating: 1, numReviews: 1, sold: 1, thumbnail: 1 } }],
+        pipeline: [{ $match: LISTED }, { $sort: { sold: -1 } }, { $project: { rating: 1, numRatings: 1, sold: 1, thumbnail: 1 } }],
       },
     },
     {
@@ -90,7 +89,7 @@ function vendorStatsPipeline(match = {}) {
         sold: { $sum: '$products.sold' },
         rating: {
           $avg: {
-            $map: { input: { $filter: { input: '$products', cond: { $gt: ['$$this.numReviews', 0] } } }, in: '$$this.rating' },
+            $map: { input: { $filter: { input: '$products', cond: { $gt: ['$$this.numRatings', 0] } } }, in: '$$this.rating' },
           },
         },
         previews: { $slice: ['$products.thumbnail', 4] },

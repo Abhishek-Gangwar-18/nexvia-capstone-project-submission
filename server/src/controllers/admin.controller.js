@@ -2,16 +2,18 @@ import mongoose from 'mongoose';
 import { z } from 'zod';
 import { Order } from '../models/Order.js';
 import { User } from '../models/User.js';
-import { Vendor } from '../models/Vendor.js';
+import { OWNER_BLOCKED, Vendor, VENDOR_TRANSITIONS } from '../models/Vendor.js';
 import { LISTED, Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
-import { Settings } from '../models/Settings.js';
+import { Settings, SETTINGS_FIELDS, SETTINGS_LIMITS } from '../models/Settings.js';
 import { cache } from '../services/cache.js';
 import { getSettings } from '../services/pricing.js';
-import { invalidateUser } from '../services/session.js';
+import { invalidateUser, revokeAllSessions } from '../services/session.js';
 import { indexProducts, indexStats, reindexAll, searchEngine } from '../services/search.js';
 import { invalidateCatalog, invalidateProducts } from '../services/catalog.js';
-import { transitionPackage } from '../services/orders.js';
+import { transitionPackage, withPackageLock } from '../services/orders.js';
+import { buildOrderFilter, dateRange, EXCEPTION_TYPES, exceptionConditions, orderRow, ordersCsv, orderSort, SLA } from '../services/adminOrders.js';
+import { cancelReason } from '../utils/validators.js';
 import { storageDriver } from '../services/storage.js';
 import { paymentProvider } from '../services/payment.js';
 import { mongoStatus } from '../config/db.js';
@@ -112,7 +114,7 @@ export async function analytics(req, res) {
     Vendor.countDocuments({ status: 'approved' }),
     Vendor.countDocuments({ status: 'pending' }),
     Product.countDocuments(LISTED),
-    Category.find().select('slug name').lean(),
+    Category.find().select('name').lean(),
     Order.find({ 'payment.status': { $in: ['paid', 'refunded'] } })
       .sort({ createdAt: -1 })
       .limit(7)
@@ -125,7 +127,7 @@ export async function analytics(req, res) {
   const current = period('current');
   const previous = period('previous');
   const aov = (p) => (p.orders ? p.gmv / p.orders : 0);
-  const names = new Map(categories.map((c) => [c.slug, c.name]));
+  const names = new Map(categories.map((c) => [String(c._id), c.name]));
 
   res.json({
     range: days,
@@ -140,7 +142,7 @@ export async function analytics(req, res) {
     },
     series: fillSeries(agg.series, days, ['gmv', 'commission', 'orders']),
     byStatus: agg.byStatus.map((s) => ({ status: s._id, count: s.count })),
-    byCategory: agg.byCategory.map((c) => ({ category: c._id, name: names.get(c._id) || c._id, revenue: round2(c.revenue), units: c.units })),
+    byCategory: agg.byCategory.map((c) => ({ category: c._id, name: names.get(String(c._id)) || 'Deleted category', revenue: round2(c.revenue), units: c.units })),
     topProducts: agg.topProducts.map((p) => ({ ...p, revenue: round2(p.revenue) })),
     topVendors: agg.topVendors.map((v) => ({ ...v, gmv: round2(v.gmv), commission: round2(v.commission) })),
     recentOrders,
@@ -149,23 +151,39 @@ export async function analytics(req, res) {
 
 /* --------------------------------------------------------------- vendors */
 
-export const vendorUpdateSchema = z.object({
-  status: z.enum(['pending', 'approved', 'rejected', 'suspended']).optional(),
-  rejectionReason: z.string().trim().max(300).optional(),
-  commissionRate: z.coerce.number().min(0).max(50).nullable().optional(),
-  razorpayAccountId: z
-    .string()
-    .trim()
-    .regex(/^acc_[A-Za-z0-9]{6,}$/, 'Linked account ids look like acc_XXXXXXXXXXXX')
-    .or(z.literal(''))
-    .optional(),
-});
+/** Payout details (bank, linked account) belong to the seller: admins can neither read nor change them. */
+export const vendorUpdateSchema = z
+  .object({
+    status: z.enum(['approved', 'rejected', 'suspended']).optional(),
+    rejectionReason: z.string().trim().max(300).optional(),
+    commissionRate: z.coerce.number().min(0).max(50).nullable().optional(),
+  })
+  .strict();
+
+const PAYOUT_FIELDS = ['bank', 'stripe', 'payoutChanges'];
+
+/** Vendor as admins see it: no payout details, only whether payouts are linked. */
+function adminVendorView(vendor) {
+  const v = typeof vendor.toObject === 'function' ? vendor.toObject() : { ...vendor };
+  v.payoutLinked = Boolean(v.stripe?.payoutsEnabled);
+  for (const f of PAYOUT_FIELDS) delete v[f];
+  return v;
+}
+
+/** Store visibility changed -> refresh search docs, listings and cached product pages. */
+async function refreshStoreVisibility(vendorId) {
+  const products = await Product.find({ vendor: vendorId }).select('_id').lean();
+  await invalidateProducts(products);
+  await invalidateCatalog();
+  indexProducts(products.map((p) => p._id));
+}
 
 export async function listVendors(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 12 });
   const match = {};
   if (req.query.status) match.status = req.query.status;
   if (req.query.q) match.storeName = new RegExp(escapeRegex(req.query.q), 'i');
+  if (req.query.payoutHold === '1') match['payoutHold.active'] = true;
 
   const [items, total, counts] = await Promise.all([
     Vendor.aggregate([
@@ -175,8 +193,15 @@ export async function listVendors(req, res) {
       { $limit: limit },
       { $lookup: { from: 'users', localField: 'user', foreignField: '_id', as: 'owner', pipeline: [{ $project: { name: 1, email: 1 } }] } },
       { $lookup: { from: 'products', localField: '_id', foreignField: 'vendor', as: 'products', pipeline: [{ $project: { sold: 1 } }] } },
-      { $set: { owner: { $first: '$owner' }, productCount: { $size: '$products' }, unitsSold: { $sum: '$products.sold' } } },
-      { $project: { products: 0 } },
+      {
+        $set: {
+          owner: { $first: '$owner' },
+          productCount: { $size: '$products' },
+          unitsSold: { $sum: '$products.sold' },
+          payoutLinked: { $eq: ['$stripe.payoutsEnabled', true] },
+        },
+      },
+      { $project: { products: 0, bank: 0, stripe: 0, payoutChanges: 0 } },
     ]),
     Vendor.countDocuments(match),
     Vendor.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
@@ -189,22 +214,24 @@ export async function updateVendor(req, res) {
   if (!vendor) throw new ApiError(404, 'Vendor not found');
   const { status, rejectionReason, ...rest } = req.body;
   const statusChanged = status && status !== vendor.status;
-  Object.assign(vendor, rest);
   if (statusChanged) {
+    if (!VENDOR_TRANSITIONS[vendor.status].includes(status)) {
+      const allowed = VENDOR_TRANSITIONS[vendor.status];
+      throw new ApiError(400, `${/^[aeiou]/.test(vendor.status) ? "An" : "A"} ${vendor.status} store cannot be moved to ${status}${allowed.length ? ` (allowed: ${allowed.join(', ')})` : vendor.status === 'rejected' ? '. The seller has to resubmit first' : ''}`);
+    }
     if (['rejected', 'suspended'].includes(status) && !rejectionReason) {
       throw new ApiError(400, `Give a reason when a store is ${status}`);
     }
-    vendor.setStatus(status, { reason: rejectionReason, by: req.user._id });
+    if (status === 'approved') {
+      const owner = await User.findById(vendor.user).select('status').lean();
+      if (owner?.status === 'blocked') throw new ApiError(400, "The store owner's account is blocked. Unblock the user first");
+    }
   }
+  Object.assign(vendor, rest);
+  if (statusChanged) vendor.setStatus(status, { reason: rejectionReason, by: req.user._id });
   await vendor.save();
-  if (statusChanged) {
-    // Store visibility changed -> refresh search docs, listings and cached product pages.
-    const products = await Product.find({ vendor: vendor._id }).select('_id').lean();
-    await invalidateProducts(products);
-    await invalidateCatalog();
-    indexProducts(products.map((p) => p._id));
-  }
-  res.json({ vendor });
+  if (statusChanged) await refreshStoreVisibility(vendor._id);
+  res.json({ vendor: adminVendorView(vendor) });
 }
 
 /* ----------------------------------------------------------------- users */
@@ -218,7 +245,7 @@ export async function listUsers(req, res) {
     filter.$or = [{ name: rx }, { email: rx }];
   }
   const [items, total, counts] = await Promise.all([
-    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select('name email emailVerified role phone avatar status blockedReason blockedAt lastLoginAt createdAt').lean(),
+    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select('name email role phone avatar status blockedReason blockedAt lastLoginAt createdAt').lean(),
     User.countDocuments(filter),
     User.aggregate([{ $group: { _id: '$role', count: { $sum: 1 } } }]),
   ]);
@@ -233,7 +260,7 @@ export const userUpdateSchema = z
   .refine((b) => b.status !== 'blocked' || b.reason, { message: 'Give a reason for blocking this user', path: ['reason'] });
 
 export async function updateUser(req, res) {
-  if (req.params.id === req.user._id) throw new ApiError(400, 'You cannot change your own account here');
+  if (String(req.params.id) === String(req.user._id)) throw new ApiError(400, 'You cannot change your own account here');
   const user = await User.findById(req.params.id);
   if (!user) throw new ApiError(404, 'User not found');
   if (user.role === 'admin') throw new ApiError(400, 'Admin accounts cannot be blocked');
@@ -244,44 +271,217 @@ export async function updateUser(req, res) {
   user.blockedBy = blocked ? req.user._id : undefined;
   await user.save();
   await invalidateUser(user._id);
-  res.json({ user: user.toSafeJSON() });
+  if (blocked) await revokeAllSessions(user._id, 'blocked');
+  const store = user.role === 'vendor' ? await syncStoreWithOwner(user, req) : undefined;
+  res.json({ user: user.toSafeJSON(), ...(store && { store }) });
+}
+
+/**
+ * Blocking a seller takes their store offline (suspended, so the storefront and products 404);
+ * unblocking restores it only if the block was what suspended it.
+ */
+async function syncStoreWithOwner(user, req) {
+  const vendor = await Vendor.findOne({ user: user._id });
+  if (!vendor) return undefined;
+  const blocked = user.status === 'blocked';
+  const lastReason = vendor.statusHistory.at(-1)?.reason || '';
+  if (blocked && vendor.status === 'approved') {
+    vendor.setStatus('suspended', { reason: `${OWNER_BLOCKED}: ${req.body.reason}`, by: req.user._id });
+  } else if (!blocked && vendor.status === 'suspended' && lastReason.startsWith(OWNER_BLOCKED)) {
+    vendor.setStatus('approved', { reason: 'Owner account unblocked', by: req.user._id });
+  } else {
+    return { _id: vendor._id, status: vendor.status, changed: false };
+  }
+  await vendor.save();
+  await refreshStoreVisibility(vendor._id);
+  return { _id: vendor._id, status: vendor.status, changed: true };
 }
 
 /* ---------------------------------------------------------------- orders */
 
+const ROW_FIELDS =
+  'orderNumber status createdAt placedAt customer pricing payment.status payment.provider reservation ' +
+  'packages._id packages.vendor packages.storeName packages.status packages.trackingId packages.refund packages.timeline ' +
+  'packages.items.product packages.items.title packages.items.quantity';
+
+/** Admin order table: every search/filter runs on the server (see services/adminOrders.js). */
 export async function listOrders(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 15 });
-  const filter = {};
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.payment) filter['payment.status'] = req.query.payment;
-  if (req.query.q) filter.orderNumber = new RegExp(escapeRegex(req.query.q), 'i');
-  const [items, total, counts] = await Promise.all([
-    Order.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate('customer', 'name email')
-      .select('orderNumber status pricing payment.status payment.provider createdAt customer packages.storeName packages.status packages.commission')
-      .lean(),
+  const filter = await buildOrderFilter(req.query);
+  const [orders, total, counts, attention] = await Promise.all([
+    Order.find(filter).sort(orderSort(req.query.sort)).skip(skip).limit(limit).populate('customer', 'name email').select(ROW_FIELDS).lean(),
     Order.countDocuments(filter),
     Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    Order.countDocuments({ $or: Object.values(exceptionConditions()) }),
   ]);
-  res.json({ ...paginated(items, total, page, limit), counts: Object.fromEntries(counts.map((c) => [c._id, c.count])) });
+  const now = new Date();
+  res.json({
+    ...paginated(orders.map((o) => orderRow(o, now)), total, page, limit),
+    counts: { ...Object.fromEntries(counts.map((c) => [c._id, c.count])), attention },
+  });
 }
 
-export const packageStatusSchema = z.object({
-  status: z.enum(['packed', 'shipped', 'delivered', 'cancelled']),
-  trackingId: z.string().trim().max(40).optional(),
-  note: z.string().trim().max(200).optional(),
-});
+const PAID = ['paid', 'refunded'];
+const REFUNDED = ['processed', 'pending'];
+const sumIf = (cond, value) => ({ $sum: { $cond: [cond, value, 0] } });
+
+/**
+ * KPIs for the selected range (?range / ?from&to). Order-level money is summed once per order and
+ * package-level counts are computed separately, so multi-vendor orders are never double counted.
+ * Exception counts are current state and ignore the range.
+ */
+export async function orderSummary(req, res) {
+  const created = dateRange({ range: req.query.range ?? '30', from: req.query.from, to: req.query.to });
+  const match = created ? { createdAt: created } : {};
+  const rules = exceptionConditions();
+  const deliveredAt = { $max: { $map: { input: { $filter: { input: '$packages.timeline', cond: { $eq: ['$$this.status', 'delivered'] } } }, in: '$$this.at' } } };
+
+  const [[agg], ...exceptionCounts] = await Promise.all([
+    Order.aggregate([
+      { $match: match },
+      {
+        $facet: {
+          orders: [
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 },
+                placed: sumIf({ $gt: ['$placedAt', null] }, 1),
+                paid: sumIf({ $in: ['$payment.status', PAID] }, 1),
+                gross: sumIf({ $in: ['$payment.status', PAID] }, '$pricing.total'),
+                cancelled: sumIf({ $eq: ['$status', 'cancelled'] }, 1),
+                paymentPending: sumIf({ $eq: ['$payment.status', 'pending'] }, 1),
+                paymentFailed: sumIf({ $eq: ['$payment.status', 'failed'] }, 1),
+              },
+            },
+          ],
+          byStatus: [{ $group: { _id: '$status', count: { $sum: 1 } } }],
+          packages: [
+            { $unwind: '$packages' },
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 },
+                awaiting: sumIf({ $in: ['$packages.status', ['placed', 'packed']] }, 1),
+                inTransit: sumIf({ $eq: ['$packages.status', 'shipped'] }, 1),
+                delivered: sumIf({ $eq: ['$packages.status', 'delivered'] }, 1),
+                cancelled: sumIf({ $eq: ['$packages.status', 'cancelled'] }, 1),
+                refundCount: sumIf({ $in: ['$packages.refund.status', REFUNDED] }, 1),
+                refundAmount: sumIf({ $in: ['$packages.refund.status', REFUNDED] }, '$packages.refund.amount'),
+                failedRefundCount: sumIf({ $eq: ['$packages.refund.status', 'failed'] }, 1),
+                failedRefundAmount: sumIf({ $eq: ['$packages.refund.status', 'failed'] }, '$packages.refund.amount'),
+              },
+            },
+          ],
+          fulfilment: [
+            { $unwind: '$packages' },
+            { $match: { 'packages.status': 'delivered', placedAt: { $ne: null } } },
+            { $project: { hours: { $divide: [{ $subtract: [deliveredAt, '$placedAt'] }, 3600000] } } },
+            { $group: { _id: null, avgHours: { $avg: '$hours' } } },
+          ],
+          vendors: [
+            { $unwind: '$packages' },
+            { $match: { 'packages.status': { $ne: 'pending' } } },
+            {
+              $group: {
+                _id: '$packages.vendor',
+                storeName: { $last: '$packages.storeName' },
+                packages: { $sum: 1 },
+                delivered: sumIf({ $eq: ['$packages.status', 'delivered'] }, 1),
+                cancelled: sumIf({ $eq: ['$packages.status', 'cancelled'] }, 1),
+                open: sumIf({ $in: ['$packages.status', ['placed', 'packed', 'shipped']] }, 1),
+                sales: sumIf({ $ne: ['$packages.status', 'cancelled'] }, '$packages.total'),
+              },
+            },
+            { $sort: { packages: -1 } },
+            { $limit: 10 },
+          ],
+        },
+      },
+    ]),
+    ...EXCEPTION_TYPES.map((type) => Order.countDocuments(rules[type])),
+    Order.countDocuments({ $or: Object.values(rules) }),
+  ]);
+
+  const o = agg.orders[0] || { total: 0, placed: 0, paid: 0, gross: 0, cancelled: 0, paymentPending: 0, paymentFailed: 0 };
+  const p = agg.packages[0] || { total: 0, awaiting: 0, inTransit: 0, delivered: 0, cancelled: 0, refundCount: 0, refundAmount: 0, failedRefundCount: 0, failedRefundAmount: 0 };
+  const attentionTotal = exceptionCounts.pop();
+  const exceptions = Object.fromEntries(EXCEPTION_TYPES.map((type, i) => [type, exceptionCounts[i]]));
+  res.json({
+    range: created ? { from: created.$gte ?? null, to: created.$lte ?? null } : null,
+    orders: { total: o.total, placed: o.placed, paid: o.paid, cancelled: o.cancelled, byStatus: Object.fromEntries(agg.byStatus.map((x) => [x._id, x.count])) },
+    sales: { gross: round2(o.gross), refunded: round2(p.refundAmount), net: round2(o.gross - p.refundAmount), aov: o.paid ? round2(o.gross / o.paid) : 0 },
+    packages: { total: p.total, awaiting: p.awaiting, inTransit: p.inTransit, delivered: p.delivered, cancelled: p.cancelled },
+    payments: { pending: o.paymentPending, failed: o.paymentFailed },
+    refunds: { count: p.refundCount, amount: round2(p.refundAmount), failedCount: p.failedRefundCount, failedAmount: round2(p.failedRefundAmount) },
+    cancellationRate: o.placed ? round2((o.cancelled / o.placed) * 100) : 0,
+    avgFulfilmentHours: agg.fulfilment[0] ? round2(agg.fulfilment[0].avgHours) : null,
+    delayed: { dispatch: exceptions.delayed_dispatch, delivery: exceptions.delayed_delivery },
+    exceptions: { ...exceptions, total: attentionTotal },
+    vendorPerformance: agg.vendors.map((v) => ({
+      vendor: v._id,
+      storeName: v.storeName,
+      packages: v.packages,
+      delivered: v.delivered,
+      cancelled: v.cancelled,
+      open: v.open,
+      sales: round2(v.sales),
+      fulfilmentRate: v.packages ? round2((v.delivered / v.packages) * 100) : 0,
+      cancellationRate: v.packages ? round2((v.cancelled / v.packages) * 100) : 0,
+    })),
+    sla: SLA,
+  });
+}
+
+const EXPORT_MAX = 5000;
+
+/** CSV of the filtered list, in pages of up to 5000 rows (?page, ?limit). X-Total-Count has the full size. */
+export async function exportOrders(req, res) {
+  const { page, limit, skip } = parsePagination(req.query, { defaultLimit: EXPORT_MAX, maxLimit: EXPORT_MAX });
+  const filter = await buildOrderFilter(req.query);
+  const [orders, total] = await Promise.all([
+    Order.find(filter).sort(orderSort(req.query.sort)).skip(skip).limit(limit).select(ROW_FIELDS).lean(),
+    Order.countDocuments(filter),
+  ]);
+  res.set({
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="orders-${new Date().toISOString().slice(0, 10)}-p${page}.csv"`,
+    'X-Total-Count': String(total),
+    'X-Total-Pages': String(Math.max(1, Math.ceil(total / limit))),
+    'Access-Control-Expose-Headers': 'X-Total-Count, X-Total-Pages, Content-Disposition',
+  });
+  res.send(ordersCsv(orders));
+}
+
+export const packageStatusSchema = z
+  .object({
+    status: z.enum(['packed', 'shipped', 'delivered', 'cancelled']),
+    trackingId: z.string().trim().max(40).optional(),
+    note: z.string().trim().max(200).optional(),
+    reasonCode: z.string().optional(),
+  })
+  .superRefine((b, ctx) => {
+    if (b.status !== 'cancelled') return;
+    const r = cancelReason('admin').safeParse(b);
+    if (!r.success) r.error.issues.forEach((issue) => ctx.addIssue(issue));
+  });
 
 export async function updatePackage(req, res) {
-  const order = await Order.findById(req.params.id);
-  if (!order) throw new ApiError(404, 'Order not found');
-  const pkg = order.packages.id(req.params.packageId);
-  if (!pkg) throw new ApiError(404, 'Package not found');
-  await transitionPackage(order, pkg, req.body.status, { note: req.body.note || `Updated by admin`, trackingId: req.body.trackingId });
-  await order.save();
+  const order = await withPackageLock(req.params.packageId, async () => {
+    const fresh = await Order.findById(req.params.id);
+    if (!fresh) throw new ApiError(404, 'Order not found');
+    const pkg = fresh.packages.id(req.params.packageId);
+    if (!pkg) throw new ApiError(404, 'Package not found');
+    const { status, note, trackingId, reasonCode } = req.body;
+    const cancellation = status === 'cancelled' ? { by: 'admin', actorId: req.user._id, reasonCode, note } : undefined;
+    await transitionPackage(fresh, pkg, status, {
+      note: status === 'cancelled' ? `Cancelled by admin (${reasonCode})${note ? `: ${note}` : ''}` : note || 'Updated by admin',
+      trackingId,
+      cancellation,
+    });
+    await fresh.save();
+    return fresh;
+  });
   res.json({ order });
 }
 
@@ -294,10 +494,11 @@ export async function listProducts(req, res) {
     const rx = new RegExp(escapeRegex(req.query.q), 'i');
     filter.$or = [{ title: rx }, { brand: rx }];
   }
-  if (req.query.category) filter.category = req.query.category;
+  if (mongoose.isValidObjectId(req.query.category)) filter.category = req.query.category;
   if (req.query.status === 'active') Object.assign(filter, LISTED);
   if (req.query.status === 'inactive') filter.isActive = false;
   if (req.query.status === 'removed') filter['moderation.status'] = 'removed';
+  if (req.query.status === 'deleted') filter.deletedAt = { $ne: null };
   if (mongoose.isValidObjectId(req.query.vendor)) filter.vendor = req.query.vendor;
   const [items, total] = await Promise.all([
     Product.find(filter)
@@ -305,7 +506,7 @@ export async function listProducts(req, res) {
       .skip(skip)
       .limit(limit)
       .populate('vendor', 'storeName')
-      .select('title thumbnail price mrp stock category brand rating numReviews sold isActive moderation vendor createdAt')
+      .select('title thumbnail price mrp stock category brand rating numRatings sold isActive moderation deletedAt vendor createdAt')
       .lean(),
     Product.countDocuments(filter),
   ]);
@@ -330,20 +531,23 @@ export async function moderateProduct(req, res) {
 
 /* ------------------------------------------------------- settings/system */
 
-export const settingsSchema = z.object({
-  commissionRate: z.coerce.number().min(0).max(50).optional(),
-  shippingFee: z.coerce.number().min(0).max(1000).optional(),
-  freeShippingThreshold: z.coerce.number().min(0).max(100000).optional(),
-});
+const settingField = (field) => z.coerce.number().min(SETTINGS_LIMITS[field].min).max(SETTINGS_LIMITS[field].max).optional();
+export const settingsSchema = z
+  .object(Object.fromEntries(SETTINGS_FIELDS.map((f) => [f, settingField(f)])))
+  .refine((b) => Object.keys(b).length > 0, 'Send at least one setting to change');
 
+/** Current settings plus the latest changes (newest first) with who made them. */
 export async function getPlatformSettings(_req, res) {
-  res.json({ settings: await getSettings() });
+  const [settings, doc] = await Promise.all([getSettings(), Settings.findOne({ key: 'platform' }).select('history').populate('history.by', 'name email').lean()]);
+  res.json({ settings, history: (doc?.history || []).slice(-20).reverse() });
 }
 
 export async function updatePlatformSettings(req, res) {
-  const settings = await Settings.findOneAndUpdate({ key: 'platform' }, { $set: req.body }, { new: true, upsert: true }).lean();
+  const settings = (await Settings.findOne({ key: 'platform' })) || new Settings({ key: 'platform' });
+  settings.applyChanges(req.body, req.user._id);
+  await settings.save(); // schema rules, incl. threshold vs fee, run here
   await cache.del('settings');
-  res.json({ settings });
+  res.json({ settings: settings.toObject() });
 }
 
 export async function system(_req, res) {

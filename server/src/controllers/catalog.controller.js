@@ -1,16 +1,13 @@
 import mongoose from 'mongoose';
-import { z } from 'zod';
 import { isListed, LISTED, Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
-import { Review } from '../models/Review.js';
-import { Order } from '../models/Order.js';
 import { Vendor } from '../models/Vendor.js';
 import { Coupon } from '../models/Coupon.js';
 import { cache } from '../services/cache.js';
-import { searchProducts, suggest, indexProducts } from '../services/search.js';
-import { approvedVendorIds, CARD_FIELDS, recalcVendorRating, categoriesWithCounts, invalidateProducts, listVendors, rankedVendors, storeListParams, toCard } from '../services/catalog.js';
+import { searchProducts, suggest } from '../services/search.js';
+import { approvedVendorIds, CARD_FIELDS, categoriesWithCounts, listVendors, rankedVendors, storeListParams, toCard } from '../services/catalog.js';
 import { uploadFile } from '../services/storage.js';
-import { ApiError, paginated, parsePagination, round2 } from '../utils/http.js';
+import { ApiError, round2 } from '../utils/http.js';
 
 /* --------------------------------------------------------------- browse */
 
@@ -35,7 +32,7 @@ export async function home(_req, res) {
     const [categories, trending, topRated, newArrivals, dealIds, vendors] = await Promise.all([
       categoriesWithCounts(),
       cards(Product.find(base).sort({ sold: -1 }).limit(12)),
-      cards(Product.find({ ...base, numReviews: { $gte: 3 } }).sort({ rating: -1, numReviews: -1 }).limit(12)),
+      cards(Product.find({ ...base, numRatings: { $gte: 3 } }).sort({ rating: -1, numRatings: -1 }).limit(12)),
       cards(Product.find(base).sort({ createdAt: -1 }).limit(12)),
       Product.aggregate([
         { $match: { ...base, stock: { $gt: 0 } } },
@@ -66,10 +63,10 @@ export async function getProduct(req, res) {
         .select(CARD_FIELDS)
         .populate('vendor', 'storeName')
         .lean(),
-      Category.findOne({ slug: product.category }).select('name slug').lean(),
+      Category.findById(product.category).select('name').lean(),
       Product.aggregate([
         { $match: { vendor: product.vendor._id, ...LISTED } },
-        { $group: { _id: null, products: { $sum: 1 }, sold: { $sum: '$sold' }, rating: { $avg: { $cond: [{ $gt: ['$numReviews', 0] }, '$rating', null] } } } },
+        { $group: { _id: null, products: { $sum: 1 }, sold: { $sum: '$sold' }, rating: { $avg: { $cond: [{ $gt: ['$numRatings', 0] }, '$rating', null] } } } },
       ]),
     ]);
     return {
@@ -111,8 +108,8 @@ export async function getStore(req, res) {
           _id: null,
           products: { $sum: 1 },
           sold: { $sum: '$sold' },
-          reviews: { $sum: '$numReviews' },
-          rating: { $avg: { $cond: [{ $gt: ['$numReviews', 0] }, '$rating', null] } },
+          reviews: { $sum: '$numRatings' },
+          rating: { $avg: { $cond: [{ $gt: ['$numRatings', 0] }, '$rating', null] } },
           categories: { $addToSet: '$category' },
         },
       },
@@ -121,104 +118,6 @@ export async function getStore(req, res) {
   });
   if (!store) throw new ApiError(404, 'Store not found');
   res.json({ store });
-}
-
-/* -------------------------------------------------------------- reviews */
-
-export const reviewSchema = z.object({
-  rating: z.coerce.number().int().min(1, 'Pick a star rating').max(5),
-  title: z.string().trim().max(100).optional().default(''),
-  comment: z.string().trim().min(10, 'Tell others a little more (at least 10 characters)').max(2000),
-});
-
-async function hasDeliveredPurchase(userId, productId) {
-  return Boolean(
-    await Order.exists({
-      customer: userId,
-      'payment.status': 'paid',
-      packages: { $elemMatch: { status: 'delivered', 'items.product': productId } },
-    }),
-  );
-}
-
-export async function getReviews(req, res) {
-  const { productId } = req.params;
-  if (!mongoose.isValidObjectId(productId)) throw new ApiError(400, 'Invalid product id');
-  const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 6, maxLimit: 30 });
-  const sorts = { recent: { createdAt: -1 }, top: { rating: -1, createdAt: -1 }, low: { rating: 1, createdAt: -1 } };
-  const filter = { product: productId };
-  if (req.query.rating) filter.rating = Number(req.query.rating);
-
-  const [items, total, breakdown, mine, purchased] = await Promise.all([
-    Review.find(filter).sort(sorts[req.query.sort] || sorts.recent).skip(skip).limit(limit).lean(),
-    Review.countDocuments(filter),
-    Review.aggregate([{ $match: { product: new mongoose.Types.ObjectId(productId) } }, { $group: { _id: '$rating', count: { $sum: 1 } } }]),
-    req.user ? Review.find({ product: productId, user: req.user._id }).select('_id').lean() : [],
-    req.user ? hasDeliveredPurchase(req.user._id, productId) : false,
-  ]);
-
-  const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  breakdown.forEach((b) => {
-    distribution[b._id] = b.count;
-  });
-  res.json({ ...paginated(items, total, page, limit), distribution, myReviewIds: mine.map((r) => String(r._id)), hasPurchased: purchased });
-}
-
-async function recalcRating(productId) {
-  const [stats] = await Review.aggregate([
-    { $match: { product: new mongoose.Types.ObjectId(String(productId)) } },
-    { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
-  ]);
-  const product = await Product.findByIdAndUpdate(
-    productId,
-    { rating: round2(stats?.avg || 0), numReviews: stats?.count || 0 },
-    { new: true },
-  ).lean();
-  await invalidateProducts([product]);
-  indexProducts([productId]);
-  await recalcVendorRating(product.vendor);
-}
-
-export const reviewUpdateSchema = reviewSchema
-  .partial()
-  .refine((body) => Object.keys(body).length > 0, 'Send at least one field to update');
-
-/** A customer may post several reviews on the same product (e.g. after each purchase). */
-export async function createReview(req, res) {
-  if (req.user.role !== 'customer') throw new ApiError(403, 'Only customer accounts can write reviews');
-  const product = await Product.findById(req.params.productId).select('_id').lean();
-  if (!product) throw new ApiError(404, 'Product not found');
-
-  const verified = await hasDeliveredPurchase(req.user._id, product._id);
-  const review = await Review.create({ ...req.body, product: product._id, user: req.user._id, name: req.user.name, verified });
-  await recalcRating(product._id);
-  res.status(201).json({ review });
-}
-
-/** Loads a review of this product; only its author (or an admin, when allowed) may act on it. */
-async function authoredReview(req, { allowAdmin = false } = {}) {
-  const { productId, reviewId } = req.params;
-  if (!mongoose.isValidObjectId(reviewId)) throw new ApiError(400, 'Invalid review id');
-  const review = await Review.findOne({ _id: reviewId, product: productId });
-  if (!review) throw new ApiError(404, 'Review not found');
-  const isAuthor = String(review.user) === String(req.user._id);
-  if (!isAuthor && !(allowAdmin && req.user.role === 'admin')) throw new ApiError(403, 'You can only change your own reviews');
-  return review;
-}
-
-export async function updateReview(req, res) {
-  const review = await authoredReview(req);
-  Object.assign(review, req.body);
-  await review.save();
-  await recalcRating(review.product);
-  res.json({ review });
-}
-
-export async function deleteReview(req, res) {
-  const review = await authoredReview(req, { allowAdmin: true });
-  await review.deleteOne();
-  await recalcRating(review.product);
-  res.json({ message: 'Review deleted' });
 }
 
 /* -------------------------------------------------------------- coupons */
@@ -233,7 +132,10 @@ export async function publicCoupons(req, res) {
     // Private coupons are left out of the list but still redeem when typed in at checkout.
     isPublic: { $ne: false },
     vendor: { $in: [null, ...vendorIds] },
-    $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    $and: [
+      { $or: [{ startsAt: null }, { startsAt: { $lte: new Date() } }] },
+      { $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] },
+    ],
   })
     .select('code description type value minOrder maxDiscount vendor expiresAt usageLimit usedCount')
     .populate('vendor', 'storeName')
@@ -249,7 +151,7 @@ export async function publicCoupons(req, res) {
 
 /* -------------------------------------------------------------- uploads */
 
-const UPLOAD_FOLDERS = ['products', 'stores', 'avatars'];
+const UPLOAD_FOLDERS = ['products', 'stores', 'avatars', 'reviews', 'returns'];
 
 export async function uploadImages(req, res) {
   if (!req.files?.length) throw new ApiError(400, 'Choose at least one image to upload');

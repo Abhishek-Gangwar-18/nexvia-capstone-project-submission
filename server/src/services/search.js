@@ -27,7 +27,7 @@ const MAPPINGS = {
     mrp: { type: 'float' },
     discount: { type: 'integer' },
     rating: { type: 'float' },
-    numReviews: { type: 'integer' },
+    numRatings: { type: 'integer' },
     sold: { type: 'integer' },
     stock: { type: 'integer' },
     thumbnail: { type: 'keyword', index: false },
@@ -70,10 +70,14 @@ export async function initSearch() {
 /* ------------------------------------------------------------------ indexing */
 
 let categoryCache = { at: 0, map: new Map() };
+/** Call after a category is created, renamed or deleted. */
+export const resetCategoryNames = () => {
+  categoryCache.at = 0;
+};
 async function categoryNames() {
   if (Date.now() - categoryCache.at > 5 * 60 * 1000) {
-    const cats = await Category.find().select('slug name').lean();
-    categoryCache = { at: Date.now(), map: new Map(cats.map((c) => [c.slug, c.name])) };
+    const cats = await Category.find().select('name').lean();
+    categoryCache = { at: Date.now(), map: new Map(cats.map((c) => [String(c._id), c.name])) };
   }
   return categoryCache.map;
 }
@@ -83,8 +87,8 @@ const toDoc = (p, names) => ({
   titleSuggest: p.title,
   description: (p.description || '').slice(0, 2000),
   brand: p.brand,
-  category: p.category,
-  categoryName: names.get(p.category) || p.category,
+  category: String(p.category),
+  categoryName: names.get(String(p.category)) || '',
   tags: p.tags || [],
   vendorId: String(p.vendor?._id || p.vendor),
   storeName: p.vendor?.storeName || '',
@@ -92,7 +96,7 @@ const toDoc = (p, names) => ({
   mrp: p.mrp || p.price,
   discount: p.mrp > p.price ? Math.round(((p.mrp - p.price) / p.mrp) * 100) : 0,
   rating: p.rating || 0,
-  numReviews: p.numReviews || 0,
+  numRatings: p.numRatings || 0,
   sold: p.sold || 0,
   stock: p.stock || 0,
   thumbnail: p.thumbnail || p.images?.[0]?.url || '',
@@ -183,7 +187,7 @@ function normalize(raw = {}) {
     .filter(Boolean);
   return {
     q: String(raw.q || '').trim().slice(0, 100),
-    category: raw.category ? String(raw.category) : '',
+    category: mongoose.isValidObjectId(raw.category) ? String(raw.category) : '',
     brands,
     minPrice: num(raw.minPrice),
     maxPrice: num(raw.maxPrice),
@@ -230,7 +234,7 @@ async function esSearch(p) {
     popular: [{ sold: 'desc' }],
     price_asc: [{ price: 'asc' }],
     price_desc: [{ price: 'desc' }],
-    rating: [{ rating: 'desc' }, { numReviews: 'desc' }],
+    rating: [{ rating: 'desc' }, { numRatings: 'desc' }],
     newest: [{ createdAt: 'desc' }],
     discount: [{ discount: 'desc' }],
   };
@@ -274,9 +278,12 @@ async function mongoSearch(p) {
   const base = { ...LISTED };
   if (p.q) {
     const words = p.q.split(/\s+/).filter(Boolean).slice(0, 6);
+    const names = await categoryNames();
     base.$and = words.map((word) => {
       const rx = new RegExp(escapeRegex(word), 'i');
-      return { $or: [{ title: rx }, { brand: rx }, { category: rx }, { tags: rx }, { description: rx }] };
+      // Words match category names ("laptop" finds the Laptops category), never ids.
+      const categoryIds = [...names].filter(([, name]) => rx.test(name)).map(([id]) => new mongoose.Types.ObjectId(id));
+      return { $or: [{ title: rx }, { brand: rx }, { category: { $in: categoryIds } }, { tags: rx }, { description: rx }] };
     });
   }
   if (p.minPrice !== undefined || p.maxPrice !== undefined) {
@@ -288,14 +295,14 @@ async function mongoSearch(p) {
   if (p.inStock) base.stock = { $gt: 0 };
   if (p.vendor) base.vendor = new mongoose.Types.ObjectId(p.vendor);
 
-  const categoryFilter = p.category ? { category: p.category } : {};
+  const categoryFilter = p.category ? { category: new mongoose.Types.ObjectId(p.category) } : {};
   const brandFilter = p.brands.length ? { brand: { $in: p.brands } } : {};
   const sortMap = {
     relevance: { sold: -1 },
     popular: { sold: -1 },
     price_asc: { price: 1 },
     price_desc: { price: -1 },
-    rating: { rating: -1, numReviews: -1 },
+    rating: { rating: -1, numRatings: -1 },
     newest: { createdAt: -1 },
     discount: { discount: -1 },
   };
@@ -315,7 +322,7 @@ async function mongoSearch(p) {
           { $limit: p.limit },
           {
             $project: {
-              title: 1, slug: 1, brand: 1, category: 1, price: 1, mrp: 1, discount: 1, rating: 1, numReviews: 1,
+              title: 1, brand: 1, category: 1, price: 1, mrp: 1, discount: 1, rating: 1, numRatings: 1,
               sold: 1, stock: 1, thumbnail: 1, createdAt: 1, vendorId: '$v._id', storeName: '$v.storeName',
             },
           },
@@ -332,7 +339,7 @@ async function mongoSearch(p) {
     items: result.items,
     total: result.total[0]?.n || 0,
     facets: {
-      categories: result.categories.map((c) => ({ key: c._id, count: c.count })),
+      categories: result.categories.map((c) => ({ key: String(c._id), count: c.count })),
       brands: result.brands.map((b) => ({ key: b._id, count: b.count })),
       price: { min: result.price[0]?.min ?? 0, max: result.price[0]?.max ?? 0 },
     },
@@ -366,8 +373,8 @@ export async function suggest(rawQuery) {
   const q = String(rawQuery || '').trim().slice(0, 60);
   if (q.length < 2) return { products: [], categories: [] };
 
-  const categoriesPromise = Category.find({ name: new RegExp(escapeRegex(q), 'i') })
-    .select('name slug image')
+  const categoriesPromise = Category.find({ isActive: true, name: new RegExp(escapeRegex(q), 'i') })
+    .select('name image')
     .limit(3)
     .lean();
 
@@ -391,7 +398,7 @@ export async function suggest(rawQuery) {
             ],
           },
         },
-        _source: ['title', 'slug', 'thumbnail', 'price', 'category', 'brand'],
+        _source: ['title', 'thumbnail', 'price', 'category', 'brand'],
       });
       products = res.hits.hits.map((h) => ({ _id: h._id, ...h._source }));
     } catch (err) {

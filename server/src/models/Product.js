@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { Category } from './Category.js';
-import { presentString } from './address.js';
+import { presentString } from './Address.js';
 
 /** Field limits, shared with the Zod rules in vendor.controller.js. */
 export const PRODUCT_LIMITS = { title: 100, description: 500, images: 8, tags: 20, specs: 10 };
@@ -14,13 +14,16 @@ const productSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true, maxlength: PRODUCT_LIMITS.title },
     description: { type: String, default: '', maxlength: PRODUCT_LIMITS.description },
     brand: { type: String, default: 'Generic', trim: true },
-    /** Category.slug - checked against the categories collection on every write. */
+    /** Checked against the categories collection on every write. */
     category: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Category',
       required: true,
       index: true,
-      validate: { validator: async (slug) => Boolean(await Category.exists({ slug })), message: 'Unknown category' },
+      validate: { validator: async (id) => Boolean(await Category.exists({ _id: id })), message: 'Unknown category' },
     },
+    /** Set while the product's category is hidden or deleted by an admin (kept in sync by the category admin API). */
+    categoryHidden: { type: Boolean, default: false },
     price: { type: Number, required: true, min: 1, set: (v) => Math.round(v * 100) / 100 },
     mrp: { type: Number, min: 0, set: (v) => (v == null ? v : Math.round(v * 100) / 100) },
     stock: { type: Number, default: 0, min: 0 },
@@ -29,11 +32,16 @@ const productSchema = new mongoose.Schema(
     thumbnail: String,
     tags: { type: [{ type: String, trim: true }], validate: maxItems(PRODUCT_LIMITS.tags, 'tags') },
     specs: { type: [{ label: String, value: String, _id: false }], validate: maxItems(PRODUCT_LIMITS.specs, 'specs') },
+    /** Average of the Rating documents (ratingSum / numRatings), kept in sync with $inc on every rating write. */
     rating: { type: Number, default: 0 },
-    numReviews: { type: Number, default: 0 },
+    ratingSum: { type: Number, default: 0 },
+    numRatings: { type: Number, default: 0 },
     sold: { type: Number, default: 0 },
     /** Seller's own switch: listed / hidden. */
     isActive: { type: Boolean, default: true, index: true },
+    /** Soft delete by the seller: hidden from shoppers and the seller's lists, still visible to admins. */
+    deletedAt: { type: Date, default: null, index: true },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     /** Platform's decision, independent of isActive: a removed product stays hidden whatever the seller sets. */
     moderation: {
       status: { type: String, enum: MODERATION_STATUSES, default: 'approved' },
@@ -60,7 +68,7 @@ productSchema.index({ isActive: 1, category: 1, price: 1 });
 productSchema.index({ vendor: 1, sku: 1 }, { unique: true, partialFilterExpression: presentString('sku') });
 
 /** Query filter for products shoppers may see (vendor approval is checked separately). */
-export const LISTED = { isActive: true, 'moderation.status': { $ne: 'removed' } };
-export const isListed = (p) => Boolean(p?.isActive) && p?.moderation?.status !== 'removed';
+export const LISTED = { isActive: true, deletedAt: null, categoryHidden: { $ne: true }, 'moderation.status': { $ne: 'removed' } };
+export const isListed = (p) => Boolean(p?.isActive) && !p?.deletedAt && !p?.categoryHidden && p?.moderation?.status !== 'removed';
 
 export const Product = mongoose.model('Product', productSchema);
