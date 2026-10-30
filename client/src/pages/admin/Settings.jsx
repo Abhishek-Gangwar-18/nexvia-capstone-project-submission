@@ -135,8 +135,8 @@ export default function AdminSettings() {
           {s ? (
             <div className="grid gap-3 sm:grid-cols-2">
               <ServiceCard index={0} icon={Database} name="MongoDB" live={s.database.connected} liveLabel="Connected" fallbackLabel="Disconnected" detail={`${s.database.database} · ${s.database.transactions ? 'replica set, transactions on' : 'standalone'} · ${s.database.host}`} />
-              <ServiceCard index={1} icon={Zap} name="Redis cache" live={s.cache.driver === 'redis'} liveLabel="Connected (cart + sessions)" fallbackLabel="In-memory fallback" detail="Set REDIS_URL to enable" />
-              <ServiceCard index={2} icon={Search} name="Elasticsearch" live={s.search.engine === 'elasticsearch'} liveLabel={`${s.search.documents ?? 0} docs indexed`} fallbackLabel="MongoDB search fallback" detail={s.search.index || 'Set ELASTICSEARCH_NODE to enable'} />
+              <ServiceCard index={1} icon={Zap} name="Redis" live={s.cache.driver === 'redis' && s.cache.healthy} liveLabel="Connected (sessions, locks, rate limits, cache)" fallbackLabel={s.cache.driver === 'redis' ? 'Unreachable, reconnecting' : 'In-memory fallback'} detail={s.cache.driver === 'redis' ? 'Locks are refused and caches read MongoDB until it is back' : 'Set REDIS_URL to enable'} />
+              <ServiceCard index={2} icon={Search} name="Elasticsearch" live={s.search.engine === 'elasticsearch'} liveLabel={`${s.search.documents ?? 0} docs indexed`} fallbackLabel={s.search.configured ? 'Unreachable, reconnecting' : 'MongoDB search fallback'} detail={s.search.configured ? (s.search.engine === 'elasticsearch' ? s.search.build || s.search.index : 'Search runs on MongoDB until it is back') : 'Set ELASTICSEARCH_NODE to enable'} />
               <ServiceCard index={3} icon={HardDrive} name="AWS S3" live={s.storage.driver === 's3'} liveLabel="Uploading to S3" fallbackLabel="Local disk fallback" detail="Set AWS_S3_BUCKET + keys to enable" />
               <ServiceCard index={4} icon={CreditCard} name="Stripe" live={s.payments.provider === 'stripe'} liveLabel="Payments + Connect payouts" fallbackLabel="Built-in test gateway" detail="Set STRIPE_SECRET_KEY / PUBLISHABLE_KEY to enable" />
             </div>
@@ -146,7 +146,7 @@ export default function AdminSettings() {
           <div className="flex items-center justify-between rounded-2xl bg-zinc-50 p-4 dark:bg-white/[0.03]">
             <div className="text-sm">
               <p className="font-semibold">Rebuild search index</p>
-              <p className="text-xs muted">Drops and re-indexes every product into Elasticsearch.</p>
+              <p className="text-xs muted">Builds a fresh index from MongoDB and switches to it when complete; search keeps working meanwhile.</p>
             </div>
             <button type="button" onClick={() => reindex.mutate()} disabled={reindex.isPending || s?.search.engine !== 'elasticsearch'} className="btn btn-secondary btn-sm">
               {reindex.isPending ? <Spinner className="h-3.5 w-3.5" /> : <RefreshCw className="h-3.5 w-3.5" />} Reindex

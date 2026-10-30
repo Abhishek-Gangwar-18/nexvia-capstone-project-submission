@@ -119,6 +119,9 @@ export default function Search() {
               </span>
             )}
           </div>
+          {data?.relaxed && (
+            <p className="mt-2 text-sm text-amber-700 dark:text-amber-300">No product matches every word, so these match some of them.</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setDrawer(true)} className="btn btn-secondary lg:hidden">

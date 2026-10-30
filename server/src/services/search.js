@@ -3,26 +3,94 @@ import { Client } from '@elastic/elasticsearch';
 import { env } from '../config/env.js';
 import { isListed, LISTED, Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
+import { withLock } from './locks.js';
 import { logger } from '../utils/logger.js';
 import { escapeRegex } from '../utils/http.js';
 
-const INDEX = env.elastic.index;
+/** Searches and writes go through this alias. It points at one built index, e.g. vendora-products-v2-1761830000000. */
+export const ALIAS = env.elastic.index;
+/** Bump when SETTINGS or MAPPINGS change: the next start builds a new index and switches the alias to it. */
+export const INDEX_VERSION = 4;
+const PROBE_MS = 15 * 1000;
 
 let es = null;
-let engine = 'mongodb';
+let available = false;
+let probe = null;
+let recovering = false;
 
-const MAPPINGS = {
+/**
+ * Search-time synonyms (shoppers type either word). Rules pass through the same lowercase and stemming
+ * filters as the text, so plurals match too ("mobiles" finds smartphones).
+ */
+const SYNONYMS = [
+  'phone, mobile, smartphone, cellphone',
+  'laptop, notebook',
+  'tablet, tab',
+  'tv, television',
+  'earphones, earbuds, earpods',
+  'headphones, headset',
+  'tshirt, t shirt, tee',
+  'trousers, pants',
+  'jeans, denim',
+  'sneakers, trainers',
+  'perfume, fragrance, cologne',
+  'skincare, skin care',
+  'makeup, make up, cosmetics',
+  'sunglasses, shades, goggles',
+  'spectacles, eyeglasses, specs',
+  'sofa, couch',
+  'fridge, refrigerator',
+  'ac, air conditioner',
+  'powerbank, power bank',
+  'charger, adapter',
+  'decor, decoration',
+  'jewellery, jewelry',
+  'colour, color',
+  'grey, gray',
+  'gym, fitness, workout',
+];
+
+export const SETTINGS = {
+  number_of_shards: 1,
+  // 0 replicas on a single node (green instead of yellow), 1 as soon as a second node joins.
+  auto_expand_replicas: '0-1',
+  analysis: {
+    filter: {
+      english_possessive: { type: 'stemmer', language: 'possessive_english' },
+      english_light: { type: 'stemmer', language: 'light_english' },
+      product_synonyms: { type: 'synonym_graph', synonyms: SYNONYMS },
+      spell_shingle: { type: 'shingle', min_shingle_size: 2, max_shingle_size: 3 },
+    },
+    analyzer: {
+      product_text: { tokenizer: 'standard', filter: ['lowercase', 'asciifolding', 'english_possessive', 'english_light'] },
+      product_search: { tokenizer: 'standard', filter: ['lowercase', 'asciifolding', 'english_possessive', 'english_light', 'product_synonyms'] },
+      // Spelling correction works on whole, unstemmed words ("Did you mean: samsung galaxy?").
+      spell_text: { tokenizer: 'standard', filter: ['lowercase', 'asciifolding'] },
+      spell_shingle: { tokenizer: 'standard', filter: ['lowercase', 'asciifolding', 'spell_shingle'] },
+    },
+  },
+};
+
+const text = (extra = {}) => ({ type: 'text', analyzer: 'product_text', search_analyzer: 'product_search', ...extra });
+
+export const MAPPINGS = {
+  dynamic: 'strict',
+  _meta: { version: INDEX_VERSION },
   properties: {
-    title: { type: 'text', analyzer: 'english', fields: { keyword: { type: 'keyword', ignore_above: 256 } } },
+    // Title, brand, category, tags, specs and store in one field, so every typed word can match a different one.
+    searchText: text(),
+    title: text({ copy_to: 'searchText', fields: { keyword: { type: 'keyword', ignore_above: 256 } } }),
     titleSuggest: { type: 'search_as_you_type' },
-    description: { type: 'text', analyzer: 'english' },
-    brand: { type: 'keyword', fields: { text: { type: 'text' } } },
+    // Words and 2-3 word phrases of title, brand, category and tags: the vocabulary "Did you mean" corrects towards.
+    spell: { type: 'text', analyzer: 'spell_text', fields: { trigram: { type: 'text', analyzer: 'spell_shingle' } } },
+    description: text(),
+    brand: { type: 'keyword', copy_to: 'searchText', fields: { text: text() } },
     category: { type: 'keyword' },
-    categoryName: { type: 'text' },
-    tags: { type: 'text', fields: { keyword: { type: 'keyword' } } },
+    categoryName: text({ copy_to: 'searchText' }),
+    tags: text({ copy_to: 'searchText' }),
+    specs: text({ copy_to: 'searchText' }),
     vendorId: { type: 'keyword' },
-    storeName: { type: 'text', fields: { keyword: { type: 'keyword' } } },
-    storeSlug: { type: 'keyword' },
+    storeName: text({ copy_to: 'searchText', fields: { keyword: { type: 'keyword' } } }),
     price: { type: 'float' },
     mrp: { type: 'float' },
     discount: { type: 'integer' },
@@ -38,33 +106,77 @@ const MAPPINGS = {
 
 export const SORTS = ['relevance', 'popular', 'price_asc', 'price_desc', 'rating', 'newest', 'discount'];
 
-export const searchEngine = () => engine;
+/** The engine serving searches right now: MongoDB while Elasticsearch is not configured or unreachable. */
+export const searchEngine = () => (available ? 'elasticsearch' : 'mongodb');
+export const searchConfigured = () => Boolean(es);
+
+/** Connection trouble (as opposed to a bad request): search moves to MongoDB until Elasticsearch answers again. */
+const isOutage = (err) =>
+  ['ConnectionError', 'TimeoutError', 'NoLivingConnectionsError'].includes(err?.name) || [502, 503, 504].includes(err?.meta?.statusCode);
+
+function markDown(err) {
+  if (!available) return;
+  available = false;
+  logger.warn(`Elasticsearch unreachable (${err.message}) -> search runs on MongoDB, reconnecting every ${PROBE_MS / 1000} s`);
+  watchForRecovery();
+}
+
+function watchForRecovery() {
+  if (probe) return;
+  probe = setInterval(recoverSearch, PROBE_MS);
+  probe.unref();
+}
+
+/**
+ * Runs every 15 s while Elasticsearch is down. Writes are skipped during an outage, so once it answers the
+ * index is rebuilt from MongoDB before search switches back. Returns whether Elasticsearch is in use.
+ */
+export async function recoverSearch() {
+  if (!es || available || recovering) return available;
+  recovering = true;
+  try {
+    await es.ping();
+    try {
+      await rebuildIndex();
+    } catch (err) {
+      // Another instance is rebuilding right now: its index is about to be live.
+      if (err.status !== 409) throw err;
+    }
+    available = true;
+    clearInterval(probe);
+    probe = null;
+    logger.ok('Elasticsearch is back -> index rebuilt from MongoDB, search runs on Elasticsearch again');
+  } catch {
+    // Still down (or the rebuild failed): try again on the next tick.
+  } finally {
+    recovering = false;
+  }
+  return available;
+}
 
 export async function initSearch() {
   if (!env.elastic.node) {
     logger.warn('Elasticsearch: ELASTICSEARCH_NODE not set -> product search runs on MongoDB');
-    return engine;
+    return searchEngine();
   }
   const { apiKey, username, password } = env.elastic;
-  const client = new Client({
+  es = new Client({
     node: env.elastic.node,
     auth: apiKey ? { apiKey } : username ? { username, password } : undefined,
-    requestTimeout: 10000,
-    maxRetries: 2,
+    // A search that can't be answered quickly falls back to MongoDB instead of holding the request.
+    requestTimeout: 5000,
+    maxRetries: 1,
   });
   try {
-    await client.info();
-    if (!(await client.indices.exists({ index: INDEX }))) {
-      await client.indices.create({ index: INDEX, mappings: MAPPINGS });
-      logger.info(`Elasticsearch: created index "${INDEX}"`);
-    }
-    es = client;
-    engine = 'elasticsearch';
-    logger.ok(`Elasticsearch connected -> ${env.elastic.node} (index "${INDEX}")`);
+    await es.info();
+    available = true;
+    logger.ok(`Elasticsearch connected -> ${env.elastic.node} (alias "${ALIAS}")`);
   } catch (err) {
-    logger.warn(`Elasticsearch unavailable (${err.message}) -> product search runs on MongoDB`);
+    available = false;
+    logger.warn(`Elasticsearch unavailable (${err.message}) -> search runs on MongoDB, reconnecting every ${PROBE_MS / 1000} s`);
+    watchForRecovery();
   }
-  return engine;
+  return searchEngine();
 }
 
 /* ------------------------------------------------------------------ indexing */
@@ -82,14 +194,17 @@ async function categoryNames() {
   return categoryCache.map;
 }
 
-const toDoc = (p, names) => ({
+/** Search document for a product (vendor populated with storeName and status). */
+export const toDoc = (p, names) => ({
   title: p.title,
   titleSuggest: p.title,
+  spell: [p.title, p.brand, names.get(String(p.category)), ...(p.tags || [])].filter(Boolean),
   description: (p.description || '').slice(0, 2000),
-  brand: p.brand,
+  brand: p.brand || '',
   category: String(p.category),
   categoryName: names.get(String(p.category)) || '',
   tags: p.tags || [],
+  specs: (p.specs || []).map((s) => `${s.label} ${s.value}`),
   vendorId: String(p.vendor?._id || p.vendor),
   storeName: p.vendor?.storeName || '',
   price: p.price,
@@ -100,85 +215,142 @@ const toDoc = (p, names) => ({
   sold: p.sold || 0,
   stock: p.stock || 0,
   thumbnail: p.thumbnail || p.images?.[0]?.url || '',
-  isActive: isListed(p) && (!p.vendor?.status || p.vendor.status === 'approved'),
+  // Same rule as the MongoDB search: listed, and its store exists and is approved.
+  isActive: isListed(p) && p.vendor?.status === 'approved',
   createdAt: p.createdAt,
 });
 
 const loadProducts = (filter) => Product.find(filter).populate('vendor', 'storeName status').lean();
 
-/** Re-indexes the given products. Safe to call fire-and-forget; errors are logged, never thrown. */
-export async function indexProducts(ids) {
-  if (!es) return;
-  const list = [ids].flat().filter(Boolean);
+/** Writes documents (and deletes the ids given in `missing`); item-level failures are logged, not thrown. */
+async function bulkIndex(index, products, names, missing = []) {
+  const operations = products.flatMap((p) => [{ index: { _index: index, _id: String(p._id) } }, toDoc(p, names)]);
+  missing.forEach((id) => operations.push({ delete: { _index: index, _id: String(id) } }));
+  if (!operations.length) return;
+  const res = await es.bulk({ operations }, { requestTimeout: 60 * 1000 });
+  if (!res.errors) return;
+  const failed = res.items.map((item) => Object.values(item)[0]).filter((item) => item.error);
+  if (failed.length) logger.warn(`Elasticsearch: ${failed.length} of ${res.items.length} documents failed (${failed[0].error.reason})`);
+}
+
+async function writeProducts(index, ids) {
+  const list = [...new Set([ids].flat().filter(Boolean).map(String))];
   if (!list.length) return;
+  const [products, names] = await Promise.all([loadProducts({ _id: { $in: list } }), categoryNames()]);
+  const found = new Set(products.map((p) => String(p._id)));
+  // Ids that no longer exist in MongoDB are removed from the index.
+  await bulkIndex(index, products, names, list.filter((id) => !found.has(id)));
+}
+
+/**
+ * Re-indexes the given products (deleted and hidden ones stay in the index as inactive). Safe to call
+ * fire-and-forget: errors are logged, never thrown. Skipped while Elasticsearch is down; recovery rebuilds.
+ */
+export async function indexProducts(ids) {
+  if (!available) return;
   try {
-    const [products, names] = await Promise.all([loadProducts({ _id: { $in: list } }), categoryNames()]);
-    const found = new Set(products.map((p) => String(p._id)));
-    const operations = products.flatMap((p) => [{ index: { _index: INDEX, _id: String(p._id) } }, toDoc(p, names)]);
-    // Products that no longer exist in Mongo are removed from the index.
-    list.filter((id) => !found.has(String(id))).forEach((id) => operations.push({ delete: { _index: INDEX, _id: String(id) } }));
-    if (operations.length) await es.bulk({ operations, refresh: 'wait_for' });
+    await writeProducts(ALIAS, ids);
   } catch (err) {
-    logger.warn(`Elasticsearch indexing failed: ${err.message}`);
+    if (isOutage(err)) markDown(err);
+    else logger.warn(`Elasticsearch indexing failed: ${err.message}`);
   }
 }
 
-export async function removeFromIndex(id) {
-  if (!es) return;
+/** The built indices behind the alias (normally one) and their version; null when there is no index yet. */
+async function currentIndex() {
   try {
-    await es.delete({ index: INDEX, id: String(id), refresh: 'wait_for' });
+    const res = await es.indices.getMapping({ index: ALIAS });
+    const names = Object.keys(res);
+    return { names, version: res[names[0]]?.mappings?._meta?.version ?? 0, plainIndex: names.includes(ALIAS) };
   } catch (err) {
-    if (err.meta?.statusCode !== 404) logger.warn(`Elasticsearch delete failed: ${err.message}`);
+    if (err.meta?.statusCode === 404) return null;
+    throw err;
   }
 }
 
-/** Drops and rebuilds the index from MongoDB. Returns the number of indexed documents. */
-export async function reindexAll() {
-  if (!es) return 0;
-  categoryCache.at = 0;
-  if (await es.indices.exists({ index: INDEX })) await es.indices.delete({ index: INDEX });
-  await es.indices.create({ index: INDEX, mappings: MAPPINGS });
-  const names = await categoryNames();
-  const products = await loadProducts({});
-  for (let i = 0; i < products.length; i += 500) {
-    const batch = products.slice(i, i + 500);
-    const res = await es.bulk({
-      operations: batch.flatMap((p) => [{ index: { _index: INDEX, _id: String(p._id) } }, toDoc(p, names)]),
-    });
-    if (res.errors) logger.warn('Elasticsearch bulk indexing reported item errors');
-  }
-  await es.indices.refresh({ index: INDEX });
-  logger.ok(`Elasticsearch: indexed ${products.length} products`);
-  return products.length;
+/** Points the alias at `name` in one atomic step, then deletes the builds it replaced. */
+async function switchAlias(name) {
+  const current = await currentIndex();
+  const actions = [];
+  // An index created before aliases were used has the alias's own name: it is dropped in the same step.
+  if (current?.plainIndex) actions.push({ remove_index: { index: ALIAS } });
+  else current?.names.forEach((index) => actions.push({ remove: { index, alias: ALIAS } }));
+  actions.push({ add: { index: name, alias: ALIAS } });
+  await es.indices.updateAliases({ actions });
+  const builds = Object.keys(await es.indices.get({ index: `${ALIAS}-v*` })).filter((index) => index !== name);
+  if (builds.length) await es.indices.delete({ index: builds.join(',') });
 }
 
-/** Rebuilds the index when it is out of step with MongoDB (e.g. first boot, or after seeding). */
-export async function syncIndexIfNeeded() {
-  if (!es) return;
-  try {
-    const [{ count }, total] = await Promise.all([es.count({ index: INDEX }), Product.countDocuments()]);
-    if (count !== total) {
-      logger.info(`Elasticsearch has ${count} docs, MongoDB has ${total} products -> reindexing`);
-      await reindexAll();
+/**
+ * Builds a new index from MongoDB next to the live one and switches the alias when it is complete, so
+ * search never sees an empty or half-built index. One rebuild at a time across all API instances.
+ */
+async function rebuildIndex() {
+  return withLock('search:reindex', 10 * 60, 'A search reindex is already running', async () => {
+    const startedAt = new Date();
+    const name = `${ALIAS}-v${INDEX_VERSION}-${startedAt.getTime()}`;
+    await es.indices.create({ index: name, settings: SETTINGS, mappings: MAPPINGS });
+    let count;
+    try {
+      categoryCache.at = 0;
+      const [names, products] = await Promise.all([categoryNames(), loadProducts({})]);
+      for (let i = 0; i < products.length; i += 500) await bulkIndex(name, products.slice(i, i + 500), names);
+      await es.indices.refresh({ index: name });
+      await switchAlias(name);
+      count = products.length;
+    } catch (err) {
+      await es.indices.delete({ index: name }).catch(() => {});
+      throw err;
     }
+    // Product writes made while the new index was filling went to the old one: write them again.
+    const changed = await Product.find({ updatedAt: { $gte: startedAt } }).distinct('_id');
+    await writeProducts(ALIAS, changed);
+    logger.ok(`Elasticsearch: indexed ${count} products into "${name}" (alias "${ALIAS}")`);
+    return count;
+  });
+}
+
+/** Admin "Reindex" and the seed script: rebuilds the index from MongoDB. Returns the number of products. */
+export async function reindexAll() {
+  if (!available) return 0;
+  return rebuildIndex();
+}
+
+/** Rebuilds the index on startup when it is missing, built with older settings, or out of step with MongoDB. */
+export async function syncIndexIfNeeded() {
+  if (!available) return;
+  try {
+    const current = await currentIndex();
+    let reason = null;
+    if (!current) reason = 'no index yet';
+    else if (current.version !== INDEX_VERSION) reason = `index version ${current.version} -> ${INDEX_VERSION}`;
+    else {
+      const [{ count }, total] = await Promise.all([es.count({ index: ALIAS }), Product.countDocuments()]);
+      if (count !== total) reason = `${count} documents for ${total} products`;
+    }
+    if (!reason) return;
+    logger.info(`Elasticsearch: building the index (${reason})`);
+    await rebuildIndex();
   } catch (err) {
-    logger.warn(`Elasticsearch sync check failed: ${err.message}`);
+    if (isOutage(err)) markDown(err);
+    else logger.warn(`Elasticsearch sync check failed: ${err.message}`);
   }
 }
 
 export async function indexStats() {
   if (!es) return null;
+  if (!available) return { index: ALIAS, documents: null, reachable: false };
   try {
-    const { count } = await es.count({ index: INDEX });
-    return { index: INDEX, documents: count };
+    const [current, { count }] = await Promise.all([currentIndex(), es.count({ index: ALIAS })]);
+    return { index: ALIAS, build: current?.names[0] ?? null, version: current?.version ?? null, documents: count, reachable: true };
   } catch {
-    return { index: INDEX, documents: null };
+    return { index: ALIAS, documents: null, reachable: true };
   }
 }
 
 /* ------------------------------------------------------------------ querying */
 
-function normalize(raw = {}) {
+export function normalizeSearchParams(raw = {}) {
   const num = (v) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v));
   const brands = []
     .concat(raw.brand || [])
@@ -200,7 +372,15 @@ function normalize(raw = {}) {
   };
 }
 
-async function esSearch(p) {
+/** Same fields as the MongoDB search returns, so product cards look identical on either engine. */
+const RESULT_FIELDS = ['title', 'brand', 'category', 'price', 'mrp', 'discount', 'rating', 'numRatings', 'sold', 'stock', 'thumbnail', 'createdAt', 'vendorId', 'storeName'];
+
+/**
+ * The search request for normalized params. Strict: every typed word must match (typos allowed, in any of
+ * title, brand, category, tags, specs or store). Relaxed (used only when strict finds nothing): any word,
+ * description included.
+ */
+export function buildSearchRequest(p, { relaxed = false, index = ALIAS } = {}) {
   const filter = [{ term: { isActive: true } }];
   if (p.minPrice !== undefined || p.maxPrice !== undefined) {
     filter.push({ range: { price: { gte: p.minPrice, lte: p.maxPrice } } });
@@ -211,17 +391,20 @@ async function esSearch(p) {
 
   const query = { bool: { filter } };
   if (p.q) {
+    const typo = { fuzziness: 'AUTO', prefix_length: 1 };
     query.bool.must = [
-      {
-        multi_match: {
-          query: p.q,
-          fields: ['title^4', 'brand.text^3', 'categoryName^2', 'tags^2', 'storeName', 'description'],
-          fuzziness: 'AUTO',
-          prefix_length: 1,
-        },
-      },
+      relaxed
+        ? { multi_match: { query: p.q, fields: ['searchText', 'description^0.5'], ...typo } }
+        : { match: { searchText: { query: p.q, operator: 'and', ...typo } } },
     ];
-    query.bool.should = [{ match_phrase_prefix: { title: { query: p.q, boost: 6 } } }];
+    // Ranking: the words as a phrase in the title first, then all of them in the title, then brand and category.
+    query.bool.should = [
+      { match_phrase: { title: { query: p.q, slop: 2, boost: 5 } } },
+      { match: { title: { query: p.q, operator: 'and', boost: 3 } } },
+      { match: { 'brand.text': { query: p.q, boost: 2 } } },
+      { match: { categoryName: { query: p.q, boost: 2 } } },
+      { match: { tags: { query: p.q, boost: 1 } } },
+    ];
   }
 
   // Category/brand go in post_filter so each facet still shows its other options (multi-select friendly).
@@ -239,15 +422,16 @@ async function esSearch(p) {
     discount: [{ discount: 'desc' }],
   };
 
-  const res = await es.search({
-    index: INDEX,
+  return {
+    index,
     from: (p.page - 1) * p.limit,
     size: p.limit,
     track_total_hits: true,
     query,
     post_filter: postFilters.length ? { bool: { filter: postFilters } } : undefined,
-    sort: sortMap[p.sort],
-    _source: { excludes: ['description', 'titleSuggest'] },
+    // createdAt breaks ties, so equal values never swap places between pages.
+    sort: [...sortMap[p.sort], { createdAt: 'desc' }],
+    _source: RESULT_FIELDS,
     aggs: {
       categories: {
         filter: brandFilter || { match_all: {} },
@@ -259,8 +443,10 @@ async function esSearch(p) {
       },
       price: { stats: { field: 'price' } },
     },
-  });
+  };
+}
 
+export function readSearchResponse(res) {
   const total = typeof res.hits.total === 'number' ? res.hits.total : res.hits.total.value;
   const bucket = (agg) => agg.values.buckets.map((b) => ({ key: b.key, count: b.doc_count }));
   return {
@@ -272,6 +458,14 @@ async function esSearch(p) {
       price: { min: res.aggregations.price.min ?? 0, max: res.aggregations.price.max ?? 0 },
     },
   };
+}
+
+/** Strict query first; when nothing has every word, products matching some of them (flagged `relaxed`). */
+export async function runSearch(client, p, index = ALIAS) {
+  const result = readSearchResponse(await client.search(buildSearchRequest(p, { index })));
+  if (result.total || !p.q.includes(' ')) return result;
+  const loose = readSearchResponse(await client.search(buildSearchRequest(p, { index, relaxed: true })));
+  return loose.total ? { ...loose, relaxed: true } : result;
 }
 
 async function mongoSearch(p) {
@@ -347,19 +541,21 @@ async function mongoSearch(p) {
 }
 
 export async function searchProducts(rawParams) {
-  const params = normalize(rawParams);
+  const params = normalizeSearchParams(rawParams);
   let result = null;
   let usedEngine = 'mongodb';
-  if (es) {
+  if (available) {
     try {
-      result = await esSearch(params);
+      result = await runSearch(es, params);
       usedEngine = 'elasticsearch';
     } catch (err) {
-      logger.warn(`Elasticsearch query failed (${err.message}) -> MongoDB fallback`);
+      if (isOutage(err)) markDown(err);
+      else logger.warn(`Elasticsearch query failed (${err.message}) -> MongoDB fallback`);
     }
   }
   if (!result) result = await mongoSearch(params);
   return {
+    relaxed: false,
     ...result,
     page: params.page,
     limit: params.limit,
@@ -368,10 +564,64 @@ export async function searchProducts(rawParams) {
   };
 }
 
+/**
+ * Typeahead: the last word is a prefix ("gala" -> Galaxy), earlier words may have a typo. The same request
+ * asks for a spelling correction, kept only when it finds at least one product shoppers can see.
+ */
+export const buildSuggestRequest = (q, { index = ALIAS } = {}) => ({
+  index,
+  size: 6,
+  query: {
+    bool: {
+      filter: [{ term: { isActive: true } }],
+      must: [
+        {
+          multi_match: {
+            query: q,
+            type: 'bool_prefix',
+            fields: ['titleSuggest', 'titleSuggest._2gram', 'titleSuggest._3gram'],
+            fuzziness: 'AUTO',
+            prefix_length: 1,
+          },
+        },
+      ],
+    },
+  },
+  sort: ['_score', { sold: 'desc' }],
+  _source: ['title', 'thumbnail', 'price', 'category', 'brand'],
+  suggest: {
+    text: q,
+    correction: {
+      phrase: {
+        field: 'spell.trigram',
+        size: 1,
+        max_errors: 2,
+        direct_generator: [{ field: 'spell.trigram' }],
+        collate: {
+          query: { source: { bool: { filter: [{ term: { isActive: true } }, { match: { spell: { query: '{{suggestion}}', operator: 'and' } } }] } } },
+        },
+      },
+    },
+  },
+});
+
+/**
+ * The "Did you mean" text, or null. A completion of what is being typed ("gala" -> "galaxy") is not a
+ * correction: the product suggestions already cover it.
+ */
+export function readCorrection(q, res) {
+  const text = res.suggest?.correction?.[0]?.options?.[0]?.text;
+  if (!text) return null;
+  const typed = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = text.split(/\s+/);
+  const changed = words.length !== typed.length || words.some((word, i) => !word.startsWith(typed[i]));
+  return changed ? text : null;
+}
+
 /** Typeahead suggestions for the search bar. */
 export async function suggest(rawQuery) {
   const q = String(rawQuery || '').trim().slice(0, 60);
-  if (q.length < 2) return { products: [], categories: [] };
+  if (q.length < 2) return { products: [], categories: [], didYouMean: null };
 
   const categoriesPromise = Category.find({ isActive: true, name: new RegExp(escapeRegex(q), 'i') })
     .select('name image')
@@ -379,30 +629,15 @@ export async function suggest(rawQuery) {
     .lean();
 
   let products = null;
-  if (es) {
+  let didYouMean = null;
+  if (available) {
     try {
-      const res = await es.search({
-        index: INDEX,
-        size: 6,
-        query: {
-          bool: {
-            filter: [{ term: { isActive: true } }],
-            must: [
-              {
-                multi_match: {
-                  query: q,
-                  type: 'bool_prefix',
-                  fields: ['titleSuggest', 'titleSuggest._2gram', 'titleSuggest._3gram'],
-                },
-              },
-            ],
-          },
-        },
-        _source: ['title', 'thumbnail', 'price', 'category', 'brand'],
-      });
+      const res = await es.search(buildSuggestRequest(q));
       products = res.hits.hits.map((h) => ({ _id: h._id, ...h._source }));
+      didYouMean = readCorrection(q, res);
     } catch (err) {
-      logger.warn(`Elasticsearch suggest failed (${err.message}) -> MongoDB fallback`);
+      if (isOutage(err)) markDown(err);
+      else logger.warn(`Elasticsearch suggest failed (${err.message}) -> MongoDB fallback`);
     }
   }
   if (!products) {
@@ -412,5 +647,5 @@ export async function suggest(rawQuery) {
       .select('title thumbnail price category brand')
       .lean();
   }
-  return { products, categories: await categoriesPromise };
+  return { products, categories: await categoriesPromise, didYouMean };
 }

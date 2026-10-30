@@ -9,7 +9,7 @@ import { Settings, SETTINGS_FIELDS, SETTINGS_LIMITS } from '../models/Settings.j
 import { cache } from '../services/cache.js';
 import { getSettings } from '../services/pricing.js';
 import { invalidateUser, revokeAllSessions } from '../services/session.js';
-import { indexProducts, indexStats, reindexAll, searchEngine } from '../services/search.js';
+import { indexProducts, indexStats, reindexAll, searchConfigured, searchEngine } from '../services/search.js';
 import { invalidateCatalog, invalidateProducts } from '../services/catalog.js';
 import { transitionPackage, withPackageLock } from '../services/orders.js';
 import { buildOrderFilter, dateRange, EXCEPTION_TYPES, exceptionConditions, orderRow, ordersCsv, orderSort, SLA } from '../services/adminOrders.js';
@@ -555,7 +555,7 @@ export async function system(_req, res) {
   res.json({
     database: { driver: 'mongodb', ...mongoStatus() },
     cache: { driver: cache.driver, healthy: ping === 'PONG' },
-    search: { engine: searchEngine(), ...(index || {}) },
+    search: { engine: searchEngine(), configured: searchConfigured(), ...(index || {}) },
     storage: { driver: storageDriver() },
     payments: { provider: paymentProvider() },
   });

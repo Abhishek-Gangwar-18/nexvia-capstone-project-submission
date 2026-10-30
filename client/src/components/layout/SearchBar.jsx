@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUpRight, Clock, LayoutGrid, Search, X } from 'lucide-react';
+import { ArrowUpRight, Clock, LayoutGrid, Search, SpellCheck, X } from 'lucide-react';
 import { api } from '../../lib/api';
 import { cn, money } from '../../lib/format';
 import { useClickOutside, useDebounce } from '../../lib/hooks';
@@ -54,8 +54,10 @@ export default function SearchBar({ className, autoFocus = false, onDone }) {
   const ref = useClickOutside(close);
 
   const showSuggestions = debounced.length >= 2 && data;
+  const correction = showSuggestions ? data.didYouMean : null;
   const options = showSuggestions
     ? [
+        ...(correction ? [{ type: 'correction', key: 'did-you-mean', label: correction, to: `/search?q=${encodeURIComponent(correction)}`, term: correction }] : []),
         ...(data.categories || []).map((c) => ({ type: 'category', key: `c-${c._id}`, label: c.name, to: `/search?category=${c._id}`, image: c.image })),
         ...(data.products || []).map((p) => ({ type: 'product', key: p._id, label: p.title, to: `/product/${p._id}`, image: p.thumbnail, price: p.price })),
       ]
@@ -74,7 +76,7 @@ export default function SearchBar({ className, autoFocus = false, onDone }) {
 
   const submit = (e) => {
     e?.preventDefault();
-    if (active >= 0 && options[active]) return go(options[active].to);
+    if (active >= 0 && options[active]) return go(options[active].to, options[active].term);
     const q = query.trim();
     if (!q) return go('/search');
     return go(`/search?q=${encodeURIComponent(q)}`, q);
@@ -92,6 +94,17 @@ export default function SearchBar({ className, autoFocus = false, onDone }) {
       close();
       inputRef.current?.blur();
     }
+  };
+
+  /** "Did you mean": the words that differ from what was typed are bold, like Google. */
+  const correctedWords = (text) => {
+    const typed = debounced.toLowerCase().split(/\s+/);
+    return text.split(' ').map((word, i) => (
+      <span key={i}>
+        {i > 0 && ' '}
+        {word === typed[i] ? word : <b className="font-bold italic text-brand-600 dark:text-brand-300">{word}</b>}
+      </span>
+    ));
   };
 
   const highlight = (text) => {
@@ -155,6 +168,21 @@ export default function SearchBar({ className, autoFocus = false, onDone }) {
                 <ul className="max-h-[60vh] overflow-y-auto p-2">
                   {options.map((opt, i) => (
                     <li key={opt.key}>
+                      {opt.type === 'correction' ? (
+                        <button
+                          type="button"
+                          onMouseEnter={() => setActive(i)}
+                          onClick={() => go(opt.to, opt.term)}
+                          className={cn('mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition', active === i ? 'bg-brand-50 dark:bg-brand-500/10' : 'hover:bg-zinc-50 dark:hover:bg-white/5')}
+                        >
+                          <SpellCheck className="h-4 w-4 shrink-0 text-brand-500" />
+                          <span className="min-w-0 flex-1 truncate">
+                            <span className="muted">Did you mean: </span>
+                            {correctedWords(opt.label)}
+                            <span className="muted">?</span>
+                          </span>
+                        </button>
+                      ) : (
                       <button
                         type="button"
                         onMouseEnter={() => setActive(i)}
@@ -170,6 +198,7 @@ export default function SearchBar({ className, autoFocus = false, onDone }) {
                         </div>
                         <ArrowUpRight className="h-4 w-4 text-zinc-300" />
                       </button>
+                      )}
                     </li>
                   ))}
                   <li>

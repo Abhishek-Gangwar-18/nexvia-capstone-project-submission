@@ -67,9 +67,13 @@ export async function updateCategory(req, res) {
   const category = await findCategory(req.params.id);
   if (req.body.name) await assertNameFree(req.body.name, category._id);
   const visibilityChanged = req.body.isActive !== undefined && req.body.isActive !== category.isActive;
+  const renamed = req.body.name !== undefined && req.body.name !== category.name;
   Object.assign(category, req.body);
   await category.save();
+  // Search documents carry the category name, so the name cache is reset before re-indexing.
+  resetCategoryNames();
   const affected = visibilityChanged ? await setProductsHidden(category._id, !category.isActive) : 0;
+  if (renamed && !visibilityChanged) indexProducts(await Product.find({ category: category._id }).distinct('_id'));
   await afterCategoryChange();
   res.json({ category, affectedProducts: affected });
 }
