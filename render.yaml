@@ -6,7 +6,7 @@ services:
     rootDir: server
     buildCommand: corepack enable && pnpm install --prod --frozen-lockfile
     startCommand: pnpm start
-    healthCheckPath: /api/health
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production

@@ -34,6 +34,8 @@ export const env = {
   cookieSameSite: process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
 
   redisUrl: process.env.REDIS_URL || '',
+  /** Production refuses to start without Redis unless this is set (single-instance demo deployments). */
+  allowMemoryCache: bool(process.env.ALLOW_MEMORY_CACHE, false),
 
   elastic: {
     node: process.env.ELASTICSEARCH_NODE || '',

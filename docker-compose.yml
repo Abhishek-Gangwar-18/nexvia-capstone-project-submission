@@ -1,5 +1,5 @@
 # Optional: run the real backing services locally with Docker.
-#   docker compose up -d
+#   docker compose up -d redis        (just Redis; plain `up -d` also starts MongoDB and Elasticsearch)
 # then in server/.env set:
 #   REDIS_URL=redis://localhost:6379
 #   ELASTICSEARCH_NODE=http://localhost:9200
@@ -12,21 +12,41 @@ services:
     volumes:
       - mongo-data:/data/db
 
+  # Redis for local development: docker compose up -d redis
+  # Only reachable from this machine (it has no password). Everything it holds expires on its own
+  # (caches, locks, rate-limit counters), so it keeps no data volume.
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
+  # Elasticsearch for local development: docker compose up -d elasticsearch
+  # Only reachable from this machine (security is off). The API rebuilds the index from MongoDB when needed.
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.19.2
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # A nearly full laptop disk would otherwise make the index read-only.
+      - cluster.routing.allocation.disk.threshold_enabled=false
     ports:
-      - '9200:9200'
+      - '127.0.0.1:9200:9200'
     volumes:
       - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fs "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s" || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
 
 volumes:
   mongo-data:

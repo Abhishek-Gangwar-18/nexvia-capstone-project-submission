@@ -54,6 +54,16 @@ async function start() {
   const server = app.listen(env.port, () => {
     logger.ok(`Vendora API ready on ${env.serverUrl}  (client: ${env.clientUrls[0]})`);
   });
+  // Exit instead of crashing with a stack trace; the payout and sweep timers above must not run without the API.
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error(
+        `Port ${env.port} is already in use: another Vendora API is still running (often an older "pnpm run dev" in another terminal). ` +
+          `Stop it with Ctrl+C there, or find it with: Get-NetTCPConnection -LocalPort ${env.port} -State Listen`,
+      );
+    } else logger.error('Server error:', err);
+    process.exit(1);
+  });
 
   const shutdown = (signal) => {
     logger.info(`${signal} received, shutting down`);

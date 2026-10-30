@@ -7,7 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { env, isProd } from './config/env.js';
 import { mongoStatus } from './config/db.js';
 import { cache } from './services/cache.js';
-import { searchEngine } from './services/search.js';
+import { searchConfigured, searchEngine } from './services/search.js';
 import { storageDriver, UPLOAD_DIR } from './services/storage.js';
 import { paymentProvider } from './services/payment.js';
 import { stripeWebhook } from './controllers/order.controller.js';
@@ -46,6 +46,8 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '30d', immutable: true }));
 
+  // Coarse flood guard, counted per instance to spare Redis a command on every request. The limits that
+  // protect accounts (login, refresh, password change) are shared through Redis in routes/auth.routes.js.
   app.use(rateLimit({ windowMs: 60 * 1000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
 
   app.get('/health', (_req, res) => {
@@ -54,8 +56,8 @@ export function createApp() {
       uptime: Math.round(process.uptime()),
       services: {
         database: mongoStatus().connected ? 'connected' : 'disconnected',
-        cache: cache.driver,
-        search: searchEngine(),
+        cache: cache.connected ? cache.driver : 'redis (reconnecting)',
+        search: searchConfigured() && searchEngine() !== 'elasticsearch' ? 'mongodb (elasticsearch reconnecting)' : searchEngine(),
         storage: storageDriver(),
         payments: paymentProvider(),
       },

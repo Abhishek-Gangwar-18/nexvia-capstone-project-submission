@@ -4,12 +4,14 @@ import * as auth from '../controllers/auth.controller.js';
 import { optionalAuth, protect } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/http.js';
+import { CacheStore } from '../services/rateLimitStore.js';
 
 const router = Router();
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 50,
+  store: new CacheStore('auth'),
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { message: 'Too many attempts. Please try again in a few minutes.' },
@@ -19,6 +21,7 @@ const authLimiter = rateLimit({
 const refreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 200,
+  store: new CacheStore('refresh'),
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { message: 'Too many requests. Please try again in a few minutes.' },
@@ -28,6 +31,7 @@ const refreshLimiter = rateLimit({
 const passwordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
+  store: new CacheStore('password'),
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { message: 'Too many password change attempts. Please try again later.' },
