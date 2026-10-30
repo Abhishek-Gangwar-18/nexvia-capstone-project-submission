@@ -70,7 +70,7 @@ curl -i "{{baseUrl}}/api/health"
 # 1.4
 curl -i "{{baseUrl}}/nope"
 # 1.5
-curl -i -X POST "{{baseUrl}}/payments/webhook" -H "Content-Type: application/json" -H "x-razorpay-signature: bad" -d '{"event":"payment.captured"}'
+curl -i -X POST "{{baseUrl}}/payments/webhook" -H "Content-Type: application/json" -H "Stripe-Signature: t=1,v1=bad" -d '{"type":"payment_intent.succeeded"}'
 ```
 
 ---
@@ -433,7 +433,9 @@ curl -i -X POST "{{baseUrl}}/cart/coupon" -H "Authorization: Bearer {{customerTo
 
 ## 6. Orders and payment (customer)
 
-Needs the customer's email verified (2.39) and an address (`addressId`, 2.25). Payments run on the mock gateway.
+Needs an address (`addressId`, 2.25). Cases 6.9–6.13 and 6.24 use the **built-in test gateway**: run them with
+`STRIPE_SECRET_KEY` empty in `server/.env` (restart the API). With Stripe keys set, orders are paid through the app
+instead (card `4242 4242 4242 4242`), and `outcome` is ignored.
 ⚠ Creates two real orders: A gets cancelled (stock is restocked), B is handed to the vendor in §7.
 
 | # | Case | Expected |
@@ -445,7 +447,7 @@ Needs the customer's email verified (2.39) and an address (`addressId`, 2.25). P
 | 6.6 | Unknown `addressId` | 404 `Delivery address not found` |
 | 6.7 | **Order A**: run 5.2, then checkout with key `order-a-0001` | 201 `{ order: { _id, orderNumber, pricing }, payment, prefill }` → save `orderA`; cart is now empty |
 | 6.8 | Same key again | 201 with the **same** `order._id` (no second order) |
-| 6.9 | Payment config for A | 200 payment details for the mock gateway |
+| 6.9 | Payment config for A | 200 payment details (test gateway; with Stripe: `publishableKey` and `clientSecret`) |
 | 6.10 | **Order B**: run 5.2, checkout with key `order-b-0001` | 201 → save `orderB` |
 | 6.11 | Pay A with a simulated decline | 402 `Payment was declined by the bank (simulated). You can try again.` |
 | 6.12 | Pay A, then B | 200 `{ order: { payment: { status: "paid" }, status: "placed" } }` |
@@ -460,7 +462,7 @@ Needs the customer's email verified (2.39) and an address (`addressId`, 2.25). P
 | 6.21 | Invoice for an unpaid order (`GET /orders?status=pending_payment` → `items[0]._id`, skip if none) | 400 `An invoice is generated once the order is paid` |
 | 6.22 | Cancel A with `reasonCode: other`, no note | 400 `Describe the reason (at least 3 characters)` |
 | 6.23 | Cancel A with an unknown reasonCode | 400 `Invalid enum value. Expected 'changed_mind' \| 'other'...` |
-| 6.24 | Cancel A | 200, all packages `cancelled`, stock restocked, `payment.status: "refunded"` (mock refund) |
+| 6.24 | Cancel A | 200, all packages `cancelled`, stock restocked, `payment.status: "refunded"` (test-gateway refund; with Stripe a real test refund) |
 | 6.25 | Cancel A again | 400 `This order is already cancelled` |
 | 6.26 | Pay cancelled A | 400 `This order was cancelled` |
 | 6.27 | Cancel a shipped order (`GET /orders?status=shipped` → `items[0]._id`) ⚠ only if you accept losing that demo order | 400 `Part of this order has already shipped and can no longer be cancelled` |
@@ -532,7 +534,7 @@ curl -i -X POST "{{baseUrl}}/orders/SHIPPED_ORDER_ID/cancel" -H "Authorization: 
 | 7.6 | My store (TechNova) | 200 `{ vendor }` with masked bank details |
 | 7.7 | My store as a customer | 403 |
 | 7.8 | Update store `{ tagline }` | 200 `{ vendor }` with the new tagline |
-| 7.9 | Change `razorpayAccountId` without a password | 403 `Enter your account password to change payout details` (`code: PASSWORD_REQUIRED`) |
+| 7.9 | Change `bank` details without a password | 403 `Enter your account password to change payout details` (`code: PASSWORD_REQUIRED`) |
 | 7.10 | Same with a wrong password | 403 `Incorrect password` |
 | 7.11 | Pending store (newUser) opens the dashboard | 403 `Your store is pending. You can manage it once an admin approves it.` |
 | 7.12 | Dashboard (TechNova) | 200 KPIs, charts, low-stock list |
@@ -585,9 +587,9 @@ curl -i "{{baseUrl}}/vendor/store" -H "Authorization: Bearer {{customerToken}}"
 # 7.8
 curl -i -X PATCH "{{baseUrl}}/vendor/store" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"tagline":"Flagship phones, laptops & smart gadgets"}'
 # 7.9
-curl -i -X PATCH "{{baseUrl}}/vendor/store" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"razorpayAccountId":"acc_TEST123456"}'
+curl -i -X PATCH "{{baseUrl}}/vendor/store" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"bank":{"accountHolder":"TechNova Electronics","accountNumber":"123456789012","ifsc":"HDFC0001234"}}'
 # 7.10
-curl -i -X PATCH "{{baseUrl}}/vendor/store" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"razorpayAccountId":"acc_TEST123456","currentPassword":"wrong-pass"}'
+curl -i -X PATCH "{{baseUrl}}/vendor/store" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"bank":{"accountHolder":"TechNova Electronics","accountNumber":"123456789012","ifsc":"HDFC0001234"},"currentPassword":"wrong-pass"}'
 # 7.11
 curl -i "{{baseUrl}}/vendor/dashboard" -H "Authorization: Bearer {{newUserToken}}"
 # 7.12
@@ -666,14 +668,14 @@ curl -i -X DELETE "{{baseUrl}}/vendor/coupons/{{vendorCouponId}}" -H "Authorizat
 | 8.1 | Analytics `range=7` | 200 `{ range: 7, kpis, series, ... }` |
 | 8.2 | Analytics `range=12` | 200, falls back to 30 days |
 | 8.3 | Any admin route as a customer / with no token | 403 / 401 |
-| 8.4 | Vendors `?status=pending` | 200 paginated + `counts`; **no** `bank`, `razorpayAccountId`, `payoutChanges`; has `payoutLinked` |
+| 8.4 | Vendors `?status=pending` | 200 paginated + `counts`; **no** `bank`, `stripe`, `payoutChanges`; has `payoutLinked` |
 | 8.5 | Users `?role=vendor&q=tech` | 200 paginated + `counts` |
 | 8.6 | Users `?q={{newUserEmail}}` | 200 → save `newUserId` |
 | 8.7 | Approve new store (`pending → approved`) | 200 `{ vendor: { status: "approved" } }`, no payout fields |
 | 8.8 | `approved → rejected` | 400 `An approved store cannot be moved to rejected (allowed: suspended)` |
 | 8.9 | `status: "pending"` | 400 `status: Invalid enum value...` |
 | 8.10 | Suspend without a reason | 400 `Give a reason when a store is suspended` |
-| 8.11 | Admin sends `razorpayAccountId` | 400 `Unrecognized key(s) in object: 'razorpayAccountId'` |
+| 8.11 | Admin sends payout details (`bank`) | 400 `Unrecognized key(s) in object: 'bank'` |
 | 8.12 | Vendor id `abc` / unknown | 400 `Invalid _id` / 404 `Vendor not found` |
 | 8.13 | ⚠ Block newUser (store owner) | 200 `{ user: { status: "blocked" }, store: { status: "suspended", changed: true } }`; `GET /stores/{{newStoreId}}` → 404 |
 | 8.13b | Approve that store while the owner is blocked | 400 `The store owner's account is blocked. Unblock the user first` |
@@ -731,7 +733,7 @@ curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{newStoreId}}" -H "Authorization: B
 # 8.10
 curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{newStoreId}}" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"status":"suspended"}'
 # 8.11
-curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{newStoreId}}" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"razorpayAccountId":"acc_HACK123456"}'
+curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{newStoreId}}" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"bank":{"accountHolder":"Hacker","accountNumber":"999999999999","ifsc":"HDFC0001234"}}'
 # 8.12
 curl -i -X PATCH "{{baseUrl}}/admin/vendors/abc" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"commissionRate":5}'
 curl -i -X PATCH "{{baseUrl}}/admin/vendors/000000000000000000000000" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"commissionRate":5}'
@@ -832,5 +834,10 @@ filters combine). The 8.16 calls return 400 with, in order: `status must be one 
 
 ---
 
-## Not covered (deferred to the payments work)
-Real Razorpay payment and webhook success, refund retry and reconciliation, returns and disputes.
+## Covered elsewhere
+- **Stripe card payments, webhooks, Connect payouts:** through the app with test cards and `stripe listen` (README →
+  *Stripe setup*); refund retry, reconciliation and payout reversal are covered by `pnpm --dir server test`.
+- **Returns and the Refunds card:** customer → order page → *Return items*; vendor/admin → *Returns*. Concurrency
+  (double requests, payout races) is covered by `test/returns.test.js`.
+- **Redis, S3, Elasticsearch:** `pnpm --dir server redis:check`, `s3:check`, `es:check` (live), plus unit tests for
+  failover, uploads and search.

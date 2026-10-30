@@ -510,8 +510,6 @@ Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Aut
 | POST | `/logout-all` | auth | Ends every session of the account |
 | GET | `/sessions` | auth | Signed-in devices (`current` marks this one) |
 | DELETE | `/sessions/:id` | auth | Log out one device |
-| POST | `/verify-email` | public | `{token}` from the emailed link |
-| POST | `/verify-email/resend` | auth | New verification email (cooldown + daily limit) |
 | GET / PATCH | `/me` | auth | Profile (including the store for sellers) / update name, phone, avatar |
 | PATCH | `/me/password` | auth | Change password → `{accessToken}`; other devices are logged out |
 | GET / POST | `/me/addresses` | auth | Address book |

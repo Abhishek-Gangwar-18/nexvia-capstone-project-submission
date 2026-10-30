@@ -1,4 +1,4 @@
-   # Vendora: multi-vendor e-commerce marketplace
+# Vendora: multi-vendor e-commerce marketplace
 
 An Amazon-style marketplace where many sellers list products, customers buy from several stores in one checkout, and
 the platform splits each payment between the sellers and its own commission.
@@ -7,7 +7,8 @@ the platform splits each payment between the sellers and its own commission.
 MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Element + Connect)
 
 > The architecture, database schema, concurrency rules, auth flow, order lifecycle, payment split and full API list are in
-> **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+> **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. A step-by-step Postman/curl test plan for every endpoint is in
+> **[docs/API_TESTS.md](docs/API_TESTS.md)**.
 
 ---
 
@@ -15,23 +16,26 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Elem
 
 **Customers**
 - Storefront with an animated hero, categories, deals of the day with a live countdown, trending products, top stores and recently viewed items
-- Search with typeahead (Elasticsearch `search_as_you_type`), faceted filters (category, brand, price slider, rating, in stock), seven sort orders, shareable URLs
+- Search on Elasticsearch: typo tolerance, Indian shopping synonyms (phone/mobile, tv/television, ...), typeahead with **"Did you mean?"** spelling corrections, faceted filters (category, brand, price slider, rating, in stock), seven sort orders, shareable URLs
 - Product page with a zoomable gallery, offers, pincode delivery check, seller card, specs, star ratings (one per customer) and reviews with photos, helpful votes and seller replies; both need a delivered order
 - Cart for signed-in customers (cached in Redis), price-rise/drop and low-stock notices, free-shipping meter, coupons, save for later
 - Two-step checkout with address book, per-seller package preview, stock held for 15 minutes while paying, and the Stripe Payment Element (or the built-in test gateway)
-- Order tracking timeline for each package, PDF invoices, cancel and refund, retry payment, wishlist, profile, email verification, signed-in devices with log out everywhere, dark mode
+- Order tracking timeline for each package, PDF invoices, cancel and refund, retry payment
+- Returns within the return window (pick items and quantities, reason, up to 5 photos) and a **Refunds** card on the order page showing each refund and its status
+- Wishlist, profile with avatar upload, password change, signed-in devices with log out everywhere, dark mode. Sign-up is plain email + password
 
 **Sellers**
 - Four-step onboarding (store, business, bank details), admin approval and a live store page; Stripe Connect for automatic payouts
 - Dashboard with KPIs vs the previous period, a sales chart, payouts on hold and released, top products and low-stock alerts
 - Product editor with drag-and-drop S3 uploads (reorder, pick cover), tags, specs, an earnings estimate and live preview
 - Fulfilment: packed, then shipped (tracking id), then delivered, which releases the payout; or cancel with a reason, which restocks, refunds and reverses the payout
-- Review replies, store coupons, payout ledger, store settings
+- Returns manager: approve or reject requests, mark items received (restock optional), which refunds the customer automatically
+- Payouts page with Stripe Connect onboarding and a payout ledger; review replies, store coupons, store settings
 
 **Admin**
 - Analytics (7D, 30D, 90D, 1Y): GMV, commission revenue, orders, AOV with change, revenue trend, package fulfilment, sales by category, top sellers and products
 - Seller approvals (approve, reject or suspend with a reason), per-seller commission override, payout holds after a payout account change
-- Order management with package controls, category management, product and review moderation, user blocking (ends their sessions immediately), platform coupons
+- Order management with package controls, returns, a payments panel (refunds, payouts on hold, release due payouts), category management, product and review moderation, user blocking (ends their sessions immediately), platform coupons
 - Settings (commission, shipping rules) with a change history, a live **system status** panel and an Elasticsearch reindex button
 
 ---
@@ -54,7 +58,10 @@ Open **http://localhost:5180**.
 
 - **Empty database:** the API seeds demo data automatically: 20 customers, 5 stores, 184 products from DummyJSON,
   about 1,180 ratings and reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
-- **Tests:** `pnpm --dir server test` runs the API unit tests.
+- **Tests:** `pnpm --dir server test` runs the API unit tests (no database or services needed).
+- **Live service checks:** `pnpm --dir server redis:check`, `s3:check` and `es:check` test the real Redis, S3 bucket and
+  Elasticsearch from `server/.env`. Each touches only its own service (temporary keys, one test image, a temporary
+  index), never MongoDB.
 
 ### Seeded accounts
 
@@ -156,30 +163,40 @@ error and shows in Admin → Payments.
 ```
 ├── client/                  React SPA (Vite)
 │   └── src/
-│       ├── components/      layout, product, checkout, dashboard, orders, ui
-│       ├── pages/           storefront, account, vendor/*, admin/*, auth/*
+│       ├── components/      layout (search bar), product, cart, checkout, orders (returns, refunds), dashboard, account, ui
+│       ├── pages/           storefront, account, orders, vendor/* (incl. returns, payouts), admin/* (incl. payments, returns), auth/*
 │       ├── lib/             api client, session, cart hooks, formatting, Stripe loader
 │       └── store/           Zustand stores (auth profile, theme)
 ├── server/                  Express API
 │   ├── src/
 │   │   ├── config/          env, MongoDB connection
-│   │   ├── models/          User, Session, Vendor, Product, Category, Rating, Review, ReviewVote,
-│   │   │                    Coupon, CouponRedemption, Cart, Order, Settings
-│   │   ├── services/        cache (Redis), search (Elasticsearch), storage (S3), payment (Stripe),
-│   │   │                    cart, pricing, coupons, orders, reviews, invoice (PDFKit), session, catalog
-│   │   ├── controllers/     auth, catalog, review, cart, order, vendor, coupon, category, admin
+│   │   ├── models/          User, Session, Address, Vendor, Product, Category, Rating, Review, ReviewVote,
+│   │   │                    Coupon, CouponRedemption, Cart, Order, Payment, Refund, Return, WebhookEvent, Settings
+│   │   ├── services/        cache (Redis), locks, rateLimitStore, search (Elasticsearch), storage (S3),
+│   │   │                    payment + webhooks + reconcile (Stripe), refunds, returns, payouts, orders, adminOrders,
+│   │   │                    cart, pricing, coupons, reviews, invoice (PDFKit), session, catalog
+│   │   ├── controllers/     auth, catalog, review, cart, order, return, payout, vendor, coupon, category, admin
 │   │   ├── routes/          route definitions with zod validation + RBAC middleware
 │   │   ├── middleware/      auth/RBAC, validation, uploads, errors
 │   │   └── seed/            seed script + DummyJSON snapshot
+│   ├── scripts/             redis-check, s3-check, es-check (live service checks)
 │   └── test/                node:test unit tests
-├── docs/ARCHITECTURE.md     roles, schema, concurrency, auth, lifecycle, payment split, API list
-├── docker-compose.yml       optional MongoDB / Redis / Elasticsearch
+├── docs/ARCHITECTURE.md     roles, schema, concurrency, auth, lifecycle, payments, cache, search, API list
+├── docs/API_TESTS.md        Postman/curl test plan for every endpoint
+├── docker-compose.yml       local Redis / Elasticsearch (and optional MongoDB)
 └── render.yaml              backend deploy blueprint
 ```
 
 ## Troubleshooting
 
-- **Port 5050 is busy:** change `PORT` and `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.js`.
+- **`EADDRINUSE` / port 5050 is busy:** another `pnpm --dir server dev` is usually still running in another terminal: stop
+  it with Ctrl+C (find it with `Get-NetTCPConnection -LocalPort 5050 -State Listen`). Otherwise change `PORT` and
+  `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.js`.
+- **Uploaded image shows `AccessDenied`:** the S3 bucket policy is missing that folder (`products/*`, `stores/*`,
+  `avatars/*`, `reviews/*`, `returns/*`). Check with `pnpm --dir server s3:check`.
+- **Search badge says "MongoDB search":** Elasticsearch isn't reachable (`docker ps`; it needs ~30 s to boot). The API
+  retries every 15 s and switches back on its own, rebuilding the index first.
+- **`.env` changes ignored:** `pnpm dev` only restarts on code changes; restart the API after editing `server/.env`.
 - **"Cannot reach the server":** make sure the terminal running `pnpm --dir server dev` says `Vendora API ready`.
 - **Signed out after updating:** sessions now use refresh tokens; sign in again once.
 - **Stale pages after `pnpm --dir server seed`:** restart the API so the in-memory cache is cleared. With Redis, the seed script clears it for you.
