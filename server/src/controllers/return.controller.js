@@ -6,7 +6,7 @@ import { retryRefund } from '../services/refunds.js';
 import { ApiError, paginated, parsePagination } from '../utils/http.js';
 
 const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid id');
-const photo = z.object({ url: z.string().url(), key: z.string().optional() });
+const photo = z.object({ url: z.string().url() });
 
 export const returnRequestSchema = z
   .object({

@@ -161,6 +161,6 @@ export async function uploadImages(req, res) {
   if (folder === 'products' && !['vendor', 'admin'].includes(req.user.role)) {
     throw new ApiError(403, 'Only sellers can upload product images');
   }
-  const files = await Promise.all(req.files.map((file) => uploadFile(file, folder)));
+  const files = await Promise.all(req.files.map((file) => uploadFile(file, folder, req.user._id)));
   res.status(201).json({ files });
 }

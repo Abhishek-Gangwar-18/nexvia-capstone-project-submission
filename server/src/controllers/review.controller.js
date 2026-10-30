@@ -5,11 +5,11 @@ import { Rating } from '../models/Rating.js';
 import { Review, REVIEW_LIMITS } from '../models/Review.js';
 import { ReviewVote } from '../models/ReviewVote.js';
 import { assertDeliveredPurchase, authorName, hasDeliveredPurchase, removeRating, setRating } from '../services/reviews.js';
-import { deleteFile } from '../services/storage.js';
+import { deleteReplaced } from '../services/storage.js';
 import { ApiError, paginated, parsePagination } from '../utils/http.js';
 
 const L = REVIEW_LIMITS;
-const photo = z.object({ url: z.string().url(), key: z.string().optional() });
+const photo = z.object({ url: z.string().url() });
 
 export const ratingSchema = z.object({ value: z.coerce.number().int().min(1, 'Pick a star rating').max(5) });
 export const reviewSchema = z.object({
@@ -116,16 +116,14 @@ async function authoredReview(req, { allowAdmin = false } = {}) {
   return review;
 }
 
-const removedPhotos = (before, after) => {
-  const kept = new Set((after || []).map((p) => p.key).filter(Boolean));
-  return (before || []).filter((p) => p.key && !kept.has(p.key));
-};
+const photoUrls = (photos) => (photos || []).map((p) => p.url);
 
 export async function updateReview(req, res) {
   const review = await authoredReview(req);
-  if (req.body.photos) removedPhotos(review.photos, req.body.photos).forEach((p) => deleteFile(p.key));
+  const before = photoUrls(review.photos);
   Object.assign(review, req.body);
   await review.save();
+  deleteReplaced(before, photoUrls(review.photos), review.user);
   res.json({ review: toPublic({ ...review.toObject(), user: { _id: req.user._id, name: req.user.name } }) });
 }
 
@@ -133,7 +131,7 @@ export async function deleteReview(req, res) {
   const review = await authoredReview(req, { allowAdmin: true });
   await review.deleteOne();
   await ReviewVote.deleteMany({ review: review._id });
-  review.photos.filter((p) => p.key).forEach((p) => deleteFile(p.key));
+  deleteReplaced(photoUrls(review.photos), [], review.user);
   res.json({ message: 'Review deleted' });
 }
 

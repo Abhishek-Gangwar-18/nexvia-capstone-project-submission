@@ -15,6 +15,7 @@ import {
 } from '../services/session.js';
 import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../utils/cookies.js';
 import { CARD_FIELDS, toCard } from '../services/catalog.js';
+import { deleteReplaced } from '../services/storage.js';
 import { ApiError } from '../utils/http.js';
 import { address as addressFields, email, password, phone } from '../utils/validators.js';
 
@@ -146,8 +147,10 @@ export async function updateMe(req, res) {
     if (await User.exists({ phone: newPhone, _id: { $ne: req.user._id } })) throw new ApiError(409, 'This phone number is already registered');
     rest.phone = newPhone;
   }
+  const before = 'avatar' in rest ? await User.findById(req.user._id).select('avatar').lean() : null;
   const user = await User.findByIdAndUpdate(req.user._id, update, { new: true, runValidators: true });
   await invalidateUser(user._id);
+  if (before) deleteReplaced([before.avatar], [user.avatar], user._id);
   res.json({ user: await profile(user) });
 }
 

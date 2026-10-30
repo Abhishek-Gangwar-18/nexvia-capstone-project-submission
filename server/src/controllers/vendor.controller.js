@@ -6,9 +6,9 @@ import { Product, PRODUCT_LIMITS } from '../models/Product.js';
 import { Category } from '../models/Category.js';
 import { Order } from '../models/Order.js';
 import { invalidateUser } from '../services/session.js';
-import { indexProducts, removeFromIndex } from '../services/search.js';
+import { indexProducts } from '../services/search.js';
 import { invalidateCatalog, invalidateProducts } from '../services/catalog.js';
-import { deleteFile } from '../services/storage.js';
+import { deleteReplaced } from '../services/storage.js';
 import { transitionPackage, withPackageLock } from '../services/orders.js';
 import { logger } from '../utils/logger.js';
 import { freezePayoutsIfPending, RETURN_WINDOW_DAYS } from '../services/payouts.js';
@@ -108,6 +108,8 @@ export async function updateStore(req, res) {
   const payoutFields = await guardPayoutChange(req, vendor);
   const { bank, currentPassword: _password, ...rest } = req.body;
   const renamed = rest.storeName && rest.storeName !== vendor.storeName;
+  const pictures = () => [vendor.logo, vendor.banner];
+  const before = pictures();
   await assertStoreAvailable(rest, vendor._id);
   Object.assign(vendor, rest);
   if (bank) vendor.bank = maskBank(bank);
@@ -122,6 +124,7 @@ export async function updateStore(req, res) {
     vendor.rejectionReason = undefined;
   }
   await vendor.save();
+  deleteReplaced(before, pictures(), req.user._id);
   await invalidateCatalog();
   if (renamed) {
     const ids = await Product.find({ vendor: vendor._id }).distinct('_id');
@@ -257,7 +260,7 @@ const productBase = z.object({
   stock: z.coerce.number().int('Stock must be a whole number').min(0).max(100000),
   sku: z.string().trim().max(60).optional().default(''),
   images: z
-    .array(z.object({ url: z.string().url(), key: z.string().optional() }))
+    .array(z.object({ url: z.string().url() }))
     .min(1, 'Add at least one image')
     .max(PRODUCT_LIMITS.images, `Up to ${PRODUCT_LIMITS.images} images allowed`),
   tags: z.array(z.string().trim().min(1).max(30)).max(PRODUCT_LIMITS.tags, `Up to ${PRODUCT_LIMITS.tags} tags allowed`).default([]),
@@ -343,14 +346,13 @@ export async function updateProduct(req, res) {
   const mrp = req.body.mrp ?? product.mrp;
   if (mrp && mrp < price) throw new ApiError(400, 'MRP cannot be lower than the selling price');
 
-  if (req.body.images) {
-    const kept = new Set(req.body.images.map((img) => img.key).filter(Boolean));
-    product.images.filter((img) => img.key && !kept.has(img.key)).forEach((img) => deleteFile(img.key));
-  }
+  const imageUrls = () => product.images.map((img) => img.url);
+  const before = imageUrls();
   Object.assign(product, req.body);
   // Moving out of a hidden or deleted category lists the product again (assertCategory checked the new one).
   if (req.body.category) product.categoryHidden = false;
   await product.save();
+  deleteReplaced(before, imageUrls(), req.user._id);
   await invalidateProducts([product]);
   await invalidateCatalog();
   await indexProducts([product._id]);
@@ -365,7 +367,8 @@ export async function deleteProduct(req, res) {
   await product.save();
   await invalidateProducts([product]);
   await invalidateCatalog();
-  await removeFromIndex(product._id);
+  // Kept in the index as inactive (like hidden products), so its document count stays equal to MongoDB's.
+  await indexProducts([product._id]);
   res.json({ message: 'Product deleted' });
 }
 
