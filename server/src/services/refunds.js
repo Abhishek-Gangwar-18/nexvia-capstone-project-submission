@@ -1,7 +1,7 @@
 import { Payment } from '../models/Payment.js';
 import { Refund } from '../models/Refund.js';
 import { Order } from '../models/Order.js';
-import { cache } from './cache.js';
+import { withLock } from './locks.js';
 import { CURRENCY, createRefund, findRefund, gatewayError } from './payment.js';
 import { ApiError, round2 } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
@@ -15,15 +15,7 @@ async function paidIntent(order) {
   return { paymentId: payment?._id, intentId: payment?.intentId || order.payment.paymentId };
 }
 
-async function withRefundLock(refundId, fn) {
-  const key = `lock:refund:${refundId}`;
-  if ((await cache.incrWithTtl(key, 60)) > 1) throw new ApiError(409, 'This refund is already being processed');
-  try {
-    return await fn();
-  } finally {
-    await cache.del(key);
-  }
-}
+const withRefundLock = (refundId, fn) => withLock(`refund:${refundId}`, 60, 'This refund is already being processed', fn);
 
 /**
  * Sends one attempt to the gateway. A retry first asks Stripe whether an earlier attempt already went
@@ -68,12 +60,18 @@ export async function syncPackageRefund(order, pkg) {
   };
 }
 
-/** paid -> refunded only when every package is cancelled and every refund has gone through. */
+const units = (pkg) => pkg.items.reduce((sum, item) => sum + item.quantity, 0);
+/** Nothing of this package is kept: it was cancelled, or every unit came back in a refunded return. */
+const givenBack = (pkg) => pkg.status === 'cancelled' || (pkg.status === 'delivered' && (pkg.returned?.quantity || 0) >= units(pkg));
+
+/**
+ * paid -> refunded only when no package is kept (all cancelled or fully returned) and every refund has
+ * gone through. A partial refund leaves it "paid"; the package refund summaries show what came back.
+ */
 export function settlePaymentStatus(order) {
   if (!['paid', 'refunded'].includes(order.payment.status)) return;
-  const allCancelled = order.packages.every((p) => p.status === 'cancelled');
   const allRefunded = order.packages.every((p) => !p.refund?.status || p.refund.status === 'processed');
-  order.payment.status = allCancelled && allRefunded ? 'refunded' : 'paid';
+  order.payment.status = order.packages.every(givenBack) && allRefunded ? 'refunded' : 'paid';
 }
 
 /**
@@ -95,7 +93,9 @@ export async function issueRefund({ order, pkg, amount, reason, initiatedBy, ret
     initiatedBy,
     returnRequest,
   });
-  await withRefundLock(refund._id, () => attempt(refund, intentId));
+  // No lock for a brand-new refund: nobody else knows its id yet, and even a retry racing this first attempt
+  // sends the same Stripe idempotency key. Skipping it also means a Redis outage can't strand the refund.
+  await attempt(refund, intentId);
   await syncPackageRefund(order, pkg);
   return refund;
 }
@@ -119,7 +119,7 @@ export async function applyRefundToOrder(refund) {
   if (!pkg) return null;
   await syncPackageRefund(order, pkg);
   settlePaymentStatus(order);
-  if (order.payment.status === 'refunded') order.status = 'cancelled';
+  order.recomputeStatus();
   await order.save();
   // A return whose refund failed first completes once a retry (or Stripe) confirms the money moved.
   if (refund.returnRequest && refund.status !== 'failed') {

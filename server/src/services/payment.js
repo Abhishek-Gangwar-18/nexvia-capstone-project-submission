@@ -24,8 +24,19 @@ export function assertPaymentConfig() {
   if (!stripe && !testGatewayAllowed()) {
     throw new Error('STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY are required in production (or set ALLOW_TEST_GATEWAY=true for a demo deployment without real payments)');
   }
-  if (stripe && !publishableKey) throw new Error('STRIPE_PUBLISHABLE_KEY is required when STRIPE_SECRET_KEY is set');
+  if (!stripe) return;
+  if (!publishableKey) throw new Error('STRIPE_PUBLISHABLE_KEY is required when STRIPE_SECRET_KEY is set');
+  // The publishable key is sent to every browser, so a secret key here would leak it (and Stripe.js refuses it).
+  if (!/^pk_(test|live)_/.test(publishableKey)) {
+    throw new Error('STRIPE_PUBLISHABLE_KEY must be the publishable key (pk_test_... / pk_live_...), not the secret key. Copy it from Developers -> API keys.');
+  }
+  if (!/^(sk|rk)_(test|live)_/.test(secretKey)) throw new Error('STRIPE_SECRET_KEY must be a secret key (sk_test_... / sk_live_...)');
+  if (keyMode(secretKey) !== keyMode(publishableKey)) {
+    throw new Error('STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY are from different modes (one test, one live). Use both test keys.');
+  }
 }
+
+const keyMode = (key) => (key.includes('_test_') ? 'test' : 'live');
 
 export function logPaymentProvider() {
   if (stripe) {

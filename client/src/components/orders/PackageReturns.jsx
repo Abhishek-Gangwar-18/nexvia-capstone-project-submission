@@ -92,7 +92,7 @@ export default function PackageReturns({ order, pkg, returns, windowDays }) {
   });
   const mine = returns.filter((r) => String(r.package) === String(pkg._id));
   const deadline = returnDeadline(pkg, windowDays);
-  const canReturn = pkg.status === 'delivered' && deadline && Date.now() <= deadline.getTime() && pkg.payout?.status !== 'released';
+  const canReturn = pkg.status === 'delivered' && deadline && Date.now() <= deadline.getTime() && !['releasing', 'released'].includes(pkg.payout?.status);
   if (!mine.length && !canReturn) return null;
 
   return (

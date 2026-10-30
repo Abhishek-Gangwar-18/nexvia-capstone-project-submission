@@ -14,13 +14,24 @@ import { ErrorState, PageLoader, Spinner } from '../components/ui/Feedback';
 import MockPaymentModal from '../components/checkout/MockPaymentModal';
 import StripePaymentModal from '../components/checkout/StripePaymentModal';
 import PackageReturns from '../components/orders/PackageReturns';
+import RefundsCard from '../components/orders/RefundsCard';
+
+const SUCCESS_BANNER_MS = 5_000;
 
 function SuccessBanner({ order, onClose }) {
+  // Fades away on its own after 5 seconds (the X closes it sooner).
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const timer = setTimeout(() => close.current(), SUCCESS_BANNER_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -20, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -10 }}
+      exit={{ opacity: 0, y: -10, transition: { duration: 0.6 } }}
       className="relative mb-6 overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 p-6 text-white shadow-xl shadow-emerald-600/20"
     >
       {Array.from({ length: 18 }, (_, i) => (
@@ -165,7 +176,7 @@ export default function OrderDetail({ admin = false }) {
   return (
     <div className={admin ? '' : 'container-page py-8'}>
       <AnimatePresence>
-        {showSuccess && order.payment.status === 'paid' && <SuccessBanner order={order} onClose={() => setParams({})} />}
+        {showSuccess && order.payment.status === 'paid' && <SuccessBanner order={order} onClose={() => setParams({}, { replace: true })} />}
       </AnimatePresence>
 
       <Link to={back} className="inline-flex items-center gap-1 text-sm font-semibold muted hover:text-brand-600">
@@ -292,6 +303,7 @@ export default function OrderDetail({ admin = false }) {
               <div className="flex justify-between pt-1 text-base font-bold"><span>Total</span><span className="font-display">{money(order.pricing.total)}</span></div>
             </div>
           </div>
+          {!admin && data.refunds?.length > 0 && <RefundsCard refunds={data.refunds} total={order.pricing.total} />}
           {admin && <AdminEventLog order={order} />}
         </aside>
       </div>

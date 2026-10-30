@@ -93,8 +93,9 @@ const packageSchema = new mongoose.Schema({
     error: String,
     at: Date,
   },
-  /** Returned and refunded items so far: what the customer got back and the vendor share of it. */
+  /** Returned and refunded items so far: units, what the customer got back and the vendor share of it. */
   returned: {
+    quantity: { type: Number, default: 0 },
     amount: { type: Number, default: 0 },
     vendorShare: { type: Number, default: 0 },
   },

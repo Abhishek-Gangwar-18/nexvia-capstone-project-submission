@@ -3,7 +3,6 @@ import { Order, PACKAGE_TRANSITIONS } from '../models/Order.js';
 import { Product } from '../models/Product.js';
 import { commitCoupon, releaseCoupon } from './coupons.js';
 import { Payment } from '../models/Payment.js';
-import { cache } from './cache.js';
 import { clearCartItems, invalidateCartCache } from './cart.js';
 import { withTransaction } from '../config/db.js';
 import { indexProducts } from './search.js';
@@ -265,19 +264,7 @@ async function claimPaidOrder(orderId, { intentId, method }, session) {
   return claimed;
 }
 
-/**
- * Runs fn while holding a short lock on one package, so two concurrent status updates (double click,
- * vendor and admin at once) can't both pass the transition check and refund or restock twice.
- */
-export async function withPackageLock(packageId, fn) {
-  const key = `lock:package:${packageId}`;
-  if ((await cache.incrWithTtl(key, 30)) > 1) throw new ApiError(409, 'This package is being updated. Please try again.');
-  try {
-    return await fn();
-  } finally {
-    await cache.del(key);
-  }
-}
+export { withPackageLock } from './locks.js';
 
 /**
  * Moves one package along its lifecycle (placed -> packed -> shipped -> delivered, or -> cancelled)
@@ -319,7 +306,6 @@ export async function transitionPackage(order, pkg, next, { note, trackingId, ca
     }
   }
 
-  if (order.payment.status === 'refunded') order.status = 'cancelled';
-  else order.recomputeStatus();
+  order.recomputeStatus();
   return order;
 }

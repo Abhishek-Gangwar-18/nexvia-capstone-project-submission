@@ -8,6 +8,7 @@ import { addressSchema } from './auth.controller.js';
 import { getCart } from '../services/cart.js';
 import { applyCommission, distributeDiscount, evaluateCoupon, getSettings, shippingFor } from '../services/pricing.js';
 import { Payment } from '../models/Payment.js';
+import { Refund } from '../models/Refund.js';
 import {
   checkoutConfig,
   constructWebhookEvent,
@@ -19,6 +20,7 @@ import {
 } from '../services/payment.js';
 import { handleStripeEvent } from '../services/webhooks.js';
 import { RETURN_WINDOW_DAYS } from '../services/payouts.js';
+import { withLock } from '../services/locks.js';
 import {
   afterStockChange,
   cancelUnpaidOrder,
@@ -208,18 +210,18 @@ export async function checkout(req, res) {
   if (!key || !/^[\w-]{8,100}$/.test(key)) {
     throw new ApiError(400, 'Send an Idempotency-Key header (8-100 letters, digits, - or _) with checkout');
   }
-  const base = `idem:checkout:${req.user._id}:${key}`;
-  const saved = await cache.getJSON(`${base}:result`);
+  const resultKey = `idem:checkout:${req.user._id}:${key}:result`;
+  const saved = await cache.getJSON(resultKey);
   if (saved) return res.status(201).json(saved);
-  if ((await cache.incrWithTtl(`${base}:lock`, 60)) > 1) throw new ApiError(409, 'This checkout is already being processed');
-  try {
+  // A failed attempt releases the lock without a result, so the customer can fix the problem and retry with the key.
+  return withLock(`checkout:${req.user._id}:${key}`, 60, 'This checkout is already being processed', async () => {
+    // Checked again under the lock: the first attempt may have finished between the check above and now.
+    const done = await cache.getJSON(resultKey);
+    if (done) return res.status(201).json(done);
     const result = await placeOrder(req);
-    await cache.setJSON(`${base}:result`, result, IDEMPOTENCY_TTL);
+    await cache.setJSON(resultKey, result, IDEMPOTENCY_TTL);
     return res.status(201).json(result);
-  } finally {
-    // A failed attempt releases the key so the customer can fix the problem and retry with it.
-    await cache.del(`${base}:lock`);
-  }
+  });
 }
 
 /**
@@ -319,8 +321,16 @@ function sendInvoice(order, res) {
   streamInvoice(order, order.customer, res);
 }
 
+/** The customer's view of an order's refunds: no gateway ids or errors, just what came back and its state. */
+async function customerRefunds(order) {
+  const refunds = await Refund.find({ order: order._id }).select('package amount status reason createdAt').sort({ createdAt: 1 }).lean();
+  const storeOf = new Map(order.packages.map((p) => [String(p._id), p.storeName]));
+  return refunds.map((r) => ({ _id: r._id, storeName: storeOf.get(String(r.package)), amount: r.amount, status: r.status, reason: r.reason, createdAt: r.createdAt }));
+}
+
 export async function getOrder(req, res) {
-  res.json({ order: await ownOrder(req), returnWindowDays: RETURN_WINDOW_DAYS });
+  const order = await ownOrder(req);
+  res.json({ order, refunds: await customerRefunds(order), returnWindowDays: RETURN_WINDOW_DAYS });
 }
 
 export async function invoice(req, res) {

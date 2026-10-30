@@ -4,6 +4,7 @@ import { Return } from '../models/Return.js';
 import { issueRefund, settlePaymentStatus } from './refunds.js';
 import { RETURN_WINDOW_DAYS } from './payouts.js';
 import { afterStockChange } from './orders.js';
+import { withPackageLock } from './locks.js';
 import { ApiError, round2 } from '../utils/http.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -33,8 +34,16 @@ async function alreadyReturned(pkgId) {
 
 const push = (ret, status, by, actorId, note) => ret.timeline.push({ status, by, actorId, note, at: new Date() });
 
-/** Customer: asks to return items of a delivered package, inside the return window. */
-export async function requestReturn(user, orderId, { packageId, items, reasonCode, note, photos = [] }) {
+/**
+ * Customer: asks to return items of a delivered package, inside the return window. Runs under the package
+ * lock, so two requests sent together can't both count the same units, and the payout job can't pay the
+ * vendor between the payout check and the save.
+ */
+export function requestReturn(user, orderId, request) {
+  return withPackageLock(request.packageId, () => createReturnRequest(user, orderId, request));
+}
+
+async function createReturnRequest(user, orderId, { packageId, items, reasonCode, note, photos = [] }) {
   const order = await Order.findOne({ _id: orderId, customer: user._id });
   if (!order) throw new ApiError(404, 'Order not found');
   const pkg = order.packages.id(packageId);
@@ -42,7 +51,7 @@ export async function requestReturn(user, orderId, { packageId, items, reasonCod
   if (pkg.status !== 'delivered') throw new ApiError(400, 'Only delivered packages can be returned');
   const deadline = returnDeadline(pkg);
   if (!deadline || Date.now() > deadline.getTime()) throw new ApiError(400, `Returns are accepted within ${RETURN_WINDOW_DAYS} days of delivery`);
-  if (pkg.payout.status === 'released') throw new ApiError(400, 'The return window for this package has closed');
+  if (['releasing', 'released'].includes(pkg.payout.status)) throw new ApiError(400, 'The return window for this package has closed');
 
   const returned = await alreadyReturned(pkg._id);
   const lines = items.map(({ product, quantity }) => {
@@ -126,7 +135,8 @@ export async function refundReturn(ret, actor) {
 
 /**
  * received -> refunded, exactly once (also called when a failed refund is retried successfully).
- * The refunded amounts are added to the package, which lowers the vendor payout.
+ * The refunded units and amounts are added to the package, which lowers the vendor payout, and the
+ * payment becomes "refunded" once nothing of the order is kept.
  */
 export async function completeReturn(returnId) {
   const ret = await Return.findOneAndUpdate(
@@ -137,7 +147,18 @@ export async function completeReturn(returnId) {
   if (!ret) return null;
   await Order.updateOne(
     { _id: ret.order, 'packages._id': ret.package },
-    { $inc: { 'packages.$.returned.amount': ret.amount, 'packages.$.returned.vendorShare': ret.vendorShare } },
+    {
+      $inc: {
+        'packages.$.returned.quantity': ret.items.reduce((sum, item) => sum + item.quantity, 0),
+        'packages.$.returned.amount': ret.amount,
+        'packages.$.returned.vendorShare': ret.vendorShare,
+      },
+    },
   );
+  const order = await Order.findById(ret.order);
+  if (order) {
+    settlePaymentStatus(order);
+    await order.save();
+  }
   return ret;
 }

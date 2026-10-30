@@ -3,6 +3,7 @@ import { Order } from '../models/Order.js';
 import { Payment } from '../models/Payment.js';
 import { OPEN_RETURN_STATUSES, Return } from '../models/Return.js';
 import { Vendor } from '../models/Vendor.js';
+import { withPackageLock } from './locks.js';
 import { connectAvailable, createTransfer, gatewayError, reverseTransfer } from './payment.js';
 import { round2 } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
@@ -33,19 +34,35 @@ const setPayout = (orderId, packageId, fields, extra = {}) =>
  */
 export async function releasePackagePayout(orderId, packageId) {
   const now = new Date();
-  const claimed = await Order.findOneAndUpdate(
-    { _id: orderId, packages: { $elemMatch: { _id: packageId, status: 'delivered', 'payout.status': 'on_hold', 'payout.releaseAfter': { $lte: now } } } },
-    { $set: { 'packages.$.payout.status': 'releasing', 'packages.$.payout.claimedAt': now } },
-    { new: true },
-  );
-  if (!claimed) return 'skipped';
-  const pkg = claimed.packages.id(packageId);
   const backOnHold = async (error) => {
     await setPayout(orderId, packageId, { status: 'on_hold', error });
     return 'held';
   };
 
-  if (await Return.exists({ package: packageId, status: { $in: OPEN_RETURN_STATUSES } })) return backOnHold('Waiting for an open return to be resolved');
+  // The claim and the open-return check share the package lock with return requests, so a return can't be
+  // saved in between; once the package is "releasing", new return requests are refused.
+  let claimed;
+  try {
+    claimed = await withPackageLock(packageId, async () => {
+      const doc = await Order.findOneAndUpdate(
+        { _id: orderId, packages: { $elemMatch: { _id: packageId, status: 'delivered', 'payout.status': 'on_hold', 'payout.releaseAfter': { $lte: now } } } },
+        { $set: { 'packages.$.payout.status': 'releasing', 'packages.$.payout.claimedAt': now } },
+        { new: true },
+      );
+      if (doc && (await Return.exists({ package: packageId, status: { $in: OPEN_RETURN_STATUSES } }))) {
+        return backOnHold('Waiting for an open return to be resolved');
+      }
+      return doc;
+    });
+  } catch (err) {
+    // 409: a return request or status update holds the package. 503: the lock store is down. Next run.
+    if (err.status === 409 || err.status === 503) return 'skipped';
+    throw err;
+  }
+  if (!claimed) return 'skipped';
+  if (claimed === 'held') return 'held';
+  const pkg = claimed.packages.id(packageId);
+
   const vendor = await Vendor.findById(pkg.vendor).select('stripe payoutHold storeName').lean();
   if (vendor?.payoutHold?.active) return backOnHold(`Payouts on hold: ${vendor.payoutHold.reason}`);
 

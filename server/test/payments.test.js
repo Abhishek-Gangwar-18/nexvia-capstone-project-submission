@@ -88,3 +88,19 @@ describe('test gateway in production', () => {
     assert.equal(run('true'), 'started');
   });
 });
+
+describe('Stripe keys', () => {
+  test('the server refuses a secret key in place of the publishable key, or keys of different modes', async () => {
+    const script = (secret, publishable) => `
+      process.env.STRIPE_SECRET_KEY = ${JSON.stringify(secret)};
+      process.env.STRIPE_PUBLISHABLE_KEY = ${JSON.stringify(publishable)};
+      const { assertPaymentConfig } = await import(${JSON.stringify(src('services/payment.js'))});
+      try { assertPaymentConfig(); console.log('started'); } catch (e) { console.log('refused'); }`;
+    const { execFileSync } = await import('node:child_process');
+    const run = (secret, publishable) => execFileSync(process.execPath, ['--input-type=module', '-e', script(secret, publishable)], { encoding: 'utf8' }).trim().split('\n').pop();
+    assert.equal(run('sk_test_abc', 'pk_test_abc'), 'started');
+    assert.equal(run('sk_test_abc', 'sk_test_abc'), 'refused');
+    assert.equal(run('sk_test_abc', 'pk_live_abc'), 'refused');
+    assert.equal(run('sk_test_abc', ''), 'refused');
+  });
+});
