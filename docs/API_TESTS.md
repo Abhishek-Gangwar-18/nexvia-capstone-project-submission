@@ -214,22 +214,24 @@ curl -i -X DELETE "{{baseUrl}}/auth/me/addresses/{{addressId}}" -H "Authorizatio
 |---|---|---|
 | 3.1 | Home feed | 200 `{ categories, trending, topRated, newArrivals, deals, vendors }` |
 | 3.2 | Categories | 200 `{ categories: [{ _id, name, productCount, ... }] }` → save `categoryId` |
-| 3.3 | Products, first page | 200 `{ items, total, page, limit, pages, facets, engine }` |
+| 3.3 | Products, first page | 200 `{ items, total, page, limit, pages, facets, engine, relaxed }` |
 | 3.4 | Products filtered by store, in stock, sorted | 200, every item's vendor is TechNova → save `productId` |
 | 3.5 | Price range + rating + category | 200, all items match |
 | 3.6 | Unknown sort / huge limit | 200, falls back to `relevance`, `limit` capped at 48 |
-| 3.7 | Suggest `q=ph` | 200 `{ products, categories }` |
-| 3.8 | Suggest `q=a` (too short) | 200 `{ products: [], categories: [] }` |
+| 3.7 | Suggest `q=ph` | 200 `{ products, categories, didYouMean: null }` |
+| 3.7b | Suggest `q=samsng` (typo, Elasticsearch on) | 200 `didYouMean: "samsung"` |
+| 3.8 | Suggest `q=a` (too short) | 200 `{ products: [], categories: [], didYouMean: null }` |
 | 3.9 | Product detail | 200 `{ product, related, category, store }` |
 | 3.9b | Product `abc` / unknown id | 400 `Invalid product id` / 404 `Product not found` |
 | 3.10 | Stores search | 200 paginated → save `storeId` |
 | 3.11 | Store detail / `abc` / unknown | 200 `{ store }` / 400 `Invalid store id` / 404 `Store not found` |
 | 3.12 | Public coupons (+ a store's coupons) | 200 `{ coupons }`, private and expired ones left out → save `couponCode` |
-| 3.13 | Upload an image (Postman: Body → form-data, key `images`, type File) | 201 `{ files: [{ url, key }] }` |
+| 3.13 | Upload an image (Postman: Body → form-data, key `images`, type File) | 201 `{ files: [{ url, key }] }`, key `avatars/{date}/{your user id}/{uuid}.jpg` |
 | 3.14 | Upload with no file | 400 `Choose at least one image to upload` |
-| 3.15 | Upload with `folder=bad` | 400 `folder must be one of: products, stores, avatars, reviews` |
+| 3.15 | Upload with `folder=bad` | 400 `folder must be one of: products, stores, avatars, reviews, returns` |
 | 3.16 | Customer uploads to `folder=products` | 403 `Only sellers can upload product images` |
 | 3.17 | Upload a `.txt` file | 400 `Unsupported file type text/plain...` |
+| 3.17b | Upload a text file renamed to `.jpg` | 400 `fake.jpg is not a valid image...` |
 | 3.18 | Upload without a token | 401 |
 
 ```bash
@@ -247,6 +249,8 @@ curl -i "{{baseUrl}}/products?category={{categoryId}}&minPrice=100&maxPrice=5000
 curl -i "{{baseUrl}}/products?sort=bogus&limit=500"
 # 3.7
 curl -i "{{baseUrl}}/products/suggest?q=ph"
+# 3.7b
+curl -i "{{baseUrl}}/products/suggest?q=samsng"
 # 3.8
 curl -i "{{baseUrl}}/products/suggest?q=a"
 # 3.9
@@ -273,6 +277,8 @@ curl -i -X POST "{{baseUrl}}/uploads?folder=bad" -H "Authorization: Bearer {{cus
 curl -i -X POST "{{baseUrl}}/uploads?folder=products" -H "Authorization: Bearer {{customerToken}}" -F "images=@/path/to/photo.jpg"
 # 3.17
 curl -i -X POST "{{baseUrl}}/uploads?folder=avatars" -H "Authorization: Bearer {{customerToken}}" -F "images=@/path/to/notes.txt"
+# 3.17b  (a text file renamed to fake.jpg)
+curl -i -X POST "{{baseUrl}}/uploads?folder=avatars" -H "Authorization: Bearer {{customerToken}}" -F "images=@/path/to/fake.jpg;type=image/jpeg"
 # 3.18
 curl -i -X POST "{{baseUrl}}/uploads?folder=avatars" -F "images=@/path/to/photo.jpg"
 ```
@@ -700,7 +706,7 @@ curl -i -X DELETE "{{baseUrl}}/vendor/coupons/{{vendorCouponId}}" -H "Authorizat
 | 8.38 | `{}` / `commissionRate: 60` | 400 `Send at least one setting to change` / 400 `commissionRate: ...less than or equal to 50` |
 | 8.39 | Old `PUT /admin/settings` | 404 `Route not found` |
 | 8.40 | System | 200 database, cache, search, storage and payment status |
-| 8.41 | Reindex | 200 `{ message, count }`, or 400 if Elasticsearch isn't connected |
+| 8.41 | Reindex | 200 `{ message, count }`; 409 while another reindex runs; 400 if Elasticsearch isn't connected |
 
 ```bash
 # 8.1

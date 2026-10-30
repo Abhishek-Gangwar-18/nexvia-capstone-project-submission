@@ -42,7 +42,7 @@ a local equivalent and logs which one it is using:
 | Service | Adapter | Fallback |
 |---|---|---|
 | MongoDB | `config/db.js` | Required (Atlas or any MongoDB). On a standalone server, payments use atomic single-document claims instead of transactions |
-| Redis | `services/cache.js` | In-memory store with the same API |
+| Redis | `services/cache.js` | In-memory store with the same API (development only: production refuses to start without Redis unless `ALLOW_MEMORY_CACHE=true`) |
 | Elasticsearch | `services/search.js` | MongoDB aggregation search with the same filters, facets and sorting |
 | AWS S3 | `services/storage.js` | Files written to `server/uploads` and served at `/uploads` |
 | Stripe | `services/payment.js` | Built-in test gateway using the same payment, verify and finalize flow |
@@ -337,11 +337,33 @@ sequenceDiagram
 | `product:{id}` | Product page payload (product, related items, store stats) | 5 min |
 | `home:feed`, `categories`, `store:{id}`, `vendors:approved` | Storefront listings | 2–10 min |
 | `settings` | Commission and shipping rules | 5 min |
-| `idem:checkout:{user}:{key}:*` | Checkout idempotency result and lock | 24 h / 60 s |
-| `lock:package:{id}` | One package update at a time | 30 s |
-| `lock:refund:{id}` | One attempt per refund at a time | 60 s |
+| `idem:checkout:{user}:{key}:result` | Checkout idempotency: the first response, returned to retries | 24 h |
+| `lock:checkout:{user}:{key}` | One checkout per Idempotency-Key at a time | 60 s |
+| `lock:package:{id}` | One package write at a time (status changes, return requests, the payout claim) | 30 s |
+| `lock:refund:{id}` | One retry per refund at a time | 60 s |
+| `lock:search:reindex` | One Elasticsearch rebuild at a time across instances | 10 min |
+| `rl:{auth\|refresh\|password}:{ip}` | Login/register, refresh and password-change rate limits | 15 min window |
+| `rl:upload:{user}` | Image uploads per account | 15 min window |
 
 Writes invalidate the matching keys, for example when a product, rating, category or setting changes.
+
+**Locks** (`services/locks.js`) are `SET key <random token> NX EX <ttl>`: taken and given an expiry in one
+command, so a crashed holder can't block a package forever, and released by a Lua script that deletes the key
+only if it still holds the caller's token. **Rate limits** use one Lua script (`INCR` + `PEXPIRE` on the first
+hit) through `services/rateLimitStore.js`, so every API instance shares the same counters. The global
+600-requests-per-minute flood guard stays per instance, to spare Redis a command on every request.
+
+**When Redis is down** the failure policy depends on what the key protects:
+
+| Use | Behaviour |
+|---|---|
+| Caches, cart, `user:*`, `session:*` | Treated as a miss: read from MongoDB (sessions are checked in MongoDB, so revocation still holds) |
+| Locks | Refused with 503 `LOCK_UNAVAILABLE`: a lock that can't be checked is never granted. The payout job skips the package until the next run |
+| Rate limits | Counted in the process until Redis is back, so limits still apply per instance |
+| Startup | Development falls back to memory with a warning; production refuses to start |
+
+A new refund is sent without a lock (nobody else knows its id yet, and the Stripe idempotency key covers a racing
+retry), so an outage can't leave a cancellation half done.
 
 ## 7. Order lifecycle and stock reservation
 
@@ -441,15 +463,37 @@ atomic status change, so a double click can't apply it twice.
 
 ## 9. Search (Elasticsearch)
 
-- Index `vendora-products`. `title` uses the English analyzer, `titleSuggest` is a `search_as_you_type` field for the
-  typeahead, `brand` and `category` (the category id) are keyword fields for facets, `categoryName` is searchable
-  text, and price, rating, `numRatings`, stock, sold and discount are numeric fields for filters and sorting.
-- Each query is a `multi_match` with fuzziness plus a phrase-prefix boost. Price, rating and stock go in the bool
-  filter; category and brand go in `post_filter`, so each facet still shows its other options.
+- **Alias and builds.** Searches and writes use the alias `vendora-products`, which points at one built index
+  (`vendora-products-v{version}-{timestamp}`). A rebuild fills a new index next to the live one and then moves the
+  alias in one atomic `updateAliases` call, so search never sees an empty or half-built index. Products changed
+  while it was filling are written again after the switch. One rebuild runs at a time (Redis lock
+  `lock:search:reindex`; a second one gets 409).
+- **When it rebuilds.** On startup when there is no index, when `INDEX_VERSION` in `services/search.js` changed (bump
+  it whenever the settings or mappings change), or when the document count differs from MongoDB; after an outage;
+  and from Admin → Settings → Reindex.
+- **Mapping** (`dynamic: strict`). Title, brand, category name, tags, specs and store name are copied into
+  `searchText`. Text uses a light English stemmer with ASCII folding; at search time a synonym filter adds Indian
+  shopping synonyms (phone/mobile/smartphone, tv/television, tshirt/tee, ac/air conditioner, ...). `titleSuggest` is
+  a `search_as_you_type` field for the typeahead, `brand` and `category` (the id) are keywords for facets, and price,
+  rating, stock, sold and discount are numeric fields for filters and sorting. Deleted and hidden products stay in
+  the index with `isActive: false`; a product is active only when it is listed and its store is approved (the same
+  rule as the MongoDB search).
+- **Query.** Every typed word must match `searchText` (fuzzy, so typos work), and phrase, title, brand and category
+  matches rank higher. If no product has every word and the query has several words, it is run again with any word
+  matching (description included) and the response has `relaxed: true`, which the search page explains. Price,
+  rating and stock go in the bool filter; category and brand go in `post_filter`, so each facet still shows its other
+  options. `createdAt` breaks sort ties, so pages never swap products.
+- **Outages.** Requests time out after 5 s. A connection error moves search to MongoDB at once (no request waits
+  on a dead Elasticsearch), index writes are skipped, and the API checks every 15 s. Once it answers, the index is
+  rebuilt from MongoDB and search switches back. `/health` shows `mongodb (elasticsearch reconnecting)` meanwhile.
 - Without Elasticsearch, MongoDB search matches typed words against category **names** (never ids) as well as title,
   brand, tags and description.
-- Product, rating, stock and category changes re-index the affected documents. On startup the index is rebuilt when
-  its document count differs from MongoDB; admins can also run a full reindex.
+- `pnpm --dir server es:check` runs the real queries (typos, synonyms, facets, typeahead) against sample products in
+  a temporary index, then reports the live index.
+- **Did you mean.** The typeahead request also runs a phrase suggester on `spell` (title, brand, category and tags,
+  unstemmed, with 2–3 word shingles). A correction is returned as `didYouMean` only when it finds at least one
+  active product (collate query) and changes a word rather than completing the one being typed ("gala" -> "galaxy"
+  is left to the product suggestions). The search bar shows it first, with the corrected words in bold.
 
 ## 10. API reference
 
@@ -490,7 +534,13 @@ Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Aut
 | POST / DELETE | `/products/:productId/reviews/:reviewId/helpful` | Vote / unvote helpful (auth, not your own) |
 | GET | `/coupons?vendors=` | Active, started coupons a shopper can use |
 | GET | `/stores`, `/stores/:storeId` | Store directory, store profile and stats |
-| POST | `/uploads?folder=products\|stores\|avatars\|reviews` | Multipart `images[]` → S3 or local disk (auth) |
+| POST | `/uploads?folder=products\|stores\|avatars\|reviews\|returns` | Multipart `images[]` → S3 or local disk (auth) |
+
+**Uploads.** Up to 8 images of 5 MB per request and 60 requests per 15 minutes per account. Each file's type is
+read from its first bytes (JPG, PNG, WEBP, GIF, AVIF), so a renamed page or script is refused. Files are stored
+as `{folder}/{YYYY-MM-DD}/{uploader's user id}/{uuid}.{ext}`. Product, review, return, avatar and store image
+fields take plain URLs: the server works out the key from the URL and, after the change is saved, deletes a
+replaced image only when the same user uploaded it. Seeded and external images are never deleted.
 
 ### Cart and orders — customers
 | Method | Path | Description |
@@ -504,7 +554,7 @@ Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Aut
 | POST | `/orders/:id/verify` | `{paymentIntentId}` (or test-gateway `outcome`): checked with Stripe, then the order is finalized |
 | GET | `/orders/:id/payment` | Payment form for an unpaid order (reuses or reopens the PaymentIntent) |
 | GET | `/orders` | My orders |
-| GET | `/orders/:id` | Order detail (own orders only) |
+| GET | `/orders/:id` | Order detail (own orders only), plus `refunds[{storeName, amount, status, reason, createdAt}]` |
 | GET | `/orders/:id/invoice` | PDF invoice |
 | POST | `/orders/:id/cancel` | `{packageIds?, reasonCode?, note?}`: cancel chosen packages (default all) before shipping, each refunded on its own |
 | GET / POST | `/orders/:id/returns` | Returns of the order / request one `{packageId, items[{product, quantity}], reasonCode, note?, photos?}` |

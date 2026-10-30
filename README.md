@@ -87,12 +87,12 @@ Edit `server/.env` (copy it from `server/.env.example`) and restart the API. The
 | Service | Variables | Notes |
 |---|---|---|
 | **MongoDB Atlas** | `MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/vendora?retryWrites=true&w=majority` | Add your IP under Atlas → Network Access. An empty database is seeded on first start, and payments are finalized in multi-document transactions (Atlas is a replica set). If Node can't resolve the SRV record (`querySrv ECONNREFUSED` on some Windows setups), the API retries via public DNS automatically |
-| **Redis** | `REDIS_URL=redis://localhost:6379` (or Upstash `rediss://...`) | Cart, session-check and page cache, checkout idempotency, locks |
-| **Elasticsearch** | `ELASTICSEARCH_NODE=http://localhost:9200` (+ `ELASTICSEARCH_API_KEY` for Elastic Cloud) | The index is created and filled automatically on startup |
-| **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | The bucket needs public read for `products/*`, `stores/*`, `avatars/*` and `reviews/*`, or a CloudFront URL in `AWS_S3_PUBLIC_URL` |
+| **Redis** | Local: `docker compose up -d redis`, then `REDIS_URL=redis://localhost:6379`. Production: a hosted Redis (Upstash `rediss://...` or Render Key Value) | Sessions, locks (packages, refunds, checkout), login/refresh/password rate limits, cart and page cache. Run `pnpm --dir server redis:check` to test the connection. Required in production |
+| **Elasticsearch** | `ELASTICSEARCH_NODE=http://localhost:9200` (+ `ELASTICSEARCH_API_KEY` for Elastic Cloud) | Product search, facets and typeahead with typo tolerance and synonyms. The index is built from MongoDB on startup, rebuilt without downtime, and search falls back to MongoDB during an outage. Run `pnpm --dir server es:check` to test it |
+| **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | Image uploads. The bucket needs public read for `products/*`, `stores/*`, `avatars/*`, `reviews/*` and `returns/*` (or a CloudFront URL in `AWS_S3_PUBLIC_URL`); the IAM key only needs `s3:PutObject` and `s3:DeleteObject`. Run `pnpm --dir server s3:check` to test the bucket |
 | **Stripe** | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (test keys) | The Stripe Payment Element replaces the test gateway; see *Stripe setup* below |
 
-If you have Docker, `docker compose up -d` starts MongoDB 7, Redis 7 and Elasticsearch 8.19.
+If you have Docker, `docker compose up -d redis elasticsearch` starts Redis 7 and Elasticsearch 8.19 (both bound to localhost, restarting with Docker Desktop); plain `docker compose up -d` also starts MongoDB 7.
 
 ### Stripe setup (payments, refunds, vendor payouts)
 
@@ -165,7 +165,7 @@ error and shows in Admin → Payments.
 │   │   ├── config/          env, MongoDB connection
 │   │   ├── models/          User, Session, Vendor, Product, Category, Rating, Review, ReviewVote,
 │   │   │                    Coupon, CouponRedemption, Cart, Order, Settings
-│   │   ├── services/        cache (Redis), search (Elasticsearch), storage (S3), payment (Stripe), mail,
+│   │   ├── services/        cache (Redis), search (Elasticsearch), storage (S3), payment (Stripe),
 │   │   │                    cart, pricing, coupons, orders, reviews, invoice (PDFKit), session, catalog
 │   │   ├── controllers/     auth, catalog, review, cart, order, vendor, coupon, category, admin
 │   │   ├── routes/          route definitions with zod validation + RBAC middleware
