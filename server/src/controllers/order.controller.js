@@ -13,6 +13,7 @@ import {
   checkoutConfig,
   constructWebhookEvent,
   createPaymentIntent,
+  stripeCustomerFor,
   CURRENCY,
   intentClientSecret,
   paymentProvider,
@@ -45,6 +46,8 @@ export const checkoutSchema = z
     addressId: z.string().optional(),
     address: addressSchema.optional(),
     couponCode: z.string().trim().max(30).optional(),
+    /** The total the customer saw. If the server's total differs (price, delivery fee or coupon changed), checkout stops. */
+    expectedTotal: z.coerce.number().min(0).optional(),
   })
   .refine((d) => d.addressId || d.address, { message: 'Choose a delivery address', path: ['address'] });
 
@@ -75,8 +78,19 @@ const prefill = (user) => ({ name: user.name, email: user.email, contact: user.p
 async function placeOrder(req) {
   const userId = req.user._id;
   const cart = await getCart(userId);
+  // Products that stopped being sold since the customer last saw the cart: say so instead of ordering without them.
+  if (cart.removed.length) {
+    const names = cart.removed.map((r) => r.title).join(', ');
+    throw new ApiError(409, `No longer available: ${names}. It has been removed from your cart, please review it.`, { code: 'CART_CHANGED' });
+  }
   if (!cart.items.length) throw new ApiError(400, 'Your cart is empty');
   if (cart.items.some((i) => !i.inStock)) throw new ApiError(400, 'Remove out-of-stock items from your cart to continue');
+  // Stock dropped below what the customer chose: stop instead of silently ordering fewer than they saw.
+  const short = cart.items.filter((i) => i.limited);
+  if (short.length) {
+    const lines = short.map((i) => `${i.product.title} (only ${i.quantity} left)`).join(', ');
+    throw new ApiError(409, `Stock changed: ${lines}. Your cart has been updated, please review it.`, { code: 'CART_CHANGED' });
+  }
 
   let shippingAddress = req.body.address;
   if (req.body.addressId) {
@@ -124,6 +138,18 @@ async function placeOrder(req) {
   const shipping = shippingFor(subtotal - discount, settings);
   const total = round2(subtotal - discount + shipping);
 
+  // The amount must be what the customer agreed to: a price, delivery fee or coupon that changed since the
+  // page was loaded stops checkout here, before any stock or coupon is held.
+  if (req.body.expectedTotal != null && Math.abs(req.body.expectedTotal - total) >= 0.01) {
+    const repriced = cart.items.filter((i) => i.priceChanged).map((i) => `${i.product.title} ₹${i.priceChanged.from} → ₹${i.priceChanged.to}`);
+    const why = repriced.length ? ` (${repriced.join(', ')})` : ' (price, delivery fee or coupon updated)';
+    throw new ApiError(409, `Your total changed from ₹${req.body.expectedTotal} to ₹${total}${why}. Please review your order.`, {
+      code: 'CART_CHANGED',
+      expectedTotal: req.body.expectedTotal,
+      total,
+    });
+  }
+
   const order = new Order({
     customer: userId,
     packages,
@@ -144,7 +170,7 @@ async function placeOrder(req) {
     if (coupon) await holdCoupon(coupon.coupon, userId, order._id);
     await insertWithUniqueNumber(order);
     saved = true;
-    clientSecret = await openPayment(order, req.user.email);
+    clientSecret = await openPayment(order, req.user);
   } catch (err) {
     await releaseStock(items);
     if (coupon) await releaseCoupon(order._id);
@@ -179,8 +205,10 @@ async function insertWithUniqueNumber(order) {
  * Opens a payment attempt (Stripe PaymentIntent, or the test gateway) and records it as a Payment.
  * Returns the client secret the browser needs to show the Stripe payment form.
  */
-async function openPayment(order, email, attempt = 0) {
-  const intent = await createPaymentIntent({ orderId: order._id, orderNumber: order.orderNumber, amount: order.pricing.total, email, attempt });
+async function openPayment(order, user, attempt = 0) {
+  const account = await User.findById(user._id).select('+stripeCustomerId name email');
+  const customerId = await stripeCustomerFor(account);
+  const intent = await createPaymentIntent({ orderId: order._id, orderNumber: order.orderNumber, amount: order.pricing.total, email: account.email, customerId, attempt });
   await Payment.create({
     order: order._id,
     customer: order.customer,
@@ -213,8 +241,9 @@ export async function checkout(req, res) {
   const resultKey = `idem:checkout:${req.user._id}:${key}:result`;
   const saved = await cache.getJSON(resultKey);
   if (saved) return res.status(201).json(saved);
-  // A failed attempt releases the lock without a result, so the customer can fix the problem and retry with the key.
-  return withLock(`checkout:${req.user._id}:${key}`, 60, 'This checkout is already being processed', async () => {
+  // One checkout per customer at a time (double click, or a second tab with its own key): the lock is per
+  // customer, not per key. A failed attempt releases it without a result, so the customer can fix and retry.
+  return withLock(`checkout:${req.user._id}`, 60, 'A checkout is already in progress (maybe in another tab). Please wait a moment.', async () => {
     // Checked again under the lock: the first attempt may have finished between the check above and now.
     const done = await cache.getJSON(resultKey);
     if (done) return res.status(201).json(done);
@@ -244,7 +273,7 @@ export async function paymentConfig(req, res) {
   }
   if (!clientSecret && (order.payment.provider !== paymentProvider() || paymentProvider() === 'stripe')) {
     const attempts = await Payment.countDocuments({ order: order._id });
-    clientSecret = await openPayment(order, req.user.email, attempts);
+    clientSecret = await openPayment(order, req.user, attempts);
   }
   res.json({ order: { _id: order._id, orderNumber: order.orderNumber, pricing: order.pricing }, payment: checkoutConfig(order, clientSecret), prefill: prefill(req.user) });
 }

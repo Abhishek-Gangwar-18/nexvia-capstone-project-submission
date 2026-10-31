@@ -53,7 +53,8 @@ function PaymentForm({ checkout, onPaid }) {
         </div>
       )}
       <PaymentElement
-        options={{ layout: 'tabs' }}
+        // wallets.link 'never': no Stripe Link banner or "save my information" box (Link is on in the Stripe account).
+        options={{ layout: 'tabs', wallets: { link: 'never', applePay: 'never', googlePay: 'never' } }}
         onReady={() => setReady(true)}
         onLoadError={({ error: loadError }) => {
           setReady(true);

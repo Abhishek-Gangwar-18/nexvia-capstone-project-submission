@@ -9,6 +9,7 @@ import { releaseExpiredReservations, RESERVATION_MINUTES } from './services/orde
 import { releaseDuePayouts, RETURN_WINDOW_DAYS } from './services/payouts.js';
 import { runReconciliation } from './services/reconcile.js';
 import { createApp } from './app.js';
+import { watchCoupons, watchProducts, watchVendors } from './services/productEvents.js';
 import { logger } from './utils/logger.js';
 
 async function start() {
@@ -31,6 +32,9 @@ async function start() {
     await seedDatabase({ log: logger.info });
   }
   await syncIndexIfNeeded();
+  watchProducts();
+  watchCoupons();
+  watchVendors();
 
   // Unpaid orders hold stock for RESERVATION_MINUTES; this returns it once the window passes.
   // Each release is an atomic claim, so running it on several instances at once is safe.

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { clearCart, getCart, MAX_PER_ITEM, removeItem, setItem } from '../services/cart.js';
+import { cartProductIds, clearCart, getCart, MAX_PER_ITEM, removeItem, setItem } from '../services/cart.js';
+import { productEvents } from '../services/productEvents.js';
 import { evaluateCoupon, getSettings, shippingFor } from '../services/pricing.js';
 import { ApiError, round2 } from '../utils/http.js';
 
@@ -46,5 +47,38 @@ export async function applyCoupon(req, res) {
   res.json({
     coupon: result.summary,
     summary: { ...cart.summary, discount: result.discount, shipping, total: round2(afterDiscount + shipping) },
+  });
+}
+
+/**
+ * GET /cart/events - Server-Sent Events. Sends `cart` whenever a product in this customer's cart changes
+ * stock, price or availability (any writer: vendor, other orders, admin), so the open cart refetches at
+ * once instead of showing stale quantities. `no-transform` keeps compression from buffering the stream.
+ */
+export function events(req, res) {
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders();
+  const send = (chunk) => {
+    res.write(chunk);
+    res.flush?.();
+  };
+  send('event: ready\ndata: {}\n\n');
+
+  const onChange = async (productId) => {
+    try {
+      if ((await cartProductIds(req.user._id)).includes(productId)) send(`event: cart\ndata: ${JSON.stringify({ productId })}\n\n`);
+    } catch {
+      /* cart unreadable for a moment: the client also refetches on focus */
+    }
+  };
+  productEvents.on('change', onChange);
+  // Coupons can apply to anyone's cart, so every connected customer hears about coupon changes.
+  const onCoupon = (couponId) => send(`event: coupon\ndata: ${JSON.stringify({ couponId })}\n\n`);
+  productEvents.on('coupon', onCoupon);
+  const ping = setInterval(() => send(': ping\n\n'), 25_000); // keeps proxies from closing an idle stream
+  req.on('close', () => {
+    clearInterval(ping);
+    productEvents.off('change', onChange);
+    productEvents.off('coupon', onCoupon);
   });
 }

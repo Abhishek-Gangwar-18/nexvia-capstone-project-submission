@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
+import { sellerHome } from '../lib/roles';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowRight, Heart, Lock, ShoppingBag, Store, Trash2 } from 'lucide-react';
 import { useAuth } from '../store/auth';
+import { useAuthModal } from '../store/authModal';
 import { useCart, useCartActions } from '../lib/cart';
 import { useWishlist } from '../lib/hooks';
 import { money } from '../lib/format';
@@ -32,6 +34,9 @@ export default function Cart() {
   const wishlist = useWishlist();
   const [priced, setPriced] = useState(null);
 
+  // Only customers have a cart: sellers and admins are sent to their own area.
+  const own = sellerHome(user);
+  if (own) return <Navigate to={own.to} replace />;
   if (isLoading) return <PageLoader />;
 
   if (!items.length) {
@@ -100,7 +105,7 @@ export default function Cart() {
                         <CartLineNotices item={item} className="mt-1" />
                         {!item.inStock && <p className="mt-1 text-xs font-semibold text-rose-600">Out of stock — remove to continue</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
-                          <QuantityStepper size="sm" value={item.quantity} max={item.maxQuantity || 10} onChange={(q) => update(item.productId, q)} disabled={!item.inStock} />
+                          <QuantityStepper size="sm" allowRemove value={item.quantity} max={item.maxQuantity || 10} onChange={(q) => (q <= 0 ? remove(item.productId) : update(item.productId, q))} disabled={!item.inStock} />
                           {wishlist.canUse && (
                             <button type="button" onClick={() => saveForLater(item)} className="flex items-center gap-1 text-xs font-semibold text-zinc-500 hover:text-brand-600">
                               <Heart className="h-3.5 w-3.5" /> Save for later
@@ -130,7 +135,7 @@ export default function Cart() {
             <button
               type="button"
               disabled={hasOutOfStock}
-              onClick={() => navigate(user ? '/checkout' : '/login', user ? undefined : { state: { from: { pathname: '/checkout' } } })}
+              onClick={() => (user ? navigate('/checkout') : useAuthModal.getState().open('login', { from: '/checkout' }))}
               className="btn btn-primary btn-lg w-full"
             >
               <Lock className="h-4 w-4" /> {user ? 'Proceed to checkout' : 'Sign in to checkout'}

@@ -26,6 +26,9 @@ async function readRaw(userId) {
 }
 
 
+/** Product ids in a customer's cart (for live updates: is a changed product in this cart?). */
+export const cartProductIds = async (userId) => (await readRaw(userId)).map((l) => String(l.productId));
+
 export const invalidateCartCache = (userId) => cache.del(cacheKey(userId));
 
 async function sellableProduct(productId) {
@@ -51,10 +54,13 @@ export async function getCart(userId) {
 
   const items = [];
   const gone = [];
+  /** Lines dropped on this read (deleted, hidden, store suspended): reported once so the UI can say so. */
+  const removed = [];
   for (const line of raw) {
     const p = byId.get(line.productId);
     if (!p || !isListed(p) || p.vendor?.status !== 'approved') {
       gone.push(line.productId);
+      removed.push({ productId: line.productId, title: p?.title || 'A product' });
       continue;
     }
     const maxQuantity = Math.min(p.stock, MAX_PER_ITEM);
@@ -96,6 +102,7 @@ export async function getCart(userId) {
   const shipping = shippingFor(subtotal, settings);
   return {
     items,
+    removed,
     summary: {
       itemCount: buyable.reduce((sum, i) => sum + i.quantity, 0),
       subtotal,

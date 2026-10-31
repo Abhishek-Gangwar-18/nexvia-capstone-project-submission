@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BadgePercent, Check, Tag, X } from 'lucide-react';
@@ -14,6 +15,7 @@ import { Spinner } from '../ui/Feedback';
 export default function CouponBox({ items, subtotal, onApplied, disabled }) {
   const couponCode = useCartStore((s) => s.couponCode);
   const setCouponCode = useCartStore((s) => s.setCouponCode);
+  const couponCheck = useCartStore((s) => s.couponCheck);
   const [input, setInput] = useState('');
   const [applied, setApplied] = useState(null);
   const [error, setError] = useState('');
@@ -24,9 +26,12 @@ export default function CouponBox({ items, subtotal, onApplied, disabled }) {
     queryKey: ['coupons', vendorIds],
     queryFn: () => api.get('/coupons', { params: { vendors: vendorIds } }).then((r) => r.data.coupons),
     enabled: !disabled,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
 
-  const apply = async (code, { quiet = false } = {}) => {
+  /** quiet: no inline error. lost: the coupon was applied before, so say it was removed. */
+  const apply = async (code, { quiet = false, lost = false } = {}) => {
     if (!code) return;
     setLoading(true);
     setError('');
@@ -41,6 +46,7 @@ export default function CouponBox({ items, subtotal, onApplied, disabled }) {
       setCouponCode('');
       onApplied?.(null);
       if (!quiet) setError(errorMessage(err));
+      if (lost) toast.error(`Coupon ${code} was removed: ${errorMessage(err)}`, { id: 'coupon-lost', duration: 6000 });
     } finally {
       setLoading(false);
     }
@@ -54,9 +60,20 @@ export default function CouponBox({ items, subtotal, onApplied, disabled }) {
 
   // Re-validate the saved coupon when the cart changes (it may no longer meet the minimum).
   useEffect(() => {
-    if (couponCode && !disabled && subtotal > 0) apply(couponCode, { quiet: true });
+    if (couponCode && !disabled && subtotal > 0) apply(couponCode, { quiet: true, lost: Boolean(applied) });
     else if (!subtotal) onApplied?.(null);
   }, [subtotal, disabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A coupon changed on the server (switched off, expired, limits hit, deleted) or the tab regained focus:
+  // re-check the applied one right away, and drop it with a notice if it no longer applies.
+  useEffect(() => {
+    if (couponCheck && couponCode && applied && !disabled) apply(couponCode, { quiet: true, lost: true });
+  }, [couponCheck]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onFocus = () => useCartStore.getState().couponCode && useCartStore.getState().recheckCoupon();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   if (disabled) {
     return (

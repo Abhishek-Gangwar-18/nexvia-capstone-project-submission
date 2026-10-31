@@ -61,7 +61,27 @@ export const gatewayError = (err) => err?.raw?.message || err?.message || 'Payme
  * Opens a payment attempt for an order. The idempotency key is per order and attempt, so a retried
  * request gets the same PaymentIntent back instead of a second one.
  */
-export async function createPaymentIntent({ orderId, orderNumber, amount, email, attempt = 0 }) {
+/**
+ * The user's Stripe Customer, created on their first payment and saved on the user. Without one,
+ * Stripe treats payments as guest payments and its dashboard shows no customer.
+ */
+export async function stripeCustomerFor(user) {
+  if (!stripe) return null;
+  if (user.stripeCustomerId) return user.stripeCustomerId;
+  try {
+    const customer = await stripe.customers.create(
+      { email: user.email, name: user.name, metadata: { userId: String(user._id) } },
+      { idempotencyKey: `customer:${user._id}` },
+    );
+    user.stripeCustomerId = customer.id;
+    await user.save();
+    return customer.id;
+  } catch (err) {
+    throw new ApiError(502, `Could not start payment: ${gatewayError(err)}`);
+  }
+}
+
+export async function createPaymentIntent({ orderId, orderNumber, amount, email, customerId, attempt = 0 }) {
   if (!stripe) {
     assertPaymentConfig();
     return { provider: 'mock', intentId: mockId('pi'), clientSecret: null };
@@ -71,9 +91,11 @@ export async function createPaymentIntent({ orderId, orderNumber, amount, email,
       {
         amount: toMinor(amount),
         currency,
-        automatic_payment_methods: { enabled: true },
+        // Cards only: leaves out Stripe Link and its "save my information" box from the payment form.
+        payment_method_types: ['card'],
         receipt_email: email,
-        description: `Vendora order ${orderNumber}`,
+        ...(customerId && { customer: customerId }),
+        description: orderNumber,
         transfer_group: orderNumber,
         metadata: { orderId: String(orderId), orderNumber },
       },

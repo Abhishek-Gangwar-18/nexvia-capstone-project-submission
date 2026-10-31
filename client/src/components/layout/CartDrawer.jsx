@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowRight, ShoppingBag, Sparkles, Truck, X } from 'lucide-react';
 import { useCartStore } from '../../store/cart';
 import { useAuth } from '../../store/auth';
+import { useAuthModal } from '../../store/authModal';
 import { useCart, useCartActions } from '../../lib/cart';
 import { money } from '../../lib/format';
 import QuantityStepper from '../ui/QuantityStepper';
@@ -48,9 +49,11 @@ export default function CartDrawer() {
     return () => document.removeEventListener('keydown', onKey);
   }, [open, close]);
 
+  // Checkout goes through the cart page first (coupons, delivery summary), then its own Checkout button.
   const checkout = () => {
     close();
-    navigate(user ? '/checkout' : '/login', user ? undefined : { state: { from: { pathname: '/checkout' } } });
+    if (user) navigate('/cart');
+    else useAuthModal.getState().open('login', { from: '/cart' });
   };
 
   return (

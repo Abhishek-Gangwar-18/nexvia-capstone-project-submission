@@ -11,6 +11,7 @@ const router = Router();
 // Cart (Redis-backed, customers only). POST /cart/items sets a line's quantity; DELETE removes it.
 const customer = [protect, authorize('customer')];
 router.get('/cart', customer, asyncHandler(cart.show));
+router.get('/cart/events', customer, cart.events);
 router.post('/cart/items', customer, validate(cart.addItemSchema), asyncHandler(cart.add));
 router.delete('/cart/items/:productId', customer, asyncHandler(cart.remove));
 router.delete('/cart', customer, asyncHandler(cart.clear));

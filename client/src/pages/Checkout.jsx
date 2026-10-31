@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Building2, Check, ChevronLeft, CreditCard, Lock, MapPin, Package, Plus, ShieldCheck, ShoppingBag, Smartphone, Split, Truck, Wallet,
+  Check, ChevronLeft, Lock, MapPin, Package, Plus, ShieldCheck, ShoppingBag, Truck,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../lib/api';
@@ -73,9 +73,7 @@ export default function Checkout() {
   const finished = useRef(false);
 
   const profile = useQuery({ queryKey: ['me'], queryFn: refreshMe });
-  const health = useQuery({ queryKey: ['health'], queryFn: () => api.get('/health').then((r) => r.data), staleTime: 5 * 60 * 1000 });
   const addresses = profile.data?.addresses || user?.addresses || [];
-  const provider = health.data?.services.payments;
 
   useEffect(() => {
     if (!addressId && addresses.length) setAddressId((addresses.find((a) => a.isDefault) || addresses[0])._id);
@@ -126,7 +124,8 @@ export default function Checkout() {
     try {
       const { data } = await api.post(
         '/orders/checkout',
-        { addressId, couponCode: couponCode || undefined },
+        // expectedTotal: the server refuses if the real total differs (a price, fee or coupon changed meanwhile).
+        { addressId, couponCode: couponCode || undefined, expectedTotal: total },
         { headers: { 'Idempotency-Key': checkoutKey.current } },
       );
       created = data;
@@ -135,7 +134,11 @@ export default function Checkout() {
       return undefined;
     } catch (error) {
       if (created) return navigate(`/orders/${created.order._id}`);
-      return toast.error(errorMessage(error));
+      // Stock dropped since the cart was loaded: show the corrected quantities right away.
+      if (error.response?.data?.details?.code === 'CART_CHANGED') queryClient.invalidateQueries({ queryKey: ['cart'] });
+      // The coupon may have been switched off since it was applied: re-check it so the totals are right.
+      if (couponCode) useCartStore.getState().recheckCoupon();
+      return toast.error(errorMessage(error), { duration: 6000 });
     } finally {
       setPlacing(false);
     }
@@ -269,36 +272,6 @@ export default function Checkout() {
                     </ul>
                   </div>
                 ))}
-
-                <div className="card p-5">
-                  <h3 className="flex items-center gap-2 font-semibold">
-                    <Lock className="h-4 w-4 text-brand-600" /> Payment
-                  </h3>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {[
-                      [Smartphone, 'UPI'],
-                      [CreditCard, 'Cards'],
-                      [Building2, 'Netbanking'],
-                      [Wallet, 'Wallets'],
-                    ].map(([Icon, label]) => (
-                      <span key={label} className="chip">
-                        <Icon className="h-3.5 w-3.5" /> {label}
-                      </span>
-                    ))}
-                  </div>
-                  <p className="mt-3 text-sm muted">
-                    {provider === 'stripe'
-                      ? 'You’ll pay securely with Stripe. Card details go straight to Stripe.'
-                      : 'Stripe keys aren’t configured, so a built-in test gateway simulates the payment. No real money moves.'}
-                  </p>
-                  <div className="mt-4 flex gap-3 rounded-2xl bg-gradient-to-r from-brand-50 to-indigo-50 p-4 text-sm dark:from-brand-500/10 dark:to-indigo-500/5">
-                    <Split className="h-5 w-5 shrink-0 text-brand-600 dark:text-brand-300" />
-                    <p className="text-zinc-700 dark:text-zinc-300">
-                      <span className="font-semibold">Split payment:</span> your single payment is divided between {groups.length} seller{groups.length > 1 ? 's' : ''} and Vendora.
-                      Each seller is paid after delivery, once the return window has passed.
-                    </p>
-                  </div>
-                </div>
               </motion.div>
             )}
           </AnimatePresence>
@@ -318,15 +291,16 @@ export default function Checkout() {
             </div>
             <CouponBox items={items} subtotal={summary.subtotal} onApplied={setPriced} />
             <PriceBreakdown summary={summary} discount={discount} shipping={shipping} total={total} />
-            {step === 1 ? (
-              <button type="button" disabled={!address} onClick={() => setStep(2)} className="btn btn-primary btn-lg w-full">
-                Continue
-              </button>
-            ) : (
-              <button type="button" onClick={placeOrder} disabled={placing} className="btn btn-accent btn-lg w-full">
-                {placing ? <Spinner className="h-4 w-4" /> : <Lock className="h-4 w-4" />} Place order & pay {money(total)}
-              </button>
-            )}
+            {/* Stays locked on the address step; "Deliver here & continue" is the only way forward. */}
+            <button
+              type="button"
+              onClick={placeOrder}
+              disabled={placing || step !== 2}
+              title={step !== 2 ? 'Confirm your delivery address first' : undefined}
+              className="btn btn-accent btn-lg w-full disabled:cursor-not-allowed"
+            >
+              {placing ? <Spinner className="h-4 w-4" /> : <Lock className="h-4 w-4" />} Place order & pay {money(total)}
+            </button>
             <p className="flex items-center justify-center gap-1.5 text-[11px] muted">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" /> 100% secure payments · Easy returns
             </p>

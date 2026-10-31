@@ -39,6 +39,8 @@ const productSchema = new mongoose.Schema(
     sold: { type: Number, default: 0 },
     /** Seller's own switch: listed / hidden. */
     isActive: { type: Boolean, default: true, index: true },
+    /** Bumped by every seller edit (not by sales), so a save from an outdated form is refused instead of overwriting. */
+    editVersion: { type: Number, default: 0 },
     /** Soft delete by the seller: hidden from shoppers and the seller's lists, still visible to admins. */
     deletedAt: { type: Date, default: null, index: true },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
