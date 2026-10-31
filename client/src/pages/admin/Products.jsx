@@ -10,6 +10,7 @@ import { PageHeader } from '../../components/layout/DashboardLayout';
 import { Segmented, Switch } from '../../components/ui/Controls';
 import Pagination from '../../components/ui/Pagination';
 import { ErrorState, Skeleton } from '../../components/ui/Feedback';
+import { ReasonDialog } from '../../components/ui/Modal';
 
 export default function AdminProducts() {
   const queryClient = useQueryClient();
@@ -19,6 +20,7 @@ export default function AdminProducts() {
   const [category, setCategory] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
+  const [removing, setRemoving] = useState(null);
   const search = useDebounce(q, 300);
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -91,8 +93,7 @@ export default function AdminProducts() {
                             checked={p.moderation?.status !== 'removed'}
                             onChange={(keep) => {
                               if (keep) return moderate.mutate({ id: p._id, status: 'approved' });
-                              const reason = window.prompt(`Why are you removing "${p.title}"?`)?.trim();
-                              if (reason) moderate.mutate({ id: p._id, status: 'removed', reason });
+                              setRemoving(p);
                             }}
                             label="Allowed on marketplace"
                           />
@@ -105,6 +106,17 @@ export default function AdminProducts() {
         )}
       </div>
       <Pagination className="mt-6" page={page} pages={data?.pages} onChange={setPage} />
+      <ReasonDialog
+        open={!!removing}
+        onClose={() => setRemoving(null)}
+        onConfirm={(reason) => moderate.mutate({ id: removing._id, status: 'removed', reason }, { onSuccess: () => setRemoving(null) })}
+        loading={moderate.isPending}
+        danger
+        title="Remove this product?"
+        description={removing ? `"${removing.title}" will be hidden from the marketplace. The seller sees your reason.` : undefined}
+        placeholder="Why are you removing this product?"
+        confirmLabel="Remove product"
+      />
     </div>
   );
 }

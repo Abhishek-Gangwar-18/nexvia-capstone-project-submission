@@ -12,11 +12,20 @@ import StatusBadge from '../../components/ui/StatusBadge';
 import Pagination from '../../components/ui/Pagination';
 import { UserAvatar } from '../../components/ui/Brand';
 import { ErrorState, Skeleton } from '../../components/ui/Feedback';
+import OpenOrdersDialog from '../../components/admin/OpenOrdersDialog';
+import { ReasonDialog } from '../../components/ui/Modal';
 
 const ROLE_STYLE = {
   customer: 'bg-sky-100 text-sky-700 dark:bg-sky-400/10 dark:text-sky-300',
   vendor: 'bg-amber-100 text-amber-800 dark:bg-amber-400/10 dark:text-amber-300',
   admin: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-400/10 dark:text-fuchsia-300',
+};
+
+const openOrdersToast = (data) => {
+  if (data?.openOrders) {
+    const { count, cancelled } = data.openOrders;
+    toast(cancelled ? `${cancelled} of ${count} open order(s) cancelled and refunded` : `${count} open order(s) kept: handle them from Orders`, { icon: '📦' });
+  }
 };
 
 export default function Users() {
@@ -25,6 +34,9 @@ export default function Users() {
   const [role, setRole] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
+  const [blocking, setBlocking] = useState(null);
+  // Blocking a seller whose store has paid, unshipped orders: the API asks what to do with them (409 OPEN_ORDERS).
+  const [openOrders, setOpenOrders] = useState(null);
   const search = useDebounce(q, 300);
   const queryKey = ['admin-users', role, search, page];
 
@@ -35,14 +47,21 @@ export default function Users() {
   });
 
   const block = useMutation({
-    mutationFn: ({ id, status, reason }) => api.patch(`/admin/users/${id}`, { status, reason }),
+    mutationFn: ({ id, status, reason, openOrders: choice }) => api.patch(`/admin/users/${id}`, { status, reason, openOrders: choice }),
     onSuccess: ({ data }, { status }) => {
+      openOrdersToast(data);
+      setOpenOrders(null);
+      setBlocking(null);
       toast.success(status === 'blocked' ? 'User blocked — their sessions stop working immediately' : 'User unblocked');
       if (data.store?.changed) toast(data.store.status === 'suspended' ? 'Their store was suspended and is now hidden' : 'Their store is live again');
       queryClient.invalidateQueries({ queryKey: ['admin-vendors'] });
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
-    onError: (err) => toast.error(errorMessage(err)),
+    onError: (err, variables) => {
+      const details = err.response?.data?.details;
+      if (details?.code === 'OPEN_ORDERS') return setOpenOrders({ count: details.count, variables });
+      return toast.error(errorMessage(err));
+    },
   });
 
   const counts = data?.counts || {};
@@ -100,8 +119,7 @@ export default function Users() {
                               checked={u.status === 'blocked'}
                               onChange={(blocked) => {
                                 if (!blocked) return block.mutate({ id: u._id, status: 'active' });
-                                const reason = window.prompt(`Why are you blocking ${u.name}?`)?.trim();
-                                if (reason) block.mutate({ id: u._id, status: 'blocked', reason });
+                                setBlocking(u);
                               }}
                               label="Block user"
                             />
@@ -117,6 +135,23 @@ export default function Users() {
         )}
       </div>
       <Pagination className="mt-6" page={page} pages={data?.pages} onChange={setPage} />
+      <OpenOrdersDialog
+        pending={openOrders}
+        loading={block.isPending}
+        onClose={() => setOpenOrders(null)}
+        onChoose={(choice) => block.mutate({ ...openOrders.variables, openOrders: choice })}
+      />
+      <ReasonDialog
+        open={!!blocking && !openOrders}
+        onClose={() => setBlocking(null)}
+        onConfirm={(reason) => block.mutate({ id: blocking._id, status: 'blocked', reason }, { onSuccess: () => setBlocking(null) })}
+        loading={block.isPending}
+        danger
+        title={`Block ${blocking?.name || 'user'}?`}
+        description="They are signed out everywhere and can't log in until unblocked."
+        placeholder="Why are you blocking this user?"
+        confirmLabel="Block user"
+      />
     </div>
   );
 }

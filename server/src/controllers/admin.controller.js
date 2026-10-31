@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { logger } from '../utils/logger.js';
 import { z } from 'zod';
 import { Order } from '../models/Order.js';
 import { User } from '../models/User.js';
@@ -157,6 +158,8 @@ export const vendorUpdateSchema = z
     status: z.enum(['approved', 'rejected', 'suspended']).optional(),
     rejectionReason: z.string().trim().max(300).optional(),
     commissionRate: z.coerce.number().min(0).max(50).nullable().optional(),
+    /** Required when suspending a store that still has paid, unshipped packages: cancel+refund them or keep them. */
+    openOrders: z.enum(['cancel', 'keep']).optional(),
   })
   .strict();
 
@@ -209,10 +212,60 @@ export async function listVendors(req, res) {
   res.json({ ...paginated(items, total, page, limit), counts: Object.fromEntries(counts.map((c) => [c._id, c.count])) });
 }
 
+const OPEN_PACKAGE = ['placed', 'packed'];
+
+/** Paid packages of a store that are not shipped yet (they need the seller to act). */
+async function openPackages(vendorId) {
+  const orders = await Order.find({ 'payment.status': 'paid', packages: { $elemMatch: { vendor: vendorId, status: { $in: OPEN_PACKAGE } } } })
+    .select('_id packages._id packages.vendor packages.status')
+    .lean();
+  return orders.flatMap((o) =>
+    o.packages.filter((p) => String(p.vendor) === String(vendorId) && OPEN_PACKAGE.includes(p.status)).map((p) => ({ orderId: o._id, packageId: p._id })),
+  );
+}
+
+/**
+ * Taking a store offline while customers still wait for paid packages: the admin must say what happens
+ * to them (409 OPEN_ORDERS with the count otherwise). 'cancel' cancels and refunds each one.
+ */
+async function assertOpenOrdersDecision(vendorId, choice) {
+  const open = await openPackages(vendorId);
+  if (open.length && !choice) {
+    const plural = open.length > 1 ? 's' : '';
+    throw new ApiError(409, `This store has ${open.length} paid order${plural} not shipped yet. Choose whether to cancel and refund them or keep them.`, {
+      code: 'OPEN_ORDERS',
+      count: open.length,
+    });
+  }
+  return open;
+}
+
+async function cancelOpenPackages(open, adminId, note) {
+  let cancelled = 0;
+  for (const { orderId, packageId } of open) {
+    try {
+      await withPackageLock(packageId, async () => {
+        const order = await Order.findById(orderId);
+        const pkg = order?.packages.id(packageId);
+        if (!pkg || !OPEN_PACKAGE.includes(pkg.status)) return; // shipped or cancelled meanwhile
+        await transitionPackage(order, pkg, 'cancelled', {
+          note: `Cancelled by admin (vendor_unable): ${note}`,
+          cancellation: { by: 'admin', actorId: adminId, reasonCode: 'vendor_unable', note },
+        });
+        await order.save();
+        cancelled += 1;
+      });
+    } catch (err) {
+      logger.warn(`Could not cancel package ${packageId} of a suspended store: ${err.message}`);
+    }
+  }
+  return cancelled;
+}
+
 export async function updateVendor(req, res) {
   const vendor = await Vendor.findById(req.params.id);
   if (!vendor) throw new ApiError(404, 'Vendor not found');
-  const { status, rejectionReason, ...rest } = req.body;
+  const { status, rejectionReason, openOrders, ...rest } = req.body;
   const statusChanged = status && status !== vendor.status;
   if (statusChanged) {
     if (!VENDOR_TRANSITIONS[vendor.status].includes(status)) {
@@ -227,11 +280,18 @@ export async function updateVendor(req, res) {
       if (owner?.status === 'blocked') throw new ApiError(400, "The store owner's account is blocked. Unblock the user first");
     }
   }
+  const open = statusChanged && status === 'suspended' ? await assertOpenOrdersDecision(vendor._id, openOrders) : [];
+  if (statusChanged) {
+    // Only from the status this admin saw: a second admin acting at the same moment gets 409, not a double change.
+    const claimed = await Vendor.updateOne({ _id: vendor._id, status: vendor.status }, { $set: { status } });
+    if (!claimed.modifiedCount) throw new ApiError(409, 'This store was just changed by someone else. Reload and try again.');
+  }
   Object.assign(vendor, rest);
   if (statusChanged) vendor.setStatus(status, { reason: rejectionReason, by: req.user._id });
   await vendor.save();
   if (statusChanged) await refreshStoreVisibility(vendor._id);
-  res.json({ vendor: adminVendorView(vendor) });
+  const cancelledOrders = openOrders === 'cancel' && open.length ? await cancelOpenPackages(open, req.user._id, rejectionReason) : 0;
+  res.json({ vendor: adminVendorView(vendor), ...(open.length && { openOrders: { count: open.length, cancelled: cancelledOrders } }) });
 }
 
 /* ----------------------------------------------------------------- users */
@@ -256,6 +316,8 @@ export const userUpdateSchema = z
   .object({
     status: z.enum(['active', 'blocked']),
     reason: z.string().trim().max(300).optional(),
+    /** Blocking a seller suspends their store: same choice as suspending it directly. */
+    openOrders: z.enum(['cancel', 'keep']).optional(),
   })
   .refine((b) => b.status !== 'blocked' || b.reason, { message: 'Give a reason for blocking this user', path: ['reason'] });
 
@@ -265,15 +327,29 @@ export async function updateUser(req, res) {
   if (!user) throw new ApiError(404, 'User not found');
   if (user.role === 'admin') throw new ApiError(400, 'Admin accounts cannot be blocked');
   const blocked = req.body.status === 'blocked';
+  // Blocking a seller suspends their store, so the same open-orders decision applies.
+  let open = [];
+  if (blocked && user.role === 'vendor') {
+    const store = await Vendor.findOne({ user: user._id, status: 'approved' }).select('_id').lean();
+    if (store) open = await assertOpenOrdersDecision(store._id, req.body.openOrders);
+  }
+  if ((user.status || 'active') !== req.body.status) {
+    // Only from the status this admin saw: two admins acting at once can't both apply a change.
+    const from = user.status ? [user.status] : [null, 'active'];
+    const claimed = await User.updateOne({ _id: user._id, status: { $in: from } }, { $set: { status: req.body.status } });
+    if (!claimed.modifiedCount) throw new ApiError(409, 'This account was just changed by someone else. Reload and try again.');
+  }
   user.status = req.body.status;
   user.blockedReason = blocked ? req.body.reason : undefined;
   user.blockedAt = blocked ? new Date() : undefined;
   user.blockedBy = blocked ? req.user._id : undefined;
   await user.save();
-  await invalidateUser(user._id);
   if (blocked) await revokeAllSessions(user._id, 'blocked');
+  // After the revocation: a request of theirs that read the old profile meanwhile can't leave it cached.
+  await invalidateUser(user._id);
   const store = user.role === 'vendor' ? await syncStoreWithOwner(user, req) : undefined;
-  res.json({ user: user.toSafeJSON(), ...(store && { store }) });
+  const cancelledOrders = req.body.openOrders === 'cancel' && open.length ? await cancelOpenPackages(open, req.user._id, req.body.reason) : 0;
+  res.json({ user: user.toSafeJSON(), ...(store && { store }), ...(open.length && { openOrders: { count: open.length, cancelled: cancelledOrders } }) });
 }
 
 /**

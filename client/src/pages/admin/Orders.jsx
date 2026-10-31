@@ -197,7 +197,7 @@ export default function AdminOrders() {
           <div className="flex flex-wrap items-center gap-2">
             <Select label="Order status" value={f.status} onChange={(v) => set({ status: v })}>
               <option value="">All statuses</option>
-              {['placed', 'processing', 'shipped', 'delivered', 'cancelled', 'pending_payment', 'payment_failed'].map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+              {['placed', 'processing', 'shipped', 'delivered', 'cancelled', 'payment_failed'].map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
             </Select>
             <Select label="Payment" value={f.payment} onChange={(v) => set({ payment: v })}>
               <option value="">All payments</option>

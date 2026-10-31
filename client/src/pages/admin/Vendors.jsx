@@ -14,6 +14,15 @@ import StatusBadge from '../../components/ui/StatusBadge';
 import Pagination from '../../components/ui/Pagination';
 import { StoreAvatar } from '../../components/ui/Brand';
 import { EmptyState, ErrorState, Skeleton, Spinner } from '../../components/ui/Feedback';
+import OpenOrdersDialog from '../../components/admin/OpenOrdersDialog';
+
+const openOrdersToast = (data) => {
+  if (data?.openOrders) {
+    const { count, cancelled } = data.openOrders;
+    toast(cancelled ? `${cancelled} of ${count} open order(s) cancelled and refunded` : `${count} open order(s) kept: handle them from Orders`, { icon: '📦' });
+  }
+};
+
 
 function ReviewModal({ vendor, mode, onClose, onSubmit, saving }) {
   const [reason, setReason] = useState('');
@@ -78,15 +87,23 @@ export default function Vendors() {
     placeholderData: keepPreviousData,
   });
 
+  // Suspending a store with paid, unshipped orders: the API asks what to do with them (409 OPEN_ORDERS).
+  const [openOrders, setOpenOrders] = useState(null);
   const update = useMutation({
-    mutationFn: ({ id, body }) => api.patch(`/admin/vendors/${id}`, body).then((r) => r.data.vendor),
-    onSuccess: (vendor) => {
+    mutationFn: ({ id, body }) => api.patch(`/admin/vendors/${id}`, body).then((r) => r.data),
+    onSuccess: ({ vendor, ...rest }) => {
       toast.success(`${vendor.storeName} → ${vendor.status}`);
+      openOrdersToast(rest);
       setModal(null);
+      setOpenOrders(null);
       queryClient.invalidateQueries({ queryKey: ['admin-vendors'] });
       queryClient.invalidateQueries({ queryKey: ['admin-analytics'] });
     },
-    onError: (err) => toast.error(errorMessage(err)),
+    onError: (err, variables) => {
+      const details = err.response?.data?.details;
+      if (details?.code === 'OPEN_ORDERS') return setOpenOrders({ count: details.count, variables });
+      return toast.error(errorMessage(err));
+    },
   });
 
   const counts = data?.counts || {};
@@ -166,6 +183,12 @@ export default function Vendors() {
       )}
       <Pagination className="mt-6" page={page} pages={data?.pages} onChange={setPage} />
       {modal && <ReviewModal vendor={modal.vendor} mode={modal.mode} onClose={() => setModal(null)} saving={update.isPending} onSubmit={(body) => update.mutate({ id: modal.vendor._id, body })} />}
+      <OpenOrdersDialog
+        pending={openOrders}
+        loading={update.isPending}
+        onClose={() => setOpenOrders(null)}
+        onChoose={(choice) => update.mutate({ ...openOrders.variables, body: { ...openOrders.variables.body, openOrders: choice } })}
+      />
     </div>
   );
 }

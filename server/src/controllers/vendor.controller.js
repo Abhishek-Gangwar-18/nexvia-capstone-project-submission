@@ -273,7 +273,15 @@ const productBase = z.object({
 
 const mrpRule = [(d) => !d.mrp || d.price === undefined || d.mrp >= d.price, { message: 'MRP cannot be lower than the selling price', path: ['mrp'] }];
 export const productCreateSchema = productBase.refine(...mrpRule);
-export const productUpdateSchema = productBase.partial().refine(...mrpRule);
+export const productUpdateSchema = productBase
+  .partial()
+  .extend({
+    /** editVersion the form was loaded with; a newer one on the server means someone else saved meanwhile. */
+    editVersion: z.coerce.number().int().min(0).optional(),
+    /** Stock the form was loaded with; required to change stock, so sales made meanwhile aren't overwritten. */
+    stockBase: z.coerce.number().int().min(0).optional(),
+  })
+  .refine(...mrpRule);
 
 async function ownProduct(req) {
   if (!mongoose.isValidObjectId(req.params.id)) throw new ApiError(400, 'Invalid product id');
@@ -291,6 +299,16 @@ async function assertSkuFree(vendorId, sku, exceptId) {
 /** New or moved products must go into a category shoppers can see. */
 async function assertCategory(id) {
   if (id && !(await Category.exists({ _id: id, isActive: true }))) throw new ApiError(400, 'Unknown category');
+}
+
+/**
+ * After a save: if the category was deleted or switched off while the product was being saved, hide the
+ * product like the category deletion did for the others (it is listed again when the seller picks a category).
+ */
+async function hideIfCategoryGone(product) {
+  if (await Category.exists({ _id: product.category, isActive: true })) return;
+  await Product.updateOne({ _id: product._id }, { $set: { categoryHidden: true } });
+  product.categoryHidden = true;
 }
 
 export async function listMyProducts(req, res) {
@@ -333,6 +351,7 @@ export async function createProduct(req, res) {
     ...req.body,
     vendor: req.vendor._id,
   });
+  await hideIfCategoryGone(product);
   await invalidateCatalog();
   await indexProducts([product._id]);
   res.status(201).json({ product });
@@ -346,12 +365,42 @@ export async function updateProduct(req, res) {
   const mrp = req.body.mrp ?? product.mrp;
   if (mrp && mrp < price) throw new ApiError(400, 'MRP cannot be lower than the selling price');
 
+  const { editVersion, stockBase, stock, ...changes } = req.body;
+  // Missing editVersion on older products counts as 0.
+  const versionNow = { $in: product.editVersion ? [product.editVersion] : [0, null] };
+  if (editVersion !== undefined && editVersion !== (product.editVersion || 0)) {
+    throw new ApiError(409, 'This product was changed elsewhere (another tab or person) since you opened it. The latest version has been loaded.', {
+      code: 'PRODUCT_CHANGED',
+    });
+  }
+  // Claim this edit: a concurrent save that read the same version now fails the check above or this update.
+  const claimed = await Product.updateOne(editVersion !== undefined ? { _id: product._id, editVersion: versionNow } : { _id: product._id }, { $inc: { editVersion: 1 } });
+  if (editVersion !== undefined && !claimed.modifiedCount) {
+    throw new ApiError(409, 'This product was changed elsewhere since you opened it. The latest version has been loaded.', { code: 'PRODUCT_CHANGED' });
+  }
+  if (stock !== undefined) {
+    // Stock is written only if it is still what the seller saw: orders placed meanwhile change it, and an
+    // absolute write from an old form would sell those units again.
+    const base = stockBase ?? product.stock;
+    const written = await Product.updateOne({ _id: product._id, stock: base }, { $set: { stock } });
+    if (!written.matchedCount) {
+      const current = (await Product.findById(product._id).select('stock').lean())?.stock;
+      throw new ApiError(409, `Stock changed from ${base} to ${current} since you opened this form (orders came in). Check the stock and save again.`, {
+        code: 'STOCK_CHANGED',
+        stock: current,
+      });
+    }
+  }
+  const fresh = await Product.findById(product._id);
+  product.set({ editVersion: fresh.editVersion, stock: fresh.stock });
+
   const imageUrls = () => product.images.map((img) => img.url);
   const before = imageUrls();
-  Object.assign(product, req.body);
+  Object.assign(product, changes);
   // Moving out of a hidden or deleted category lists the product again (assertCategory checked the new one).
   if (req.body.category) product.categoryHidden = false;
   await product.save();
+  if (req.body.category) await hideIfCategoryGone(product);
   deleteReplaced(before, imageUrls(), req.user._id);
   await invalidateProducts([product]);
   await invalidateCatalog();
