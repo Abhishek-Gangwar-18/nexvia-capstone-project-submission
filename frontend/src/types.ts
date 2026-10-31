@@ -1,0 +1,212 @@
+export type Role = "owner" | "admin" | "member" | "viewer";
+export type Plan = "free" | "pro" | "enterprise";
+export type StatusCategory = "todo" | "in_progress" | "done";
+export type IssueType = "epic" | "story" | "task" | "bug" | "subtask";
+export type Priority = 1 | 2 | 3 | 4 | 5;
+export type SprintState = "planned" | "active" | "closed";
+export type BoardType = "kanban" | "scrum";
+
+export interface UserMini {
+  id: number;
+  email: string;
+  display_name: string;
+  initials: string;
+  avatar_color: string;
+  job_title: string;
+}
+
+export interface Me extends UserMini {
+  first_name: string;
+  last_name: string;
+  is_staff: boolean;
+  date_joined: string;
+}
+
+export interface AuthResponse {
+  access: string;
+  refresh: string;
+  user: Me;
+  workspace?: string | null;
+}
+
+export interface Workspace {
+  id: number;
+  name: string;
+  slug: string;
+  plan: Plan;
+  owner: UserMini;
+  role: Role;
+  member_count: number;
+  project_count: number;
+  created_at: string;
+}
+
+export interface Member {
+  id: number;
+  user: UserMini;
+  role: Role;
+  joined_at: string;
+}
+
+export interface Invitation {
+  id: number;
+  email: string;
+  role: Role;
+  invited_by: UserMini | null;
+  expires_at: string;
+  accept_url: string;
+  created_at: string;
+}
+
+export interface InvitationPreview {
+  email: string;
+  role: Role;
+  workspace: string;
+  workspace_slug: string;
+  invited_by: string | null;
+  is_pending: boolean;
+  user_exists: boolean;
+  expires_at: string;
+}
+
+export interface WorkflowStatus {
+  id: number;
+  name: string;
+  category: StatusCategory;
+  color: string;
+  position: number;
+}
+
+export interface Board {
+  id: number;
+  project: number;
+  name: string;
+  board_type: BoardType;
+  wip_limits: Record<string, number>;
+}
+
+export interface SprintMini {
+  id: number;
+  name: string;
+  state: SprintState;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+export interface Project {
+  id: number;
+  key: string;
+  name: string;
+  description: string;
+  color: string;
+  lead: number | null;
+  lead_detail: UserMini | null;
+  is_archived: boolean;
+  created_at: string;
+  statuses: WorkflowStatus[];
+  board: Board | null;
+  active_sprint: SprintMini | null;
+  enforce_transitions: boolean;
+  issue_count: number;
+  done_count: number;
+}
+
+export interface Sprint extends SprintMini {
+  project: number;
+  goal: string;
+  completed_at: string | null;
+  issue_count: number;
+  done_count: number;
+  total_points: number;
+  done_points: number;
+}
+
+export interface Label {
+  id: number;
+  name: string;
+  color: string;
+}
+
+export interface IssueRef {
+  id: number;
+  key: string;
+  title: string;
+  issue_type: IssueType;
+}
+
+export interface IssueSummary extends IssueRef {
+  priority: Priority;
+  status: number;
+  status_category: StatusCategory;
+  assignee_detail: UserMini | null;
+}
+
+export interface Issue extends IssueRef {
+  number: number;
+  project: number;
+  project_key: string;
+  description?: string;
+  priority: Priority;
+  status: number;
+  status_category: StatusCategory;
+  sprint: number | null;
+  parent: number | null;
+  parent_summary: IssueRef | null;
+  assignee: number | null;
+  assignee_detail: UserMini | null;
+  reporter_detail: UserMini | null;
+  story_points: number | null;
+  due_date: string | null;
+  rank: number;
+  labels: number[];
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueDetail extends Issue {
+  description: string;
+  children: IssueSummary[];
+}
+
+export interface Paginated<T> {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+}
+
+export interface DashboardData {
+  totals: {
+    total: number;
+    open: number;
+    done: number;
+    in_progress: number;
+    overdue: number;
+    unassigned: number;
+    mine_open: number;
+    done_this_week: number;
+  };
+  by_category: Record<StatusCategory, number>;
+  by_type: Record<IssueType, number>;
+  by_priority: Record<string, number>;
+  workload: { user: UserMini; count: number }[];
+  trend: { date: string; created: number; resolved: number }[];
+  projects: { id: number; key: string; name: string; color: string; total: number; done: number }[];
+  active_sprints: {
+    id: number;
+    name: string;
+    project_key: string;
+    project_name: string;
+    start_date: string | null;
+    end_date: string | null;
+    goal: string;
+    issue_count: number;
+    done_count: number;
+    total_points: number;
+    done_points: number;
+    days_left: number | null;
+  }[];
+  my_issues: Issue[];
+  recent: Issue[];
+}
