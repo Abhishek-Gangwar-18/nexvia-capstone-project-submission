@@ -217,7 +217,7 @@ curl -i -X DELETE "{{baseUrl}}/auth/me/addresses/{{addressId}}" -H "Authorizatio
 | 3.3 | Products, first page | 200 `{ items, total, page, limit, pages, facets, engine, relaxed }` |
 | 3.4 | Products filtered by store, in stock, sorted | 200, every item's vendor is TechNova → save `productId` |
 | 3.5 | Price range + rating + category | 200, all items match |
-| 3.6 | Unknown sort / huge limit | 200, falls back to `relevance`, `limit` capped at 48 |
+| 3.6 | Unknown sort / huge limit | 200, falls back to `popular`, `limit` capped at 48 |
 | 3.7 | Suggest `q=ph` | 200 `{ products, categories, didYouMean: null }` |
 | 3.7b | Suggest `q=samsng` (typo, Elasticsearch on) | 200 `didYouMean: "samsung"` |
 | 3.8 | Suggest `q=a` (too short) | 200 `{ products: [], categories: [], didYouMean: null }` |
@@ -546,7 +546,7 @@ curl -i -X POST "{{baseUrl}}/orders/SHIPPED_ORDER_ID/cancel" -H "Authorization: 
 | 7.18 | Category that doesn't exist (`000000000000000000000000`) | 400 `Unknown category` |
 | 7.19 | Same SKU again | 409 `You already have a product with SKU API-TEST-001` |
 | 7.20 | Get product / `abc` / another store's product (`otherProductId`) | 200 / 400 `Invalid product id` / 404 `Product not found` |
-| 7.21 | Update `{ price, stock }` / `{ mrp: 1 }` | 200 / 400 `MRP cannot be lower than the selling price` |
+| 7.21 | Update `{ price, stock }` / `{ mrp: 1 }` | 200 / 400 `MRP cannot be lower than the selling price`. The app sends only changed fields plus `editVersion` and `stockBase` (see 9.9–9.10) |
 | 7.22 | Delete product (then GET it) | 200, then 404 (soft delete: admin still sees it, 8.21) |
 | 7.23 | Orders `?status=placed` | 200 paginated, includes `orderB` |
 | 7.24 | Pack order B | 200, package `packed` |
@@ -678,8 +678,9 @@ curl -i -X DELETE "{{baseUrl}}/vendor/coupons/{{vendorCouponId}}" -H "Authorizat
 | 8.11 | Admin sends payout details (`bank`) | 400 `Unrecognized key(s) in object: 'bank'` |
 | 8.12 | Vendor id `abc` / unknown | 400 `Invalid _id` / 404 `Vendor not found` |
 | 8.13 | ⚠ Block newUser (store owner) | 200 `{ user: { status: "blocked" }, store: { status: "suspended", changed: true } }`; `GET /stores/{{newStoreId}}` → 404 |
+| 8.13a | As newUser after the block: `GET /auth/me` (old token), `POST /auth/login`, then `GET /categories` with the returned cookie | each 403 `Your account has been blocked. Please contact support.`, `details: { code: "ACCOUNT_BLOCKED", reason }`; the first answer sets `vendora_blocked`, and with it even public routes answer 403 |
 | 8.13b | Approve that store while the owner is blocked | 400 `The store owner's account is blocked. Unblock the user first` |
-| 8.13c | Unblock newUser | 200 `store: { status: "approved", changed: true }` |
+| 8.13c | Unblock newUser | 200 `store: { status: "approved", changed: true }`; newUser's next request clears `vendora_blocked` and works again (log in) |
 | 8.13d | Block without a reason / block an admin / change yourself | 400 `reason: Give a reason for blocking this user` / 400 `Admin accounts cannot be blocked` / 400 `You cannot change your own account here` |
 | 8.14 | Orders, `fulfilment=placed` | 200 rows → save `adminOrderId`, `adminPackageId` |
 | 8.15 | Orders, search and filters (several) | 200; see the table under the curls |
@@ -833,6 +834,65 @@ filters combine). The 8.16 calls return 400 with, in order: `status must be one 
 `range must be today, 7, 30, 90, 365 or all`.
 
 ---
+
+## 9. Live updates and race conditions
+
+Most of these need two terminals (or two Postman tabs): one holding the event stream, one making the change.
+Restore what you change afterwards (stock, coupon, visibility). Case 9.5–9.7 need the customer's email verified.
+
+| # | Case | Expected |
+|---|---|---|
+| 9.1 | `GET /cart/events` without a token | 401 |
+| 9.2 | `GET /cart/events` as the customer (keep it open) | 200 `text/event-stream`, first event `event: ready` |
+| 9.3 | Keep 9.2 open, put `{{productId}}` in the cart, then as the vendor change its stock | the stream receives `event: cart` with `{"productId": ...}` within about a second; `GET /cart` shows the new stock |
+| 9.4 | Keep 9.2 open; as the vendor switch a coupon off, then on | `event: coupon` for each change; `GET /coupons` no longer lists it while off |
+| 9.5 | Checkout with a wrong `expectedTotal` (e.g. 1) | 409 `CART_CHANGED` `Your total changed from ₹1 to ₹X...`; no order is created |
+| 9.6 | Put `{{productId}}` in the cart, hide it as the vendor (`isActive: false`), then checkout **without** reading the cart first | 409 `CART_CHANGED` `No longer available: ...`; turn it visible again |
+| 9.7 | Send two checkouts at the same moment (two terminals, different `Idempotency-Key`s) | one 201; the other 409 `A checkout is already in progress (maybe in another tab)...` or 400 `Your cart is empty` |
+| 9.8 | Post the same review twice (4.10's request) | 201, then 409 `You just posted this review` |
+| 9.9 | Vendor: `PATCH /vendor/products/{{productId}}` with `stock` and a `stockBase` that is not the current stock | 409 `STOCK_CHANGED` `Stock changed from X to Y since you opened this form...`, `details.stock` = current stock; nothing saved |
+| 9.10 | Vendor: same PATCH with an old `editVersion` (read it with `GET /vendor/products/{{productId}}`, then save twice with that value) | first 200, second 409 `PRODUCT_CHANGED` |
+| 9.11 | Admin: suspend a store that has paid, unshipped orders (TechNova) without `openOrders` | 409 `OPEN_ORDERS` `This store has N paid orders not shipped yet...`; the store stays approved |
+| 9.12 | Admin: block that store's owner without `openOrders` | the same 409 `OPEN_ORDERS`; nothing changes |
+| 9.13 | `openOrders: "maybe"` | 400 `openOrders: Invalid enum value. Expected 'cancel' \| 'keep'...` |
+| 9.14 | Vendor or admin token on `GET /cart` | 403 `You do not have permission to perform this action` |
+
+```bash
+# 9.1
+curl -i "{{baseUrl}}/cart/events"
+# 9.2  (keep this terminal open; -N disables buffering)
+curl -N "{{baseUrl}}/cart/events" -H "Authorization: Bearer {{customerToken}}"
+# 9.3  (in a second terminal)
+curl -i -X POST "{{baseUrl}}/cart/items" -H "Authorization: Bearer {{customerToken}}" -H "Content-Type: application/json" -d '{"productId":"{{productId}}","quantity":1}'
+curl -i -X PATCH "{{baseUrl}}/vendor/products/{{productId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"stock":NEW_STOCK}'
+# 9.4
+curl -i -X PATCH "{{baseUrl}}/vendor/coupons/{{vendorCouponId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"isActive":false}'
+curl -i -X PATCH "{{baseUrl}}/vendor/coupons/{{vendorCouponId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"isActive":true}'
+# 9.5
+curl -i -X POST "{{baseUrl}}/orders/checkout" -H "Authorization: Bearer {{customerToken}}" -H "Idempotency-Key: total-check-0001" -H "Content-Type: application/json" -d '{"addressId":"{{addressId}}","expectedTotal":1}'
+# 9.6
+curl -i -X PATCH "{{baseUrl}}/vendor/products/{{productId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"isActive":false}'
+curl -i -X POST "{{baseUrl}}/orders/checkout" -H "Authorization: Bearer {{customerToken}}" -H "Idempotency-Key: removed-check-0001" -H "Content-Type: application/json" -d '{"addressId":"{{addressId}}"}'
+curl -i -X PATCH "{{baseUrl}}/vendor/products/{{productId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"isActive":true}'
+# 9.7  (run both lines at the same moment, one per terminal)
+curl -i -X POST "{{baseUrl}}/orders/checkout" -H "Authorization: Bearer {{customerToken}}" -H "Idempotency-Key: tab-one-0001" -H "Content-Type: application/json" -d '{"addressId":"{{addressId}}"}'
+curl -i -X POST "{{baseUrl}}/orders/checkout" -H "Authorization: Bearer {{customerToken}}" -H "Idempotency-Key: tab-two-0001" -H "Content-Type: application/json" -d '{"addressId":"{{addressId}}"}'
+# 9.8  (send twice)
+curl -i -X POST "{{baseUrl}}/products/{{deliveredProductId}}/reviews" -H "Authorization: Bearer {{customerToken}}" -H "Content-Type: application/json" -d '{"title":"Race test","comment":"Posting this review twice on purpose."}'
+# 9.9
+curl -i -X PATCH "{{baseUrl}}/vendor/products/{{productId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"stock":999,"stockBase":1}'
+# 9.10  (EDIT_VERSION = product.editVersion from GET /vendor/products/{{productId}}; send twice)
+curl -i -X PATCH "{{baseUrl}}/vendor/products/{{productId}}" -H "Authorization: Bearer {{vendorToken}}" -H "Content-Type: application/json" -d '{"isActive":true,"editVersion":EDIT_VERSION}'
+# 9.11
+curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{storeId}}" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"status":"suspended","rejectionReason":"race test"}'
+# 9.12  (TECHNOVA_OWNER_ID = vendor.user from GET /admin/vendors?q=TechNova)
+curl -i -X PATCH "{{baseUrl}}/admin/users/TECHNOVA_OWNER_ID" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"status":"blocked","reason":"race test"}'
+# 9.13
+curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{storeId}}" -H "Authorization: Bearer {{adminToken}}" -H "Content-Type: application/json" -d '{"status":"suspended","rejectionReason":"x","openOrders":"maybe"}'
+# 9.14
+curl -i "{{baseUrl}}/cart" -H "Authorization: Bearer {{vendorToken}}"
+curl -i "{{baseUrl}}/cart" -H "Authorization: Bearer {{adminToken}}"
+```
 
 ## Covered elsewhere
 - **Stripe card payments, webhooks, Connect payouts:** through the app with test cards and `stripe listen` (README →

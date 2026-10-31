@@ -14,6 +14,17 @@ reservation, authentication and how payments are split between sellers and the p
 Access is enforced on the server by `protect` (access token plus an active-session check) and `authorize(...roles)`.
 Seller routes also require an **approved** store (`loadVendor`). On the client, `RequireAuth` guards each route group by role.
 
+**Only customers buy.** Cart and checkout routes are customer-only on the server (403 otherwise), and the UI hides
+every buying control from sellers and admins (`client/src/lib/roles.js`):
+
+- Product cards show no **Add** button or quantity stepper; the product page shows, instead of *Add to cart / Buy now*,
+  **Edit product** (a seller's own listing), **Moderate: remove / restore listing** (admin, with a reason) and a short
+  note that buying is for customer accounts.
+- `/cart` and `/sell` send sellers to the Seller Hub (or to their application status while the store is pending,
+  rejected or suspended) and admins to the Admin console; `/checkout` already does via `RequireAuth`.
+- "Become a seller" (home banner, the *Sell on Vendora* section, the footer *Sell* column) is shown only to guests
+  and customers. A seller sees **Go to Seller Hub** or **View application status**, an admin **Open Admin console**.
+
 ## 2. System overview
 
 ```mermaid
@@ -134,6 +145,7 @@ erDiagram
     number sold
     bool isActive "seller's switch"
     bool categoryHidden "category hidden or deleted"
+    int editVersion "bumped by every seller edit, not by sales"
     date deletedAt "soft delete"
     object moderation "approved | removed, reason, by, at"
   }
@@ -287,6 +299,34 @@ Design notes:
 | Webhooks | Unique `WebhookEvent.eventId`: a redelivered event is skipped |
 | Order numbers | Unique index plus up to 5 retries on a collision, before the gateway is called |
 | Refresh tokens | Rotation is one conditional update on the session (`refreshTokenHash` must match), so one request wins |
+| Checkout (one per customer) | Lock `checkout:<userId>` for the whole checkout: a double click or a second tab gets 409 "A checkout is already in progress", never a second order |
+| Checkout price | The client sends `expectedTotal` (what the customer saw). If prices, the delivery fee or the coupon changed, checkout answers 409 `CART_CHANGED` before any stock or coupon is held |
+| Checkout stock / availability | A line capped by stock (`limited`) or a product that stopped being sold (`removed`) also answers 409 `CART_CHANGED` instead of silently ordering fewer items |
+| Cart quantity clicks | The client sends one write per product at a time and only the latest wanted quantity next, so fast clicks can't arrive out of order |
+| Seller product edits | Only changed fields are sent. Stock is written with `updateOne({ stock: stockBase })` (409 `STOCK_CHANGED` if sales moved it), and `editVersion` refuses a save from an outdated form (409 `PRODUCT_CHANGED`) |
+| Reviews | Creation runs under a lock per customer + product (cap of 20 included); the same comment again within a minute is 409 |
+| Store / user status (admin) | The status is changed with a conditional update on the status the admin saw; a second admin acting at the same moment gets 409 |
+| Store taken offline | Suspending a store or blocking its owner with paid, unshipped packages needs `openOrders: cancel \| keep` (409 `OPEN_ORDERS` otherwise); `cancel` cancels and refunds each package under its package lock |
+| Category deleted during a product save | After saving, the product checks its category still exists and is hidden like the category's other products if not |
+
+### Live updates (change streams + Server-Sent Events)
+
+An open cart must not show stale stock, prices or coupons. `services/productEvents.js` watches MongoDB change streams
+(they need a replica set; Atlas is one):
+
+| Watched | Trigger | Effect |
+|---|---|---|
+| `products` | `stock`, `price`, `mrp`, `isActive`, `deletedAt`, `moderation` changed (any writer: seller edit, another order reserving stock, cancel/restock, admin) | The cached product page (`product:<id>`) is dropped, and `change` is emitted |
+| `vendors` | `status` changed (suspended, approved) | Every product of the store counts as changed |
+| `coupons` | Any update or delete | `coupon` is emitted |
+
+`GET /cart/events` (customers) is a Server-Sent Events stream. It sends `cart` when a changed product is in **this**
+customer's cart and `coupon` on any coupon change, with a ping every 25 s; `Cache-Control: no-transform` keeps
+compression from buffering it. The client (`useCartLiveUpdates`, read with `fetch` so the Bearer token is sent)
+refetches the cart and that product page, reloads coupon offers and re-checks the applied coupon (removing it with a
+notice when it no longer applies). It reconnects with backoff and a fresh access token. As a fallback the cart,
+product page and coupon box also refetch on open and on window focus. On a standalone MongoDB the stream is off and
+only the fallback and the checkout checks apply.
 
 ## 5. Authentication and sessions
 
@@ -324,6 +364,19 @@ sequenceDiagram
   Any other 401 (`SESSION_ENDED`, `INVALID_TOKEN`, `NO_SESSION`) signs the user out.
 - **Revocation:** logout (this device, works from the cookie even after the access token expired), log out of one
   device, log out of all devices, password change (all other devices; this one gets a new session), admin block (all).
+- **Blocked accounts:** blocking revokes every session, and from then on the account gets `403 ACCOUNT_BLOCKED`
+  (with the admin's reason), never a sign-out 401. `blockedGuard` runs before every route, public catalog included,
+  and refuses any request carrying the blocked account's Bearer token (expired ones too: the check only denies).
+  `protect` and `/auth/refresh` answer `ACCOUNT_BLOCKED` for a session the block ended. They read the session and
+  user from MongoDB, so a profile re-cached by a request racing the block can't turn it into `SESSION_ENDED`. So
+  does `/auth/login`. That answer also sets `vendora_blocked`, a signed httpOnly cookie on `/` (30 days). While the
+  account is still blocked, the guard refuses that browser on **every** request, signed out and register included;
+  only `POST /auth/login` and `/auth/logout` pass. The cookie is dropped when an admin unblocks the account (next
+  request) or when an account that isn't blocked signs in there.
+- **Taking effect without a reload:** pages can render from the query cache without calling the API, so the
+  client calls `GET /auth/status` on every page change (at most once per 2 s), when the tab regains focus and every
+  minute. The first `ACCOUNT_BLOCKED` replaces the whole app with the blocked screen, on every URL. Only a 401 or a
+  new token from its "Check again" lifts it.
 - **CSRF:** the refresh cookie only goes to `/auth`, and `/auth/refresh` requires `X-Requested-With: vendora`,
   which another site can't send without passing CORS. Set `COOKIE_SAMESITE=none` (HTTPS) when the API is on another domain.
 
@@ -464,7 +517,7 @@ atomic status change, so a double click can't apply it twice.
 ## 9. Search (Elasticsearch)
 
 - **Alias and builds.** Searches and writes use the alias `vendora-products`, which points at one built index
-  (`vendora-products-v{version}-{timestamp}`). A rebuild fills a new index next to the live one and then moves the
+  (`vendora-products-v{version}-{timestamp}-{random}`). A rebuild fills a new index next to the live one and then moves the
   alias in one atomic `updateAliases` call, so search never sees an empty or half-built index. Products changed
   while it was filling are written again after the switch. One rebuild runs at a time (Redis lock
   `lock:search:reindex`; a second one gets 409).
@@ -483,6 +536,9 @@ atomic status change, so a double click can't apply it twice.
   matching (description included) and the response has `relaxed: true`, which the search page explains. Price,
   rating and stock go in the bool filter; category and brand go in `post_filter`, so each facet still shows its other
   options. `createdAt` breaks sort ties, so pages never swap products.
+- **Sorts.** `popular` (default), `price_asc`, `price_desc`, `rating`, `newest`, `discount`. With search text,
+  `popular` ranks best matches first and then units sold; without it, best-sellers first. Any other value
+  (including the old `relevance`) falls back to `popular`.
 - **Outages.** Requests time out after 5 s. A connection error moves search to MongoDB at once (no request waits
   on a dead Elasticsearch), index writes are skipped, and the API checks every 15 s. Once it answers, the index is
   rebuilt from MongoDB and search switches back. `/health` shows `mongodb (elasticsearch reconnecting)` meanwhile.
@@ -510,6 +566,7 @@ Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Aut
 | POST | `/logout-all` | auth | Ends every session of the account |
 | GET | `/sessions` | auth | Signed-in devices (`current` marks this one) |
 | DELETE | `/sessions/:id` | auth | Log out one device |
+| GET | `/status` | auth | `{ ok: true }` while the session stands; the client's per-page check (401 / 403 `ACCOUNT_BLOCKED` otherwise) |
 | GET / PATCH | `/me` | auth | Profile (including the store for sellers) / update name, phone, avatar |
 | PATCH | `/me/password` | auth | Change password → `{accessToken}`; other devices are logged out |
 | GET / POST | `/me/addresses` | auth | Address book |
@@ -527,7 +584,7 @@ Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Aut
 | GET | `/products/:productId` | Product detail + related products + store stats |
 | PUT / DELETE | `/products/:productId/rating` | Set `{value: 1-5}` / remove your rating (auth, delivered order) |
 | GET | `/products/:productId/reviews` | Visible reviews (`sort=recent\|top\|low\|helpful`, `rating`), star distribution, your rating, votes and what you may do |
-| POST | `/products/:productId/reviews` | `{title, comment, photos[]}` (auth, delivered order, max 20) |
+| POST | `/products/:productId/reviews` | `{title, comment, photos[]}` (auth, delivered order, max 20; the same comment again within a minute is 409) |
 | PATCH / DELETE | `/products/:productId/reviews/:reviewId` | Edit / delete your review (admins may delete) |
 | POST / DELETE | `/products/:productId/reviews/:reviewId/helpful` | Vote / unvote helpful (auth, not your own) |
 | GET | `/coupons?vendors=` | Active, started coupons a shopper can use |
@@ -543,12 +600,13 @@ replaced image only when the same user uploaded it. Seeded and external images a
 ### Cart and orders — customers
 | Method | Path | Description |
 |---|---|---|
-| GET | `/cart` | Cart with live prices, `requestedQuantity` / `limited` when stock is short, `priceChanged`, summary |
+| GET | `/cart` | Cart with live prices, `requestedQuantity` / `limited` when stock is short, `priceChanged`, `removed` (lines dropped on this read because the product stopped being sold, reported once), summary |
+| GET | `/cart/events` | Server-Sent Events: `ready`, then `cart` (a product in your cart changed) and `coupon` (a coupon changed) |
 | POST | `/cart/items` | `{productId, quantity}` sets the line's total quantity (adds it if missing) |
 | DELETE | `/cart/items/:productId` | Remove a line |
 | DELETE | `/cart` | Empty the cart |
 | POST | `/cart/coupon` | Preview a coupon against the cart |
-| POST | `/orders/checkout` | Header `Idempotency-Key`; `{addressId \| address, couponCode}` → order + gateway config |
+| POST | `/orders/checkout` | Header `Idempotency-Key`; `{addressId \| address, couponCode, expectedTotal?}` → order + gateway config. 409 `CART_CHANGED` (total, stock or availability changed) or "already in progress" (another checkout running) |
 | POST | `/orders/:id/verify` | `{paymentIntentId}` (or test-gateway `outcome`): checked with Stripe, then the order is finalized |
 | GET | `/orders/:id/payment` | Payment form for an unpaid order (reuses or reopens the PaymentIntent) |
 | GET | `/orders` | My orders |
@@ -567,7 +625,7 @@ replaced image only when the same user uploaded it. Seeded and external images a
 | GET / PATCH | `/store` | View or edit the store (allowed while pending or rejected) |
 | GET | `/dashboard` | KPIs vs the previous 30 days, daily series, payouts, top products, low stock |
 | GET / POST | `/products` | List (search, status filter, sort) / create |
-| GET / PATCH / DELETE | `/products/:id` | Manage a product (delete is a soft delete) |
+| GET / PATCH / DELETE | `/products/:id` | Manage a product (delete is a soft delete). PATCH takes only changed fields plus `editVersion` and, when stock changes, `stockBase`: 409 `PRODUCT_CHANGED` / `STOCK_CHANGED` |
 | GET | `/orders` | Packages with status counts |
 | PATCH | `/orders/:orderId/status` | `{status, trackingId?, note?, reasonCode?}`: packed, shipped, delivered or cancelled (reason code required) |
 | GET | `/payouts` | Earnings ledger, summary, Stripe status, payout hold |
@@ -587,9 +645,9 @@ replaced image only when the same user uploaded it. Seeded and external images a
 | Method | Path | Description |
 |---|---|---|
 | GET | `/analytics?range=7\|30\|90\|365` | GMV, commission, orders, AOV with change vs the previous period, series, categories, top vendors and products |
-| GET / PATCH | `/vendors[/:id]` | List (`?payoutHold=1` for frozen payouts) and approve, reject, suspend (reason required); commission override |
+| GET / PATCH | `/vendors[/:id]` | List (`?payoutHold=1` for frozen payouts) and approve, reject, suspend (reason required); commission override. Suspending a store with paid, unshipped packages needs `openOrders: cancel \| keep` (409 `OPEN_ORDERS`) |
 | PATCH | `/vendors/:id/payout-hold` | `{action: release\|hold, reason?}`: confirm a payout destination change, or freeze payouts |
-| GET / PATCH | `/users[/:id]` | List and block (reason required, sessions ended) or unblock |
+| GET / PATCH | `/users[/:id]` | List and block (reason required, sessions ended, the user's browser gets only `ACCOUNT_BLOCKED`) or unblock. Blocking a seller suspends the store, so the same `openOrders` choice applies |
 | GET | `/orders`, `/orders/summary`, `/orders/export` | All orders with filters, KPIs and exceptions, CSV export |
 | GET | `/orders/:id`, `/orders/:id/invoice` | Any order and its invoice |
 | PATCH | `/orders/:id/packages/:packageId` | Move a package through the lifecycle (cancel needs a reason code) |

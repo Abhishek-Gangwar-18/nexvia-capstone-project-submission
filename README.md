@@ -16,9 +16,11 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Elem
 
 **Customers**
 - Storefront with an animated hero, categories, deals of the day with a live countdown, trending products, top stores and recently viewed items
-- Search on Elasticsearch: typo tolerance, Indian shopping synonyms (phone/mobile, tv/television, ...), typeahead with **"Did you mean?"** spelling corrections, faceted filters (category, brand, price slider, rating, in stock), seven sort orders, shareable URLs
-- Product page with a zoomable gallery, offers, pincode delivery check, seller card, specs, star ratings (one per customer) and reviews with photos, helpful votes and seller replies; both need a delivered order
+- Search on Elasticsearch: typo tolerance, Indian shopping synonyms (phone/mobile, tv/television, ...), typeahead with **"Did you mean?"** spelling corrections, faceted filters (category, brand, price slider, rating, in stock), six sort orders (popularity by default: best matches first when searching), shareable URLs
+- Product page with a zoomable gallery, a share pop-up (copy link, WhatsApp, Telegram, X, email), seller card, specs, star ratings (one per customer) and reviews with photos, helpful votes and seller replies; both need a delivered order
 - Cart for signed-in customers (cached in Redis), price-rise/drop and low-stock notices, free-shipping meter, coupons, save for later
+- **Live cart:** stock, price, availability and coupon changes reach an open cart, product page and checkout within a second (MongoDB change streams + Server-Sent Events), with no reload. Checkout refuses a total, stock or product that changed since the customer saw it (`409 CART_CHANGED`)
+- Only customers can buy: sellers and admins see no cart or buy buttons (a seller gets *Edit product* on their own listings, an admin *Moderate*)
 - Two-step checkout with address book, per-seller package preview, stock held for 15 minutes while paying, and the Stripe Payment Element (or the built-in test gateway)
 - Order tracking timeline for each package, PDF invoices, cancel and refund, retry payment
 - Returns within the return window (pick items and quantities, reason, up to 5 photos) and a **Refunds** card on the order page showing each refund and its status
@@ -27,15 +29,16 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Elem
 **Sellers**
 - Four-step onboarding (store, business, bank details), admin approval and a live store page; Stripe Connect for automatic payouts
 - Dashboard with KPIs vs the previous period, a sales chart, payouts on hold and released, top products and low-stock alerts
-- Product editor with drag-and-drop S3 uploads (reorder, pick cover), tags, specs, an earnings estimate and live preview
+- Product editor with drag-and-drop S3 uploads (reorder, pick cover), tags, specs, an earnings estimate and live preview. Saves send only changed fields and are refused (409) if sales moved the stock or someone else saved the product meanwhile
+- Store settings with a live preview of the store card as shoppers see it
 - Fulfilment: packed, then shipped (tracking id), then delivered, which releases the payout; or cancel with a reason, which restocks, refunds and reverses the payout
 - Returns manager: approve or reject requests, mark items received (restock optional), which refunds the customer automatically
 - Payouts page with Stripe Connect onboarding and a payout ledger; review replies, store coupons, store settings
 
 **Admin**
 - Analytics (7D, 30D, 90D, 1Y): GMV, commission revenue, orders, AOV with change, revenue trend, package fulfilment, sales by category, top sellers and products
-- Seller approvals (approve, reject or suspend with a reason), per-seller commission override, payout holds after a payout account change
-- Order management with package controls, returns, a payments panel (refunds, payouts on hold, release due payouts), category management, product and review moderation, user blocking (ends their sessions immediately), platform coupons
+- Seller approvals (approve, reject or suspend with a reason), per-seller commission override, payout holds after a payout account change. Suspending a store (or blocking its owner) with paid, unshipped orders asks whether to cancel and refund them or keep them
+- Order management: KPI cards, server-side search and filters (status, payment, package, refund, vendor, amount, date range), a *Needs attention* view (failed refunds, payment mismatches, stock issues, late dispatch or delivery, missing tracking), CSV export, and package controls; returns, a payments panel (refunds, payouts on hold, release due payouts), category management, product and review moderation, user blocking (ends their sessions at once; a blocked user sees only a "not allowed" screen and the API refuses their browser, public pages included), platform coupons
 - Settings (commission, shipping rules) with a change history, a live **system status** panel and an Elasticsearch reindex button
 
 ---
@@ -163,9 +166,11 @@ error and shows in Admin → Payments.
 ```
 ├── client/                  React SPA (Vite)
 │   └── src/
-│       ├── components/      layout (search bar), product, cart, checkout, orders (returns, refunds), dashboard, account, ui
+│       ├── components/      layout (search bar), product (share pop-up, seller/admin actions), cart, checkout, orders (returns,
+│       │                    refunds), dashboard, account, admin (open-orders dialog), vendor (store preview), ui
 │       ├── pages/           storefront, account, orders, vendor/* (incl. returns, payouts), admin/* (incl. payments, returns), auth/*
-│       ├── lib/             api client, session, cart hooks, formatting, Stripe loader
+│       ├── lib/             api client, session, cart hooks + live cart updates (SSE), roles (who may buy), wheel scrolling,
+│       │                    formatting, Stripe loader
 │       └── store/           Zustand stores (auth profile, theme)
 ├── server/                  Express API
 │   ├── src/
@@ -174,7 +179,8 @@ error and shows in Admin → Payments.
 │   │   │                    Coupon, CouponRedemption, Cart, Order, Payment, Refund, Return, WebhookEvent, Settings
 │   │   ├── services/        cache (Redis), locks, rateLimitStore, search (Elasticsearch), storage (S3),
 │   │   │                    payment + webhooks + reconcile (Stripe), refunds, returns, payouts, orders, adminOrders,
-│   │   │                    cart, pricing, coupons, reviews, invoice (PDFKit), session, catalog
+│   │   │                    cart, pricing, coupons, reviews, invoice (PDFKit), session, catalog,
+│   │   │                    productEvents (change streams for live cart, product and coupon updates)
 │   │   ├── controllers/     auth, catalog, review, cart, order, return, payout, vendor, coupon, category, admin
 │   │   ├── routes/          route definitions with zod validation + RBAC middleware
 │   │   ├── middleware/      auth/RBAC, validation, uploads, errors
@@ -194,8 +200,10 @@ error and shows in Admin → Payments.
   `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.js`.
 - **Uploaded image shows `AccessDenied`:** the S3 bucket policy is missing that folder (`products/*`, `stores/*`,
   `avatars/*`, `reviews/*`, `returns/*`). Check with `pnpm --dir server s3:check`.
-- **Search badge says "MongoDB search":** Elasticsearch isn't reachable (`docker ps`; it needs ~30 s to boot). The API
-  retries every 15 s and switches back on its own, rebuilding the index first.
+- **Search runs on MongoDB** (`/health` or Admin → Settings & system shows `mongodb`): Elasticsearch isn't reachable
+  (`docker ps`; it needs ~30 s to boot). The API retries every 15 s and switches back on its own, rebuilding the index first.
+- **Open carts don't update live:** the API log says `Live cart updates: off`. Change streams need a replica set: Atlas
+  (or a local replica set) works, a standalone MongoDB doesn't. Carts then refresh on open and on window focus only.
 - **`.env` changes ignored:** `pnpm dev` only restarts on code changes; restart the API after editing `server/.env`.
 - **"Cannot reach the server":** make sure the terminal running `pnpm --dir server dev` says `Vendora API ready`.
 - **Signed out after updating:** sessions now use refresh tokens; sign in again once.
