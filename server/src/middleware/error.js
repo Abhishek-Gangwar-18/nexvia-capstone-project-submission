@@ -9,7 +9,17 @@ export const notFound = (req, res) => {
 };
 
 // eslint-disable-next-line no-unused-vars
+/** MongoDB can't be reached (network drop, Atlas failover): a short 503, not a 500 with a stack trace. */
+const DB_UNREACHABLE = ['MongoServerSelectionError', 'MongoNetworkError', 'MongoNetworkTimeoutError', 'MongoTopologyClosedError', 'MongoNotConnectedError'];
+const isDbUnreachable = (err) => DB_UNREACHABLE.includes(err?.name) || DB_UNREACHABLE.includes(err?.cause?.name);
+
 export const errorHandler = (err, req, res, _next) => {
+  if (isDbUnreachable(err)) {
+    logger.warn(`${req.method} ${req.originalUrl} -> database unreachable (${err.cause?.message || err.message})`);
+    res.set('Retry-After', '5');
+    return res.status(503).json({ message: 'The service is temporarily unavailable. Please try again in a moment.', details: { code: 'DB_UNAVAILABLE' } });
+  }
+
   let status = err.status || err.statusCode || 500;
   let message = err.message || 'Something went wrong';
   let details = err.details;

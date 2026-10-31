@@ -55,7 +55,16 @@ export async function applyCoupon(req, res) {
  * stock, price or availability (any writer: vendor, other orders, admin), so the open cart refetches at
  * once instead of showing stale quantities. `no-transform` keeps compression from buffering the stream.
  */
+const MAX_STREAMS_PER_USER = 5; // a few tabs; more is abuse (each stream holds a connection and listeners)
+const openStreams = new Map();
+
 export function events(req, res) {
+  const userId = String(req.user._id);
+  const open = openStreams.get(userId) || 0;
+  if (open >= MAX_STREAMS_PER_USER) {
+    return res.status(429).json({ message: 'Too many open live connections. Close other tabs and try again.' });
+  }
+  openStreams.set(userId, open + 1);
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
   res.flushHeaders();
   const send = (chunk) => {
@@ -72,11 +81,15 @@ export function events(req, res) {
     }
   };
   productEvents.on('change', onChange);
-  // Coupons can apply to anyone's cart, so every connected customer hears about coupon changes.
-  const onCoupon = (couponId) => send(`event: coupon\ndata: ${JSON.stringify({ couponId })}\n\n`);
+  // Coupons can apply to anyone's cart, so every connected customer hears about coupon changes. No coupon
+  // id in the event: private coupons must not be discoverable; the client re-checks its own coupon.
+  const onCoupon = () => send('event: coupon\ndata: {}\n\n');
   productEvents.on('coupon', onCoupon);
   const ping = setInterval(() => send(': ping\n\n'), 25_000); // keeps proxies from closing an idle stream
   req.on('close', () => {
+    const left = (openStreams.get(userId) || 1) - 1;
+    if (left > 0) openStreams.set(userId, left);
+    else openStreams.delete(userId);
     clearInterval(ping);
     productEvents.off('change', onChange);
     productEvents.off('coupon', onCoupon);

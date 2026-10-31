@@ -44,16 +44,28 @@ function connectionHint(err) {
  * Connects to MongoDB. The local embedded database may still be starting (its first run downloads a binary),
  * so local URIs are retried for a long time; a remote cluster (Atlas) fails fast with a helpful hint.
  */
+/** One log line when the connection drops and when it is back, instead of a stack trace per request. */
+let watching = false;
+function watchConnection() {
+  if (watching) return;
+  watching = true;
+  mongoose.connection.on('disconnected', () => logger.warn('MongoDB connection lost -> requests answer 503 until it is back (the driver reconnects on its own)'));
+  mongoose.connection.on('reconnected', () => logger.ok('MongoDB connection restored'));
+}
+
 export async function connectDB({ retries = isLocal(env.mongoUri) ? 120 : 6 } = {}) {
   mongoose.set('strictQuery', true);
   await ensureSrvResolvable(env.mongoUri);
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       await mongoose.connect(env.mongoUri, {
-        serverSelectionTimeoutMS: isLocal(env.mongoUri) ? 3000 : 15000,
+        // How long a query waits for a reachable server before failing (503, see middleware/error.js).
+        // Long enough for an Atlas primary election (~5-10 s), short enough not to hang requests.
+        serverSelectionTimeoutMS: isLocal(env.mongoUri) ? 3000 : 10000,
         maxPoolSize: 20,
       });
       logger.ok(`MongoDB connected -> ${redact(env.mongoUri)}`);
+      watchConnection();
       return mongoose.connection;
     } catch (err) {
       if (attempt === retries) {
