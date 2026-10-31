@@ -44,7 +44,7 @@ export default function StoreSettings() {
     try {
       await api.patch('/vendor/store', { ...storePayload(form), ...(needsPassword ? { currentPassword: password } : {}) });
       setPassword('');
-      await Promise.all([refreshMe(), refetch()]);
+      await Promise.all([refreshMe({ fresh: true }), refetch()]);
       toast.success('Store settings saved');
     } catch (err) {
       toast.error(errorMessage(err));

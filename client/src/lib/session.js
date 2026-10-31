@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, sessionConfirmedAt } from './api';
 import { queryClient } from './queryClient';
 import { useAuth } from '../store/auth';
 
@@ -40,23 +40,47 @@ export async function logoutEverywhere() {
   return data.message;
 }
 
-let lastCheck = 0;
+let lastAsked = 0;
 
 /**
  * Asks the API whether this session still stands, so a block (or a logout elsewhere) shows up on the
- * next click even when the page comes from the query cache. The API client reacts to the answer.
+ * next click even when the page comes from the query cache. Skipped when an API answer confirmed the
+ * session within `maxAge` ms, or a check was just sent. The API client reacts to the answer.
  */
-export function checkSession() {
-  if (Date.now() - lastCheck < 2000) return;
-  lastCheck = Date.now();
+export function checkSession(maxAge = 2000) {
+  const now = Date.now();
+  if (!useAuth.getState().user || now - Math.max(sessionConfirmedAt(), lastAsked) < maxAge) return;
+  lastAsked = now;
   api.get('/auth/status').catch(() => {});
 }
 
-export async function refreshMe() {
-  lastCheck = Date.now();
-  const { data } = await api.get('/auth/me');
-  useAuth.getState().setUser(data.user);
-  return data.user;
+/** After a page change: the new page's own requests usually confirm the session, so only ask if none did. */
+export function checkSessionAfterNavigation(delay = 1500) {
+  const changedAt = Date.now();
+  setTimeout(() => {
+    if (sessionConfirmedAt() < changedAt) checkSession();
+  }, delay);
+}
+
+/**
+ * Reloads the profile. One request at a time (single flight): callers at the same moment (App on load,
+ * which React StrictMode runs twice in development, and the Checkout page) share it instead of each
+ * sending GET /auth/me. `fresh` (after a save) always sends a new request, so the answer includes the change.
+ */
+let loadingMe = null;
+export function refreshMe({ fresh = false } = {}) {
+  if (loadingMe && !fresh) return loadingMe;
+  const request = api.get('/auth/me').then(({ data }) => {
+    // An older request finishing late must not overwrite a newer profile.
+    if (loadingMe === request) useAuth.getState().setUser(data.user);
+    return data.user;
+  });
+  loadingMe = request;
+  request.then(
+    () => loadingMe === request && (loadingMe = null),
+    () => loadingMe === request && (loadingMe = null),
+  );
+  return request;
 }
 
 /** Where each role lands after signing in. */

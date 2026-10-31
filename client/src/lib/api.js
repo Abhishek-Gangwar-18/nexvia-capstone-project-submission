@@ -4,8 +4,11 @@ import { queryClient } from './queryClient';
 
 const base = import.meta.env.VITE_API_URL?.replace(/\/$/, '');
 
-/** In development requests go to /api and the Vite proxy strips that prefix; in production VITE_API_URL is the API's origin. */
-export const API_URL = base || '/api';
+/**
+ * No /api prefix: in development requests go to the same origin (e.g. /auth/me) and the Vite proxy forwards
+ * them to the API; in production VITE_API_URL is the API's origin.
+ */
+export const API_URL = base || '';
 
 // withCredentials: the refresh cookie is sent to the auth routes (also when the API is on another domain).
 export const api = axios.create({ baseURL: API_URL, timeout: 25000, withCredentials: true });
@@ -24,6 +27,17 @@ function handleBlocked(error) {
 }
 
 /**
+ * When the API last confirmed this session active: every answer from a route that checked it carries
+ * X-Session (server middleware/auth.js protect), and so does a successful refresh. lib/session.js only
+ * sends GET /auth/status when nothing has confirmed the session recently.
+ */
+let sessionSeenAt = 0;
+export const sessionConfirmedAt = () => sessionSeenAt;
+export const markSessionConfirmed = () => {
+  sessionSeenAt = Date.now();
+};
+
+/**
  * Access tokens last ~15 minutes. One refresh runs at a time (single flight): every request that needs
  * a token waits for the same promise. The refresh cookie rotates on each call.
  */
@@ -33,11 +47,13 @@ export function refreshAccessToken() {
     refreshing = axios
       .post(`${API_URL}/auth/refresh`, null, { withCredentials: true, timeout: 15000, headers: { 'X-Requested-With': 'vendora' } })
       .then(({ data }) => {
+        markSessionConfirmed();
         useAuth.getState().setSession(data.accessToken, data.user);
         return data.accessToken;
       })
       .catch((error) => {
-        if (!handleBlocked(error) && error.response?.status === 401) useAuth.getState().clear();
+        // The refresh session itself ended (idle/max age, logged out everywhere, password changed elsewhere).
+        if (!handleBlocked(error) && error.response?.status === 401 && useAuth.getState().user) useAuth.getState().expire();
         throw error;
       })
       .finally(() => {
@@ -58,7 +74,10 @@ api.interceptors.request.use(async (config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (response.headers['x-session']) markSessionConfirmed();
+    return response;
+  },
   async (error) => {
     if (handleBlocked(error)) return Promise.reject(error);
     const { config, response } = error;
@@ -74,7 +93,7 @@ api.interceptors.response.use(
         /* falls through to sign-out below */
       }
     }
-    if (response?.status === 401 && !isAuthCall(config?.url) && useAuth.getState().user) useAuth.getState().clear();
+    if (response?.status === 401 && !isAuthCall(config?.url) && useAuth.getState().user) useAuth.getState().expire();
     return Promise.reject(error);
   },
 );

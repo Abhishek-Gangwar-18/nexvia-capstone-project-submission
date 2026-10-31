@@ -9,7 +9,7 @@ import { ApiError, asyncHandler } from '../utils/http.js';
  * Requires a valid access token (Bearer) whose session is still active. Sets req.user and req.auth.
  * 401 codes tell the client what to do: TOKEN_EXPIRED -> call /auth/refresh and retry; anything else -> log in.
  */
-export const protect = asyncHandler(async (req, _res, next) => {
+export const protect = asyncHandler(async (req, res, next) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) throw new ApiError(401, 'Please log in to continue');
@@ -38,6 +38,8 @@ export const protect = asyncHandler(async (req, _res, next) => {
 
   req.user = user;
   req.auth = payload;
+  // Tells the client this answer just proved its session active, so it can skip a separate GET /auth/status.
+  res.set('X-Session', 'active');
   next();
 });
 

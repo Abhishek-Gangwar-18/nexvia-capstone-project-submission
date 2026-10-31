@@ -1,5 +1,7 @@
-import { lazy, Suspense, useEffect } from 'react';
-import { Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import toast from 'react-hot-toast';
+import { queryClient } from './lib/queryClient';
 import {
   BarChart3, Boxes, Cog, LayoutDashboard, LayoutGrid, MessageSquare, CreditCard, RotateCcw, Package, Settings, ShoppingCart, Store, Ticket, Users, Wallet,
 } from 'lucide-react';
@@ -9,7 +11,8 @@ import RequireAuth from './components/RequireAuth';
 import AuthModal, { AuthRedirect } from './components/auth/AuthModal';
 import { PageLoader } from './components/ui/Feedback';
 import { useAuth } from './store/auth';
-import { checkSession, refreshMe } from './lib/session';
+import { checkSession, checkSessionAfterNavigation } from './lib/session';
+import { refreshAccessToken } from './lib/api';
 
 const Home = lazy(() => import('./pages/Home'));
 const Search = lazy(() => import('./pages/Search'));
@@ -81,28 +84,52 @@ function RegisterRedirect() {
 export default function App() {
   const signedIn = useAuth((s) => Boolean(s.user));
   const blocked = useAuth((s) => Boolean(s.blocked));
-  const { pathname } = useLocation();
-
-  // On load: get a fresh access token from the refresh cookie (the API client does it before the first
-  // request) and refresh the cached profile so role / store approval changes are picked up.
+  const expiredAt = useAuth((s) => s.expiredAt);
+  // A saved profile but no access token yet (page just opened): confirm the session before drawing anything,
+  // so an expired session lands on the signed-out home page with no flash of the signed-in site.
+  const [booting, setBooting] = useState(() => Boolean(useAuth.getState().user && !useAuth.getState().token));
   useEffect(() => {
-    if (signedIn) refreshMe().catch(() => {});
-  }, [signedIn]);
+    if (!booting) return;
+    refreshAccessToken()
+      .catch(() => {}) // 401 -> expire() -> home, signed out; a network error keeps the saved profile
+      .finally(() => {
+        // Leave a protected URL (/account, /vendor...) before anything renders, so no sign-in screen flashes.
+        if (useAuth.getState().expiredAt) navigate('/', { replace: true });
+        setBooting(false);
+      });
+  }, [booting]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+
+  // The session ended on its own: drop cached private data and land on the home page, signed out.
+  useEffect(() => {
+    if (!expiredAt) return;
+    queryClient.clear();
+    useAuth.getState().ackExpired();
+    navigate('/', { replace: true });
+    toast('Your session has expired. Please sign in again.', { icon: '🔒', id: 'session-expired' });
+  }, [expiredAt, navigate]);
+
+  // The profile needs no separate GET /auth/me on load: the boot refresh above (and sign-in) return it.
 
   // Every page change re-checks the session (pages may render from cache without asking the API),
-  // as do coming back to the tab and a slow timer, so a block takes effect on the next click.
+  // as do coming back to the tab and a slow timer, so a block takes effect on the next click. Any API
+  // answer that already confirmed the session counts, so these only send GET /auth/status when needed.
   useEffect(() => {
-    if (signedIn) checkSession();
+    if (signedIn) checkSessionAfterNavigation();
   }, [signedIn, pathname]);
   useEffect(() => {
     if (!signedIn) return undefined;
-    const timer = setInterval(checkSession, 60 * 1000);
-    window.addEventListener('focus', checkSession);
+    const onFocus = () => checkSession(30 * 1000);
+    const timer = setInterval(() => !document.hidden && checkSession(60 * 1000), 60 * 1000);
+    window.addEventListener('focus', onFocus);
     return () => {
       clearInterval(timer);
-      window.removeEventListener('focus', checkSession);
+      window.removeEventListener('focus', onFocus);
     };
   }, [signedIn]);
+
+  if (booting) return <PageLoader />;
 
   // A blocked account sees nothing of the site, on any URL.
   if (blocked) {

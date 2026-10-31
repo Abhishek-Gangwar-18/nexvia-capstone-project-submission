@@ -56,7 +56,7 @@ function Wizard({ initial, existing, onDone }) {
     try {
       if (existing) await api.patch('/vendor/store', storePayload(form));
       else await api.post('/vendor/onboard', storePayload(form));
-      await refreshMe();
+      await refreshMe({ fresh: true });
       toast.success(existing ? 'Application updated' : 'Application submitted!');
       onDone();
     } catch (err) {
