@@ -1,4 +1,6 @@
 import mongoose from 'mongoose';
+import { searchEntityIds, toObjectIds } from './entitySearch.js';
+import { productIdsMatching } from './search.js';
 import { User } from '../models/User.js';
 import { ApiError, escapeRegex, round2 } from '../utils/http.js';
 
@@ -133,8 +135,16 @@ async function searchCondition(term) {
     const id = new mongoose.Types.ObjectId(term);
     or.push({ _id: id }, { customer: id }, { 'packages.vendor': id }, { 'packages.items.product': id });
   }
-  const customers = await User.find({ $or: [{ name: rx }, { email: rx }] }).select('_id').limit(200).lean();
-  if (customers.length) or.push({ customer: { $in: customers.map((u) => u._id) } });
+  // Customers, stores and products by name with typos allowed (Elasticsearch); MongoDB match as a fallback.
+  const [users, stores, products] = await Promise.all([
+    searchEntityIds('users', term, { size: 200 }),
+    searchEntityIds('vendors', term, { size: 100 }),
+    productIdsMatching(term, { size: 200 }),
+  ]);
+  const customers = users ? toObjectIds(users) : (await User.find({ $or: [{ name: rx }, { email: rx }] }).select('_id').limit(200).lean()).map((u) => u._id);
+  if (customers.length) or.push({ customer: { $in: customers } });
+  if (stores?.length) or.push({ 'packages.vendor': { $in: toObjectIds(stores) } });
+  if (products?.length) or.push({ 'packages.items.product': { $in: toObjectIds(products) } });
   return { $or: or };
 }
 

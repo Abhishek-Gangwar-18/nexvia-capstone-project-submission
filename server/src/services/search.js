@@ -110,10 +110,22 @@ export const SORTS = ['popular', 'price_asc', 'price_desc', 'rating', 'newest', 
 /** The engine serving searches right now: MongoDB while Elasticsearch is not configured or unreachable. */
 export const searchEngine = () => (available ? 'elasticsearch' : 'mongodb');
 export const searchConfigured = () => Boolean(es);
+/** The client while Elasticsearch is usable (null during an outage or when not configured). */
+export const searchClient = () => (available ? es : null);
+
+/** Other indices (stores, users) rebuild through these hooks once Elasticsearch is back after an outage. */
+const recoveryHooks = [];
+export const onSearchRecovered = (fn) => recoveryHooks.push(fn);
 
 /** Connection trouble (as opposed to a bad request): search moves to MongoDB until Elasticsearch answers again. */
 const isOutage = (err) =>
   ['ConnectionError', 'TimeoutError', 'NoLivingConnectionsError'].includes(err?.name) || [502, 503, 504].includes(err?.meta?.statusCode);
+
+/** A failed Elasticsearch call: an outage moves every search to MongoDB until it answers again. */
+export function reportSearchError(err, what = 'Elasticsearch query') {
+  if (isOutage(err)) markDown(err);
+  else logger.warn(`${what} failed: ${err.message}`);
+}
 
 function markDown(err) {
   if (!available) return;
@@ -147,6 +159,7 @@ export async function recoverSearch() {
     clearInterval(probe);
     probe = null;
     logger.ok('Elasticsearch is back -> index rebuilt from MongoDB, search runs on Elasticsearch again');
+    for (const hook of recoveryHooks) await hook().catch((err) => logger.warn(`Search recovery hook failed: ${err.message}`));
   } catch {
     // Still down (or the rebuild failed): try again on the next tick.
   } finally {
@@ -650,4 +663,36 @@ export async function suggest(rawQuery) {
       .lean();
   }
   return { products, categories: await categoriesPromise, didYouMean };
+}
+
+/**
+ * Product ids matching typed text (fuzzy, typo tolerant), best match first, for the seller's and admin's
+ * product lists. Covers hidden and deleted products too (they stay in the index). Null when Elasticsearch
+ * can't answer, so the caller falls back to its MongoDB text match.
+ */
+export async function productIdsMatching(q, { vendorId, size = 500 } = {}) {
+  const client = searchClient();
+  const text = String(q || '').trim().slice(0, 100);
+  if (!client || !text) return null;
+  try {
+    const res = await client.search({
+      index: ALIAS,
+      size,
+      _source: false,
+      query: {
+        bool: {
+          ...(vendorId && { filter: [{ term: { vendorId: String(vendorId) } }] }),
+          should: [
+            { multi_match: { query: text, fields: ['searchText', 'title^3', 'brand.text^2'], fuzziness: 'AUTO', prefix_length: 1 } },
+            { match_phrase_prefix: { title: { query: text, boost: 4 } } },
+          ],
+          minimum_should_match: 1,
+        },
+      },
+    });
+    return res.hits.hits.map((h) => h._id);
+  } catch (err) {
+    reportSearchError(err, 'Product id search');
+    return null;
+  }
 }

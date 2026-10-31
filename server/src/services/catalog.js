@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { searchEntityIds, toObjectIds } from './entitySearch.js';
 import { Category } from '../models/Category.js';
 import { LISTED, Product } from '../models/Product.js';
 import { Vendor } from '../models/Vendor.js';
@@ -115,13 +116,18 @@ export function storeListParams(query) {
 }
 
 export async function listVendors({ q, sort, page, limit, skip }) {
-  const rx = q ? new RegExp(escapeRegex(q), 'i') : null;
-  const match = { ...(rx ? { $or: [{ storeName: rx }, { tagline: rx }] } : {}) };
+  // Elasticsearch (typo tolerant, best match first); MongoDB text match while it is unavailable.
+  const hits = q ? await searchEntityIds('vendors', q, { publicOnly: true }) : null;
+  const rx = q && !hits ? new RegExp(escapeRegex(q), 'i') : null;
+  const match = hits ? { _id: { $in: toObjectIds(hits) } } : rx ? { $or: [{ storeName: rx }, { tagline: rx }] } : {};
+  // Searching with the default sort: best match first.
+  const order = hits && sort === 'popular' ? { _rank: 1 } : STORE_SORTS[sort];
   const [result] = await Vendor.aggregate([
     { $match: { status: 'approved', ...match } },
+    ...(hits ? [{ $set: { _rank: { $indexOfArray: [toObjectIds(hits), '$_id'] } } }] : []),
     {
       $facet: {
-        items: [...vendorStatsPipeline(), { $sort: STORE_SORTS[sort] }, { $skip: skip }, { $limit: limit }],
+        items: [...vendorStatsPipeline(), { $sort: order }, { $skip: skip }, { $limit: limit }],
         total: [{ $count: 'n' }],
       },
     },

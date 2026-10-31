@@ -9,6 +9,7 @@ import { releaseExpiredReservations, RESERVATION_MINUTES } from './services/orde
 import { releaseDuePayouts, RETURN_WINDOW_DAYS } from './services/payouts.js';
 import { runReconciliation } from './services/reconcile.js';
 import { createApp } from './app.js';
+import { syncEntityIndexes, watchEntityChanges } from './services/entitySearch.js';
 import { watchCoupons, watchProducts, watchVendors } from './services/productEvents.js';
 import { logger } from './utils/logger.js';
 
@@ -32,6 +33,8 @@ async function start() {
     await seedDatabase({ log: logger.info });
   }
   await syncIndexIfNeeded();
+  await syncEntityIndexes();
+  watchEntityChanges();
   watchProducts();
   watchCoupons();
   watchVendors();

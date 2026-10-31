@@ -10,7 +10,8 @@ import { Settings, SETTINGS_FIELDS, SETTINGS_LIMITS } from '../models/Settings.j
 import { cache } from '../services/cache.js';
 import { getSettings } from '../services/pricing.js';
 import { invalidateUser, revokeAllSessions } from '../services/session.js';
-import { indexProducts, indexStats, reindexAll, searchConfigured, searchEngine } from '../services/search.js';
+import { indexProducts, indexStats, productIdsMatching, reindexAll, searchConfigured, searchEngine } from '../services/search.js';
+import { pageByRank, searchEntityIds, toObjectIds } from '../services/entitySearch.js';
 import { invalidateCatalog, invalidateProducts } from '../services/catalog.js';
 import { transitionPackage, withPackageLock } from '../services/orders.js';
 import { buildOrderFilter, dateRange, EXCEPTION_TYPES, exceptionConditions, orderRow, ordersCsv, orderSort, SLA } from '../services/adminOrders.js';
@@ -185,22 +186,38 @@ export async function listVendors(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 12 });
   const match = {};
   if (req.query.status) match.status = req.query.status;
-  if (req.query.q) match.storeName = new RegExp(escapeRegex(req.query.q), 'i');
   if (req.query.payoutHold === '1') match['payoutHold.active'] = true;
+  // Search: Elasticsearch (typo tolerant, best match first); MongoDB text match while it is unavailable.
+  const hits = req.query.q ? await searchEntityIds('vendors', req.query.q) : null;
+  if (hits) match._id = { $in: toObjectIds(hits) };
+  else if (req.query.q) {
+    const rx = new RegExp(escapeRegex(req.query.q), 'i');
+    match.$or = [{ storeName: rx }, { email: rx }, { tagline: rx }];
+  }
+  const order = hits ? [{ $set: { _rank: { $indexOfArray: [toObjectIds(hits), '$_id'] } } }, { $sort: { _rank: 1 } }] : [{ $sort: { createdAt: -1 } }];
 
   const [items, total, counts] = await Promise.all([
     Vendor.aggregate([
       { $match: match },
-      { $sort: { createdAt: -1 } },
+      ...order,
       { $skip: skip },
       { $limit: limit },
       { $lookup: { from: 'users', localField: 'user', foreignField: '_id', as: 'owner', pipeline: [{ $project: { name: 1, email: 1 } }] } },
-      { $lookup: { from: 'products', localField: '_id', foreignField: 'vendor', as: 'products', pipeline: [{ $project: { sold: 1 } }] } },
+      // Counted inside the lookup: one small document per store instead of every product it sells.
+      {
+        $lookup: {
+          from: 'products',
+          localField: '_id',
+          foreignField: 'vendor',
+          as: 'products',
+          pipeline: [{ $group: { _id: null, count: { $sum: 1 }, sold: { $sum: '$sold' } } }],
+        },
+      },
       {
         $set: {
           owner: { $first: '$owner' },
-          productCount: { $size: '$products' },
-          unitsSold: { $sum: '$products.sold' },
+          productCount: { $ifNull: [{ $first: '$products.count' }, 0] },
+          unitsSold: { $ifNull: [{ $first: '$products.sold' }, 0] },
           payoutLinked: { $eq: ['$stripe.payoutsEnabled', true] },
         },
       },
@@ -300,13 +317,16 @@ export async function listUsers(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 15 });
   const filter = {};
   if (req.query.role) filter.role = req.query.role;
-  if (req.query.q) {
+  const fields = 'name email role phone avatar status blockedReason blockedAt lastLoginAt createdAt';
+  const hits = req.query.q ? await searchEntityIds('users', req.query.q) : null;
+  if (!hits && req.query.q) {
     const rx = new RegExp(escapeRegex(req.query.q), 'i');
     filter.$or = [{ name: rx }, { email: rx }];
   }
-  const [items, total, counts] = await Promise.all([
-    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select('name email role phone avatar status blockedReason blockedAt lastLoginAt createdAt').lean(),
-    User.countDocuments(filter),
+  const [{ items, total }, counts] = await Promise.all([
+    hits
+      ? pageByRank(User, filter, hits, { skip, limit, query: (ids) => User.find({ _id: { $in: ids } }).select(fields).lean() })
+      : Promise.all([User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).select(fields).lean(), User.countDocuments(filter)]).then(([list, n]) => ({ items: list, total: n })),
     User.aggregate([{ $group: { _id: '$role', count: { $sum: 1 } } }]),
   ]);
   res.json({ ...paginated(items, total, page, limit), counts: Object.fromEntries(counts.map((c) => [c._id, c.count])) });
@@ -566,7 +586,8 @@ export async function updatePackage(req, res) {
 export async function listProducts(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 15 });
   const filter = {};
-  if (req.query.q) {
+  const hits = req.query.q ? await productIdsMatching(req.query.q) : null;
+  if (!hits && req.query.q) {
     const rx = new RegExp(escapeRegex(req.query.q), 'i');
     filter.$or = [{ title: rx }, { brand: rx }];
   }
@@ -576,16 +597,11 @@ export async function listProducts(req, res) {
   if (req.query.status === 'removed') filter['moderation.status'] = 'removed';
   if (req.query.status === 'deleted') filter.deletedAt = { $ne: null };
   if (mongoose.isValidObjectId(req.query.vendor)) filter.vendor = req.query.vendor;
-  const [items, total] = await Promise.all([
-    Product.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate('vendor', 'storeName')
-      .select('title thumbnail price mrp stock category brand rating numRatings sold isActive moderation deletedAt vendor createdAt')
-      .lean(),
-    Product.countDocuments(filter),
-  ]);
+  const fields = 'title thumbnail price mrp stock category brand rating numRatings sold isActive moderation deletedAt vendor createdAt';
+  const load = (query) => query.populate('vendor', 'storeName').select(fields).lean();
+  const { items, total } = hits
+    ? await pageByRank(Product, filter, hits, { skip, limit, query: (ids) => load(Product.find({ _id: { $in: ids } })) })
+    : await Promise.all([load(Product.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)), Product.countDocuments(filter)]).then(([list, n]) => ({ items: list, total: n }));
   res.json(paginated(items, total, page, limit));
 }
 

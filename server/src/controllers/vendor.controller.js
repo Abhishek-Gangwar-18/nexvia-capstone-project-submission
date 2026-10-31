@@ -6,7 +6,8 @@ import { Product, PRODUCT_LIMITS } from '../models/Product.js';
 import { Category } from '../models/Category.js';
 import { Order } from '../models/Order.js';
 import { invalidateUser } from '../services/session.js';
-import { indexProducts } from '../services/search.js';
+import { indexProducts, productIdsMatching } from '../services/search.js';
+import { pageByRank } from '../services/entitySearch.js';
 import { invalidateCatalog, invalidateProducts } from '../services/catalog.js';
 import { deleteReplaced } from '../services/storage.js';
 import { transitionPackage, withPackageLock } from '../services/orders.js';
@@ -314,7 +315,12 @@ async function hideIfCategoryGone(product) {
 export async function listMyProducts(req, res) {
   const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 12 });
   const filter = { vendor: req.vendor._id, deletedAt: null };
-  if (req.query.q) {
+  // Search: Elasticsearch (typo tolerant) plus exact SKU; MongoDB text match while it is unavailable.
+  const hits = req.query.q ? await productIdsMatching(req.query.q, { vendorId: req.vendor._id }) : null;
+  if (hits) {
+    const skuHits = await Product.find({ vendor: req.vendor._id, sku: new RegExp(`^${escapeRegex(req.query.q)}$`, 'i') }).distinct('_id');
+    hits.unshift(...skuHits.map(String).filter((id) => !hits.includes(id)));
+  } else if (req.query.q) {
     const rx = new RegExp(escapeRegex(req.query.q), 'i');
     filter.$or = [{ title: rx }, { sku: rx }, { brand: rx }];
   }
@@ -333,10 +339,14 @@ export async function listMyProducts(req, res) {
     stock: { stock: 1 },
     best_selling: { sold: -1 },
   };
-  const [items, total] = await Promise.all([
-    Product.find(filter).sort(sorts[req.query.sort] || sorts.newest).skip(skip).limit(limit).lean(),
-    Product.countDocuments(filter),
-  ]);
+  // While searching, best match first unless the seller picked a sort.
+  const { items, total } =
+    hits && !sorts[req.query.sort]
+      ? await pageByRank(Product, filter, hits, { skip, limit, query: (ids) => Product.find({ _id: { $in: ids } }).lean() })
+      : await Promise.all([
+          Product.find(hits ? { ...filter, _id: { $in: hits } } : filter).sort(sorts[req.query.sort] || sorts.newest).skip(skip).limit(limit).lean(),
+          Product.countDocuments(hits ? { ...filter, _id: { $in: hits } } : filter),
+        ]).then(([list, n]) => ({ items: list, total: n }));
   res.json(paginated(items, total, page, limit));
 }
 

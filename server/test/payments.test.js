@@ -11,14 +11,16 @@ const src = (path) => new URL(`../src/${path}`, import.meta.url).href;
 let intent;
 let captured = 0;
 mock.module('stripe', {
-  defaultExport: class FakeStripe {
-    paymentIntents = {
-      retrieve: async () => ({ ...intent }),
-      capture: async () => {
-        captured += 1;
-        return { ...intent, status: 'succeeded' };
-      },
-    };
+  exports: {
+    default: class FakeStripe {
+      paymentIntents = {
+        retrieve: async () => ({ ...intent }),
+        capture: async () => {
+          captured += 1;
+          return { ...intent, status: 'succeeded' };
+        },
+      };
+    },
   },
 });
 

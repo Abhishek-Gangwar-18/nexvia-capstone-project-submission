@@ -22,7 +22,15 @@ mock.module(src('services/payment.js'), {
   },
 });
 mock.module(src('services/search.js'), {
-  exports: { indexProducts: () => {}, removeFromIndex: async () => {} },
+  exports: {
+    indexProducts: () => {},
+    removeFromIndex: async () => {},
+    // used by services/entitySearch.js (store and user search); no Elasticsearch in tests
+    searchClient: () => null,
+    reportSearchError: () => {},
+    onSearchRecovered: () => {},
+    productIdsMatching: async () => null,
+  },
 });
 
 const { Order } = await import(src('models/Order.js'));
