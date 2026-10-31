@@ -132,7 +132,7 @@ describe('index build', () => {
   test('startup builds a versioned index behind the alias; only sellable products are searchable', async () => {
     await search.syncIndexIfNeeded();
     const build = liveBuild();
-    assert.match(build, new RegExp(`^${ALIAS}-v${search.INDEX_VERSION}-\\d+$`));
+    assert.match(build, new RegExp(`^${ALIAS}-v${search.INDEX_VERSION}-\\d+-[a-f\\d]{6}$`));
     const docs = docsOf(build);
     assert.equal(docs.size, 4, 'deleted and hidden products stay in the index, inactive');
     assert.deepEqual([...docs.values()].map((d) => d.isActive), [true, false, false, false]);

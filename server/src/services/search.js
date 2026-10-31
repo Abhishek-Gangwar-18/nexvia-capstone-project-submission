@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import mongoose from 'mongoose';
 import { Client } from '@elastic/elasticsearch';
 import { env } from '../config/env.js';
@@ -104,7 +105,7 @@ export const MAPPINGS = {
   },
 };
 
-export const SORTS = ['relevance', 'popular', 'price_asc', 'price_desc', 'rating', 'newest', 'discount'];
+export const SORTS = ['popular', 'price_asc', 'price_desc', 'rating', 'newest', 'discount'];
 
 /** The engine serving searches right now: MongoDB while Elasticsearch is not configured or unreachable. */
 export const searchEngine = () => (available ? 'elasticsearch' : 'mongodb');
@@ -288,7 +289,8 @@ async function switchAlias(name) {
 async function rebuildIndex() {
   return withLock('search:reindex', 10 * 60, 'A search reindex is already running', async () => {
     const startedAt = new Date();
-    const name = `${ALIAS}-v${INDEX_VERSION}-${startedAt.getTime()}`;
+    // The random part keeps two rebuilds started in the same millisecond from colliding.
+    const name = `${ALIAS}-v${INDEX_VERSION}-${startedAt.getTime()}-${crypto.randomBytes(3).toString('hex')}`;
     await es.indices.create({ index: name, settings: SETTINGS, mappings: MAPPINGS });
     let count;
     try {
@@ -366,7 +368,7 @@ export function normalizeSearchParams(raw = {}) {
     rating: num(raw.rating),
     inStock: ['1', 'true'].includes(String(raw.inStock)),
     vendor: mongoose.isValidObjectId(raw.vendor) ? String(raw.vendor) : '',
-    sort: SORTS.includes(raw.sort) ? raw.sort : 'relevance',
+    sort: SORTS.includes(raw.sort) ? raw.sort : 'popular',
     page: Math.max(1, parseInt(raw.page, 10) || 1),
     limit: Math.min(48, Math.max(1, parseInt(raw.limit, 10) || 24)),
   };
@@ -413,8 +415,9 @@ export function buildSearchRequest(p, { relaxed = false, index = ALIAS } = {}) {
   const postFilters = [categoryFilter, brandFilter].filter(Boolean);
 
   const sortMap = {
-    relevance: p.q ? ['_score', { sold: 'desc' }] : [{ sold: 'desc' }],
-    popular: [{ sold: 'desc' }],
+    // The default sort. With search text the best matches still come first (then sales); without it,
+    // best-sellers first. Unknown sorts (e.g. an old ?sort=relevance link) fall back to this.
+    popular: p.q ? ['_score', { sold: 'desc' }] : [{ sold: 'desc' }],
     price_asc: [{ price: 'asc' }],
     price_desc: [{ price: 'desc' }],
     rating: [{ rating: 'desc' }, { numRatings: 'desc' }],
@@ -492,7 +495,6 @@ async function mongoSearch(p) {
   const categoryFilter = p.category ? { category: new mongoose.Types.ObjectId(p.category) } : {};
   const brandFilter = p.brands.length ? { brand: { $in: p.brands } } : {};
   const sortMap = {
-    relevance: { sold: -1 },
     popular: { sold: -1 },
     price_asc: { price: 1 },
     price_desc: { price: -1 },

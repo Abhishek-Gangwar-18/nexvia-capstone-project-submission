@@ -39,25 +39,37 @@ export function streamInvoice(order, customer, res) {
   // Parties
   y = 140;
   const colWidth = width / 3;
+  // Lines flow by their measured height, so one that wraps (a long payment reference) pushes the next
+  // down instead of overlapping it. A line can be { text, size, color } for smaller/muted text.
   const block = (title, lines, x) => {
-    doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(8).text(title.toUpperCase(), x, y, { width: colWidth - 12, characterSpacing: 1 });
-    doc.fillColor(COLORS.ink).font('Helvetica').fontSize(10);
-    lines.filter(Boolean).forEach((line, i) => doc.text(line, x, y + 16 + i * 14, { width: colWidth - 12 }));
+    const w = colWidth - 12;
+    doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(8).text(title.toUpperCase(), x, y, { width: w, characterSpacing: 1 });
+    let lineY = y + 16;
+    for (const line of lines.filter(Boolean)) {
+      const { text, size = 10, color = COLORS.ink } = typeof line === 'string' ? { text: line } : line;
+      doc.fillColor(color).font('Helvetica').fontSize(size);
+      doc.text(text, x, lineY, { width: w, lineGap: 1 });
+      lineY += doc.heightOfString(text, { width: w, lineGap: 1 }) + 2;
+    }
+    return lineY;
   };
   const a = order.shippingAddress || {};
-  block('Billed to', [customer?.name, customer?.email, a.phone], left);
-  block('Ship to', [a.fullName, a.line1, a.line2, `${a.city}, ${a.state} ${a.pincode}`], left + colWidth);
-  block(
-    'Payment',
-    [
-      order.payment.provider === 'stripe' ? 'Stripe' : 'Test gateway',
-      order.payment.paymentId ? `Ref: ${order.payment.paymentId}` : null,
-      `Status: ${order.payment.status.toUpperCase()}`,
-      order.payment.paidAt ? `Paid on ${date(order.payment.paidAt)}` : null,
-    ],
-    left + colWidth * 2,
-  );
-  y += 96;
+  const bottoms = [
+    block('Billed to', [customer?.name, customer?.email, a.phone], left),
+    block('Ship to', [a.fullName, a.line1, a.line2, `${a.city}, ${a.state} ${a.pincode}`], left + colWidth),
+    block(
+      'Payment',
+      [
+        order.payment.provider === 'stripe' ? 'Stripe' : 'Test gateway',
+        `Status: ${order.payment.status.toUpperCase()}`,
+        order.payment.paidAt ? `Paid on ${date(order.payment.paidAt)}` : null,
+        order.payment.paymentId ? { text: 'Reference', size: 8, color: COLORS.muted } : null,
+        order.payment.paymentId ? { text: order.payment.paymentId, size: 8 } : null,
+      ],
+      left + colWidth * 2,
+    ),
+  ];
+  y = Math.max(...bottoms) + 24;
 
   // Packages
   const cols = { item: left + 10, qty: left + width * 0.6, price: left + width * 0.7, total: left + width * 0.84 };
