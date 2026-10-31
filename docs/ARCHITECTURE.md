@@ -320,8 +320,9 @@ An open cart must not show stale stock, prices or coupons. `services/productEven
 | `vendors` | `status` changed (suspended, approved) | Every product of the store counts as changed |
 | `coupons` | Any update or delete | `coupon` is emitted |
 
-`GET /cart/events` (customers) is a Server-Sent Events stream. It sends `cart` when a changed product is in **this**
-customer's cart and `coupon` on any coupon change, with a ping every 25 s; `Cache-Control: no-transform` keeps
+`GET /cart/events` (customers) is a Server-Sent Events stream, at most 5 open per user (the 6th gets 429). It sends
+`cart` when a changed product is in **this** customer's cart and `coupon` (no id, so private coupons stay hidden) on
+any coupon change, with a ping every 25 s; `Cache-Control: no-transform` keeps
 compression from buffering it. The client (`useCartLiveUpdates`, read with `fetch` so the Bearer token is sent)
 refetches the cart and that product page, reloads coupon offers and re-checks the applied coupon (removing it with a
 notice when it no longer applies). It reconnects with backoff and a fresh access token. As a fallback the cart,
@@ -361,7 +362,14 @@ sequenceDiagram
   refreshing at once) without issuing a new cookie. Used again later, it counts as stolen and the whole session is revoked.
 - **The client** keeps the access token in memory and only the profile in localStorage. One refresh runs at a time;
   requests that get `TOKEN_EXPIRED` wait for it and retry once. On a page reload the first request refreshes first.
-  Any other 401 (`SESSION_ENDED`, `INVALID_TOKEN`, `NO_SESSION`) signs the user out.
+  Any other 401 (`SESSION_ENDED`, `INVALID_TOKEN`, `NO_SESSION`) signs the user out: the profile and every cached
+  query are dropped and the app goes to the home page, signed out, with "Your session has expired". A deliberate
+  logout skips the message. A 503 (database unreachable) never signs anyone out.
+- **Opening the site with a saved profile** (no access token in memory yet) shows a loading screen until
+  `/auth/refresh` answers, so an expired session lands straight on the signed-out home page (even from `/account`,
+  `/vendor` or `/admin`) with no flash of the signed-in site. If the API can't be reached, the saved profile is kept.
+- **Profile reloads** (`refreshMe`) share one in-flight `GET /auth/me`; callers after a save pass `fresh` to get a
+  new answer.
 - **Revocation:** logout (this device, works from the cookie even after the access token expired), log out of one
   device, log out of all devices, password change (all other devices; this one gets a new session), admin block (all).
 - **Blocked accounts:** blocking revokes every session, and from then on the account gets `403 ACCOUNT_BLOCKED`
@@ -536,6 +544,17 @@ atomic status change, so a double click can't apply it twice.
   matching (description included) and the response has `relaxed: true`, which the search page explains. Price,
   rating and stock go in the bool filter; category and brand go in `post_filter`, so each facet still shows its other
   options. `createdAt` breaks sort ties, so pages never swap products.
+- **Every search box uses it.** Besides the shop's product search, `services/entitySearch.js` keeps two more
+  indices: `<alias>-vendors` (store name, tagline, email, phone, GSTIN, city/state, owner name and email) and
+  `<alias>-users` (name, email, phone). The shoppers' store search matches only what a store page shows (name,
+  tagline, city/state), so nobody can probe which store an email or phone belongs to; admin search uses every field.
+  Store search, admin vendors, admin users and the admin order search (by
+  customer, store or product name) query them, and the seller's and admin's product lists query the product index
+  (hidden and deleted products included, a seller only sees their own). Matching is typo tolerant (`fuzziness:
+  AUTO`), half-typed names match by prefix, and an exact email, phone or GSTIN ranks first. Elasticsearch returns
+  ids best-first; MongoDB applies the page's filters and keeps that order (`pageByRank`). Both indices are built on
+  startup when missing or out of step, rebuilt after an outage, and kept current by change streams on `vendors` and
+  `users`. Without Elasticsearch every list falls back to its MongoDB text match.
 - **Sorts.** `popular` (default), `price_asc`, `price_desc`, `rating`, `newest`, `discount`. With search text,
   `popular` ranks best matches first and then units sold; without it, best-sellers first. Any other value
   (including the old `relevance`) falls back to `popular`.
@@ -553,8 +572,10 @@ atomic status change, so a double click can't apply it twice.
 
 ## 10. API reference
 
-Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Auth uses `Authorization: Bearer <accessToken>`. Every error response has the shape
-`{ message, details? }`; auth errors carry `details.code`.
+Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). In development the client calls the same paths on its own origin (`http://localhost:5180/auth/me`) and the Vite proxy forwards them; page loads (`Accept: text/html`) of paths shared with the app, like `/cart` or `/admin/orders`, get the app instead. Auth uses `Authorization: Bearer <accessToken>`. Every error response has the shape
+`{ message, details? }`; auth errors carry `details.code`. When MongoDB can't be reached (network drop, Atlas
+election) a request waits at most 10 s (`serverSelectionTimeoutMS`) and gets `503 { details: { code: "DB_UNAVAILABLE" } }`
+with `Retry-After: 5`; the log gets one line per request and a single "connection lost / restored" pair.
 
 ### Auth and account — `/auth`
 | Method | Path | Access | Description |
@@ -567,6 +588,7 @@ Base URL is the API origin (e.g. `http://localhost:5050`, no `/api` prefix). Aut
 | GET | `/sessions` | auth | Signed-in devices (`current` marks this one) |
 | DELETE | `/sessions/:id` | auth | Log out one device |
 | GET | `/status` | auth | `{ ok: true }` while the session stands; the client's per-page check (401 / 403 `ACCOUNT_BLOCKED` otherwise) |
+| GET | `/status` | auth | `{ ok: true }`: cheap "is my session still valid?" check (token, active session, not blocked). The client calls it on page changes, tab focus and every 60 s, so a block, logout elsewhere or expired session takes effect on the next click |
 | GET / PATCH | `/me` | auth | Profile (including the store for sellers) / update name, phone, avatar |
 | PATCH | `/me/password` | auth | Change password → `{accessToken}`; other devices are logged out |
 | GET / POST | `/me/addresses` | auth | Address book |
@@ -601,7 +623,7 @@ replaced image only when the same user uploaded it. Seeded and external images a
 | Method | Path | Description |
 |---|---|---|
 | GET | `/cart` | Cart with live prices, `requestedQuantity` / `limited` when stock is short, `priceChanged`, `removed` (lines dropped on this read because the product stopped being sold, reported once), summary |
-| GET | `/cart/events` | Server-Sent Events: `ready`, then `cart` (a product in your cart changed) and `coupon` (a coupon changed) |
+| GET | `/cart/events` | Server-Sent Events: `ready`, then `cart` (a product in your cart changed) and `coupon` (a coupon changed). At most 5 per user (429) |
 | POST | `/cart/items` | `{productId, quantity}` sets the line's total quantity (adds it if missing) |
 | DELETE | `/cart/items/:productId` | Remove a line |
 | DELETE | `/cart` | Empty the cart |

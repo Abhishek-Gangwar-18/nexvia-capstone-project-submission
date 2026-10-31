@@ -61,6 +61,8 @@ Open **http://localhost:5180**.
 
 - **Empty database:** the API seeds demo data automatically: 20 customers, 5 stores, 184 products from DummyJSON,
   about 1,180 ratings and reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
+  `pnpm --dir server seed:fresh --yes` wipes the database, the app's S3 images and Redis and reseeds with every image
+  uploaded to S3 (stop the API first). It refuses to run with `NODE_ENV=production` unless `--production` is added too.
 - **Tests:** `pnpm --dir server test` runs the API unit tests (no database or services needed).
 - **Live service checks:** `pnpm --dir server redis:check`, `s3:check` and `es:check` test the real Redis, S3 bucket and
   Elasticsearch from `server/.env`. Each touches only its own service (temporary keys, one test image, a temporary
@@ -98,7 +100,7 @@ Edit `server/.env` (copy it from `server/.env.example`) and restart the API. The
 |---|---|---|
 | **MongoDB Atlas** | `MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/vendora?retryWrites=true&w=majority` | Add your IP under Atlas → Network Access. An empty database is seeded on first start, and payments are finalized in multi-document transactions (Atlas is a replica set). If Node can't resolve the SRV record (`querySrv ECONNREFUSED` on some Windows setups), the API retries via public DNS automatically |
 | **Redis** | Local: `docker compose up -d redis`, then `REDIS_URL=redis://localhost:6379`. Production: a hosted Redis (Upstash `rediss://...` or Render Key Value) | Sessions, locks (packages, refunds, checkout), login/refresh/password rate limits, cart and page cache. Run `pnpm --dir server redis:check` to test the connection. Required in production |
-| **Elasticsearch** | `ELASTICSEARCH_NODE=http://localhost:9200` (+ `ELASTICSEARCH_API_KEY` for Elastic Cloud) | Product search, facets and typeahead with typo tolerance and synonyms. The index is built from MongoDB on startup, rebuilt without downtime, and search falls back to MongoDB during an outage. Run `pnpm --dir server es:check` to test it |
+| **Elasticsearch** | `ELASTICSEARCH_NODE=http://localhost:9200` (+ `ELASTICSEARCH_API_KEY` for Elastic Cloud) | Product search, facets and typeahead with typo tolerance and synonyms, plus typo-tolerant search for stores, users, admin orders and the seller/admin product lists. The index is built from MongoDB on startup, rebuilt without downtime, and search falls back to MongoDB during an outage. Run `pnpm --dir server es:check` to test it |
 | **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | Image uploads. The bucket needs public read for `products/*`, `stores/*`, `avatars/*`, `reviews/*` and `returns/*` (or a CloudFront URL in `AWS_S3_PUBLIC_URL`); the IAM key only needs `s3:PutObject` and `s3:DeleteObject`. Run `pnpm --dir server s3:check` to test the bucket |
 | **Stripe** | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (test keys) | The Stripe Payment Element replaces the test gateway; see *Stripe setup* below |
 
@@ -157,7 +159,14 @@ error and shows in Admin → Payments.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
 - Root directory: `client`, build `pnpm build`, output `dist`
-- Environment: `VITE_API_URL=https://<your-api>`
+- Environment: `VITE_API_URL=https://<your-api>` (the API's origin, no `/api` suffix)
+
+**Security checklist before going live**
+- Atlas → Network Access: allow only the API host's outbound IPs, not `0.0.0.0/0`.
+- Elasticsearch must require authentication (Elastic Cloud API key) and must not be reachable from the internet:
+  the store and user indices hold emails and phone numbers.
+- Stripe webhook URL: `https://<your-api>/payments/webhook` (no `/api`).
+- MongoDB must be a replica set (Atlas is) for transactions and live cart updates.
 
 ---
 
@@ -208,5 +217,13 @@ error and shows in Admin → Payments.
 - **"Cannot reach the server":** make sure the terminal running `pnpm --dir server dev` says `Vendora API ready`.
 - **Signed out after updating:** sessions now use refresh tokens; sign in again once.
 - **Stale pages after `pnpm --dir server seed`:** restart the API so the in-memory cache is cleared. With Redis, the seed script clears it for you.
+- **"The service is temporarily unavailable" / `503 DB_UNAVAILABLE`:** the API can't reach MongoDB. The log shows
+  `MongoDB connection lost` and, once it is back, `MongoDB connection restored`; the driver reconnects on its own.
+  With Atlas this is almost always the network: Wi-Fi packet loss (run `ping 8.8.8.8 -n 20`), a VPN or antivirus
+  "web shield", or a new public IP missing from Atlas → Network Access. A local MongoDB (`docker-compose.yml`) avoids it.
+- **Requests to `/api/...` return 404:** the API has no `/api` prefix any more (`/auth/me`, `/cart`, ...). Hard refresh
+  the client and sign in once; the old refresh cookie lived under `/api/auth`.
+- **Signed out with "Your session has expired":** the refresh session ended (30 days idle, 90 days at most, or logged
+  out everywhere / password changed on another device). Sign in again.
 
 Seed data comes from [DummyJSON](https://dummyjson.com), converted to INR.

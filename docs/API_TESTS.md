@@ -838,7 +838,7 @@ filters combine). The 8.16 calls return 400 with, in order: `status must be one 
 ## 9. Live updates and race conditions
 
 Most of these need two terminals (or two Postman tabs): one holding the event stream, one making the change.
-Restore what you change afterwards (stock, coupon, visibility). Case 9.5–9.7 need the customer's email verified.
+Restore what you change afterwards (stock, coupon, visibility).
 
 | # | Case | Expected |
 |---|---|---|
@@ -856,6 +856,10 @@ Restore what you change afterwards (stock, coupon, visibility). Case 9.5–9.7 n
 | 9.12 | Admin: block that store's owner without `openOrders` | the same 409 `OPEN_ORDERS`; nothing changes |
 | 9.13 | `openOrders: "maybe"` | 400 `openOrders: Invalid enum value. Expected 'cancel' \| 'keep'...` |
 | 9.14 | Vendor or admin token on `GET /cart` | 403 `You do not have permission to perform this action` |
+| 9.15 | Open `GET /cart/events` 6 times at once with the same customer token | five 200 streams, the 6th 429 `Too many open live connections...` |
+| 9.16 | Shopper store search by a seller's phone or GSTIN (`GET /stores?q=<phone>`); the same as admin (`GET /admin/vendors?q=<phone>`) | shoppers: `total: 0` (private fields aren't searchable); admin: the store |
+| 9.17 | `GET /auth/status` with a token / without / after "log out of all devices" | 200 `{ ok: true }` / 401 / 401 (the app then shows the signed-out home page) |
+| 9.18 | Typos in every search box: `GET /stores?q=teknova`, `/admin/vendors?q=frescart`, `/admin/users?q=anaya`, `/admin/products?q=iphon`, `/vendor/products?q=samsng` | the right store, user or products first (Elasticsearch); with Elasticsearch stopped the same lists still answer (MongoDB text match) |
 
 ```bash
 # 9.1
@@ -892,6 +896,20 @@ curl -i -X PATCH "{{baseUrl}}/admin/vendors/{{storeId}}" -H "Authorization: Bear
 # 9.14
 curl -i "{{baseUrl}}/cart" -H "Authorization: Bearer {{vendorToken}}"
 curl -i "{{baseUrl}}/cart" -H "Authorization: Bearer {{adminToken}}"
+# 9.15  (run 6 times at once, e.g. 6 terminals)
+curl -N "{{baseUrl}}/cart/events" -H "Authorization: Bearer {{customerToken}}"
+# 9.16  (SELLER_PHONE from GET /admin/vendors -> items[0].phone)
+curl -i "{{baseUrl}}/stores?q=SELLER_PHONE"
+curl -i "{{baseUrl}}/admin/vendors?q=SELLER_PHONE" -H "Authorization: Bearer {{adminToken}}"
+# 9.17
+curl -i "{{baseUrl}}/auth/status" -H "Authorization: Bearer {{customerToken}}"
+curl -i "{{baseUrl}}/auth/status"
+# 9.18
+curl -i "{{baseUrl}}/stores?q=teknova"
+curl -i "{{baseUrl}}/admin/vendors?q=frescart" -H "Authorization: Bearer {{adminToken}}"
+curl -i "{{baseUrl}}/admin/users?q=anaya" -H "Authorization: Bearer {{adminToken}}"
+curl -i "{{baseUrl}}/admin/products?q=iphon" -H "Authorization: Bearer {{adminToken}}"
+curl -i "{{baseUrl}}/vendor/products?q=samsng" -H "Authorization: Bearer {{vendorToken}}"
 ```
 
 ## Covered elsewhere
