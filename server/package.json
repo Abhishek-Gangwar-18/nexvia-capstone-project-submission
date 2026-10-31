@@ -9,6 +9,7 @@
     "dev": "nodemon --watch src --ext js,json src/index.js",
     "start": "node src/index.js",
     "seed": "node src/seed/seed.js",
+    "seed:fresh": "node scripts/seed-fresh.js",
     "test": "node --test --experimental-test-module-mocks --test-concurrency=1 \"test/**/*.test.js\"",
     "redis:check": "node scripts/redis-check.js",
     "s3:check": "node scripts/s3-check.js",
