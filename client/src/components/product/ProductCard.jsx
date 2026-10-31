@@ -1,17 +1,21 @@
 import { useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, Heart, Plus, ShoppingBag } from 'lucide-react';
-import { useCartActions } from '../../lib/cart';
+import { useCart, useCartActions } from '../../lib/cart';
 import { useWishlist } from '../../lib/hooks';
+import { useAuthModal } from '../../store/authModal';
+import { useAuth } from '../../store/auth';
+import { canShop } from '../../lib/roles';
 import { cn, discountOf } from '../../lib/format';
 import Price from '../ui/Price';
 import { RatingPill } from '../ui/Rating';
+import QuantityStepper from '../ui/QuantityStepper';
 import { Skeleton } from '../ui/Feedback';
 
-export function WishlistButton({ productId, className }) {
+/** `hoverOnly`: on desktop an unsaved product shows the heart only on hover; a saved one always shows it. */
+export function WishlistButton({ productId, className, hoverOnly = false }) {
   const wishlist = useWishlist();
-  const navigate = useNavigate();
   const active = wishlist.has(productId);
   if (wishlist.isLoggedIn && !wishlist.canUse) return null;
   return (
@@ -21,11 +25,12 @@ export function WishlistButton({ productId, className }) {
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (!wishlist.isLoggedIn) return navigate('/login');
+        if (!wishlist.isLoggedIn) return useAuthModal.getState().open('login');
         return wishlist.toggle(productId);
       }}
       className={cn(
         'flex h-9 w-9 items-center justify-center rounded-full bg-white/90 shadow-md ring-1 ring-black/5 backdrop-blur transition hover:scale-110 dark:bg-zinc-900/80 dark:ring-white/10',
+        hoverOnly && !active && 'md:opacity-0 md:group-hover:opacity-100',
         className,
       )}
       aria-label={active ? 'Remove from wishlist' : 'Add to wishlist'}
@@ -52,8 +57,19 @@ function useTilt() {
 }
 
 export default function ProductCard({ product, index = 0 }) {
-  const { add } = useCartActions();
+  const { add, update } = useCartActions();
+  const { items } = useCart();
+  const shopper = canShop(useAuth((s) => s.user));
   const [added, setAdded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Once the product is in the cart the card shows its quantity instead of "Add".
+  const inCart = items.find((i) => i.productId === product._id);
+  const maxQuantity = Math.min(10, inCart?.maxQuantity ?? product.stock ?? 10);
+  const changeQuantity = async (quantity) => {
+    setBusy(true);
+    await update(product._id, quantity);
+    setBusy(false);
+  };
   const tilt = useTilt();
   const discount = product.discount ?? discountOf(product);
   const outOfStock = product.stock <= 0;
@@ -62,7 +78,7 @@ export default function ProductCard({ product, index = 0 }) {
     e.preventDefault();
     e.stopPropagation();
     if (outOfStock) return;
-    const ok = await add(product, 1, { openDrawer: false });
+    const ok = await add(product, 1);
     if (ok) {
       setAdded(true);
       setTimeout(() => setAdded(false), 1600);
@@ -91,17 +107,29 @@ export default function ProductCard({ product, index = 0 }) {
             loading="lazy"
             className={cn('h-full w-full object-contain p-5 transition duration-500 group-hover:scale-[1.07]', outOfStock && 'opacity-50 grayscale')}
           />
-          <div className="absolute top-3 left-3 flex flex-col gap-1.5">
+          <div className="absolute top-3 left-3 flex flex-col items-start gap-1.5">
             {discount >= 5 && (
               <span className="rounded-lg bg-gradient-to-r from-rose-500 to-orange-500 px-2 py-1 text-[11px] font-bold text-white shadow-md shadow-rose-500/30">
-                −{discount}%
+                −{discount}% OFF
               </span>
             )}
             {product.sold > 500 && <span className="rounded-lg bg-zinc-900/85 px-2 py-1 text-[10px] font-bold tracking-wide text-white uppercase backdrop-blur">Bestseller</span>}
           </div>
-          <WishlistButton productId={product._id} className="absolute top-3 right-3 opacity-100 md:opacity-0 md:group-hover:opacity-100" />
+          <WishlistButton productId={product._id} hoverOnly className="absolute top-3 right-3" />
 
-          {!outOfStock && (
+          {shopper && !outOfStock && inCart && (
+            // Inside the card's <Link>: stop clicks here from opening the product page.
+            <div
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              className="absolute right-3 bottom-3 shadow-lg"
+            >
+              <QuantityStepper size="sm" value={inCart.quantity} max={maxQuantity} allowRemove disabled={busy} onChange={changeQuantity} />
+            </div>
+          )}
+          {shopper && !outOfStock && !inCart && (
             <motion.button
               type="button"
               onClick={quickAdd}

@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { CreditCard, Headphones, RotateCcw, ShieldCheck } from 'lucide-react';
 import { Logo } from '../ui/Brand';
+import { useAuth } from '../../store/auth';
 
 const PERKS = [
   { icon: ShieldCheck, title: 'Secure payments', text: 'Stripe-protected checkout' },
@@ -11,11 +12,23 @@ const PERKS = [
 
 const COLUMNS = [
   { title: 'Shop', links: [['All products', '/search'], ['Top stores', '/stores'], ['Deals', '/search?sort=discount'], ['New arrivals', '/search?sort=newest']] },
-  { title: 'Sell', links: [['Become a seller', '/sell'], ['Seller dashboard', '/vendor'], ['Seller login', '/login']] },
   { title: 'Account', links: [['My orders', '/orders'], ['Wishlist', '/account?tab=wishlist'], ['Addresses', '/account?tab=addresses']] },
 ];
 
+/** The Sell column depends on who is looking: no seller invitation for sellers or admins. */
+function sellColumn(user) {
+  if (!user) return { title: 'Sell', links: [['Become a seller', '/sell'], ['Seller login', '/login']] };
+  if (user.role === 'customer') return { title: 'Sell', links: [['Become a seller', '/sell']] };
+  if (user.role === 'vendor') {
+    return { title: 'Sell', links: [user.vendor?.status === 'approved' ? ['Seller dashboard', '/vendor'] : ['Application status', '/vendor/onboarding']] };
+  }
+  return null; // admin
+}
+
 export default function Footer() {
+  const user = useAuth((s) => s.user);
+  const sell = sellColumn(user);
+  const columns = [COLUMNS[0], ...(sell ? [sell] : []), ...COLUMNS.slice(1)];
   return (
     <footer className="mt-20 border-t border-zinc-200/70 bg-white dark:border-white/[0.06] dark:bg-surface-dark">
       <div className="container-page grid grid-cols-2 gap-4 border-b border-zinc-100 py-8 lg:grid-cols-4 dark:border-white/5">
@@ -39,7 +52,7 @@ export default function Footer() {
             automatically between the seller and the platform.
           </p>
         </div>
-        {COLUMNS.map((col) => (
+        {columns.map((col) => (
           <div key={col.title}>
             <p className="text-sm font-semibold">{col.title}</p>
             <ul className="mt-3 space-y-2">
@@ -56,7 +69,7 @@ export default function Footer() {
       </div>
       <div className="border-t border-zinc-100 py-5 dark:border-white/5">
         <p className="container-page text-center text-xs muted">
-          © {new Date().getFullYear()} Vendora Marketplace · Built with React, Node.js, MongoDB, Elasticsearch, Redis, AWS S3 & Stripe Connect
+          © {new Date().getFullYear()} Vendora Marketplace
         </p>
       </div>
     </footer>

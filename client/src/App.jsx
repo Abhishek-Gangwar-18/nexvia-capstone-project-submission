@@ -1,14 +1,15 @@
 import { lazy, Suspense, useEffect } from 'react';
-import { Route, Routes } from 'react-router-dom';
+import { Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
 import {
   BarChart3, Boxes, Cog, LayoutDashboard, LayoutGrid, MessageSquare, CreditCard, RotateCcw, Package, Settings, ShoppingCart, Store, Ticket, Users, Wallet,
 } from 'lucide-react';
 import MainLayout from './components/layout/MainLayout';
 import DashboardLayout from './components/layout/DashboardLayout';
 import RequireAuth from './components/RequireAuth';
+import AuthModal, { AuthRedirect } from './components/auth/AuthModal';
 import { PageLoader } from './components/ui/Feedback';
 import { useAuth } from './store/auth';
-import { refreshMe } from './lib/session';
+import { checkSession, refreshMe } from './lib/session';
 
 const Home = lazy(() => import('./pages/Home'));
 const Search = lazy(() => import('./pages/Search'));
@@ -20,10 +21,9 @@ const Checkout = lazy(() => import('./pages/Checkout'));
 const Orders = lazy(() => import('./pages/Orders'));
 const OrderDetail = lazy(() => import('./pages/OrderDetail'));
 const Account = lazy(() => import('./pages/Account'));
-const Login = lazy(() => import('./pages/auth/Login'));
-const Register = lazy(() => import('./pages/auth/Register'));
 const Sell = lazy(() => import('./pages/Sell'));
 const NotFound = lazy(() => import('./pages/NotFound'));
+const Blocked = lazy(() => import('./pages/Blocked'));
 
 const VendorOnboarding = lazy(() => import('./pages/vendor/Onboarding'));
 const VendorDashboard = lazy(() => import('./pages/vendor/Dashboard'));
@@ -72,8 +72,16 @@ const ADMIN_NAV = [
   { to: '/admin/settings', label: 'Settings & system', icon: Cog },
 ];
 
+/** /register?role=vendor (the Sell page's old link) opens sign-up on the seller tab. */
+function RegisterRedirect() {
+  const [params] = useSearchParams();
+  return <AuthRedirect view="register" role={params.get('role') === 'vendor' ? 'vendor' : 'customer'} />;
+}
+
 export default function App() {
   const signedIn = useAuth((s) => Boolean(s.user));
+  const blocked = useAuth((s) => Boolean(s.blocked));
+  const { pathname } = useLocation();
 
   // On load: get a fresh access token from the refresh cookie (the API client does it before the first
   // request) and refresh the cached profile so role / store approval changes are picked up.
@@ -81,9 +89,34 @@ export default function App() {
     if (signedIn) refreshMe().catch(() => {});
   }, [signedIn]);
 
+  // Every page change re-checks the session (pages may render from cache without asking the API),
+  // as do coming back to the tab and a slow timer, so a block takes effect on the next click.
+  useEffect(() => {
+    if (signedIn) checkSession();
+  }, [signedIn, pathname]);
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    const timer = setInterval(checkSession, 60 * 1000);
+    window.addEventListener('focus', checkSession);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', checkSession);
+    };
+  }, [signedIn]);
+
+  // A blocked account sees nothing of the site, on any URL.
+  if (blocked) {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <Blocked />
+      </Suspense>
+    );
+  }
+
   return (
-    <Suspense fallback={<PageLoader />}>
-      <Routes>
+    <>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
         <Route element={<MainLayout />}>
           <Route index element={<Home />} />
           <Route path="search" element={<Search />} />
@@ -92,8 +125,8 @@ export default function App() {
           <Route path="store/:storeId" element={<StorePage />} />
           <Route path="cart" element={<Cart />} />
           <Route path="sell" element={<Sell />} />
-          <Route path="login" element={<Login />} />
-          <Route path="register" element={<Register />} />
+          <Route path="login" element={<AuthRedirect view="login" />} />
+          <Route path="register" element={<RegisterRedirect />} />
 
           <Route element={<RequireAuth roles={['customer']} />}>
             <Route path="checkout" element={<Checkout />} />
@@ -140,7 +173,10 @@ export default function App() {
             <Route path="settings" element={<AdminSettings />} />
           </Route>
         </Route>
-      </Routes>
-    </Suspense>
+        </Routes>
+      </Suspense>
+      {/* Outside Suspense so a lazy page loading behind it never unmounts the open modal. */}
+      <AuthModal />
+    </>
   );
 }

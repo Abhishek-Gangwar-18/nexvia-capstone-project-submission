@@ -4,13 +4,12 @@ import NotFound from './NotFound';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  BadgeCheck, Check, ChevronRight, Copy, MapPin, Package, RotateCcw, Share2, ShieldCheck, ShoppingBag, Star, Store, Tag, Truck, Zap,
+  BadgeCheck, Check, ChevronRight, Package, RotateCcw, Share2, ShieldCheck, ShoppingBag, Star, Store, Truck, Zap,
 } from 'lucide-react';
-import toast from 'react-hot-toast';
 import { api } from '../lib/api';
-import { cn, compactNumber, deliveryEstimate, discountOf, money } from '../lib/format';
+import { cn, compactNumber, discountOf, money } from '../lib/format';
 import { rememberProduct } from '../lib/hooks';
-import { useCartActions } from '../lib/cart';
+import { useCart, useCartActions } from '../lib/cart';
 import Price from '../components/ui/Price';
 import { Stars } from '../components/ui/Rating';
 import QuantityStepper from '../components/ui/QuantityStepper';
@@ -18,6 +17,10 @@ import { Segmented } from '../components/ui/Controls';
 import { ErrorState, PageLoader } from '../components/ui/Feedback';
 import { StoreAvatar } from '../components/ui/Brand';
 import { WishlistButton } from '../components/product/ProductCard';
+import ShareModal from '../components/product/ShareModal';
+import StaffProductActions from '../components/product/StaffProductActions';
+import { useAuth } from '../store/auth';
+import { canShop } from '../lib/roles';
 import ProductRail from '../components/product/ProductRail';
 import Reviews from '../components/product/Reviews';
 
@@ -33,7 +36,7 @@ function Gallery({ images, title, discount }) {
   };
 
   return (
-    <div className="flex flex-col-reverse gap-3 sm:flex-row">
+    <div className="flex min-w-0 flex-col-reverse gap-3 sm:flex-row sm:items-start">
       <div className="flex gap-2 overflow-x-auto scrollbar-none sm:max-h-[520px] sm:flex-col sm:overflow-y-auto">
         {images.map((img, i) => (
           <button
@@ -51,7 +54,7 @@ function Gallery({ images, title, discount }) {
         ))}
       </div>
       <div
-        className="card relative aspect-square flex-1 cursor-zoom-in overflow-hidden"
+        className="card relative aspect-square w-full min-w-0 flex-1 cursor-zoom-in self-start overflow-hidden"
         onMouseMove={onMove}
         onMouseLeave={() => setZoom((z) => ({ ...z, on: false }))}
       >
@@ -78,102 +81,25 @@ function Gallery({ images, title, discount }) {
   );
 }
 
-function DeliveryCheck() {
-  const [pincode, setPincode] = useState(() => localStorage.getItem('vendora-pincode') || '');
-  const [checked, setChecked] = useState(() => /^\d{6}$/.test(localStorage.getItem('vendora-pincode') || ''));
-  const valid = /^\d{6}$/.test(pincode);
-  const days = valid ? 2 + (Number(pincode[0]) % 4) : 3;
-
-  return (
-    <div className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
-      <p className="flex items-center gap-2 text-sm font-semibold">
-        <MapPin className="h-4 w-4 text-brand-600" /> Delivery
-      </p>
-      <form
-        className="mt-2 flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!valid) return toast.error('Enter a 6-digit pincode');
-          localStorage.setItem('vendora-pincode', pincode);
-          return setChecked(true);
-        }}
-      >
-        <input
-          value={pincode}
-          onChange={(e) => {
-            setPincode(e.target.value.replace(/\D/g, '').slice(0, 6));
-            setChecked(false);
-          }}
-          inputMode="numeric"
-          placeholder="Enter pincode"
-          className="input py-2"
-        />
-        <button type="submit" className="btn btn-secondary">Check</button>
-      </form>
-      <AnimatePresence>
-        {checked && valid && (
-          <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="mt-2 flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400">
-            <Truck className="h-4 w-4" /> Delivery by <span className="font-semibold">{deliveryEstimate(days)}</span> to {pincode}
-          </motion.p>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-function Offers({ vendorId }) {
-  const { data } = useQuery({
-    queryKey: ['coupons', vendorId],
-    queryFn: () => api.get('/coupons', { params: { vendors: vendorId } }).then((r) => r.data.coupons),
-  });
-  const [copied, setCopied] = useState(null);
-  if (!data?.length) return null;
-
-  const copy = async (code) => {
-    try {
-      await navigator.clipboard.writeText(code);
-    } catch {
-      /* clipboard blocked — the toast still shows the code */
-    }
-    setCopied(code);
-    toast.success(`Code ${code} copied`);
-    setTimeout(() => setCopied(null), 1500);
-  };
-
-  return (
-    <div>
-      <p className="mb-2 flex items-center gap-2 text-sm font-semibold">
-        <Tag className="h-4 w-4 text-emerald-600" /> Available offers
-      </p>
-      <div className="space-y-2">
-        {data.slice(0, 3).map((c) => (
-          <div key={c._id} className="flex items-center gap-3 rounded-xl bg-emerald-50/70 px-3 py-2 text-sm dark:bg-emerald-400/[0.06]">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-zinc-700 dark:text-zinc-300">{c.description}</p>
-              {c.vendor && <p className="text-[11px] text-emerald-700 dark:text-emerald-400">Store offer · {c.vendor.storeName}</p>}
-            </div>
-            <button type="button" onClick={() => copy(c.code)} className="flex shrink-0 items-center gap-1 rounded-lg border border-dashed border-emerald-500 px-2 py-1 font-mono text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-400/10">
-              {c.code} {copied === c.code ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export default function ProductDetail() {
   const { productId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { add } = useCartActions();
-  const [qty, setQty] = useState(1);
+  const { add, update } = useCartActions();
+  const { items: cartItems } = useCart();
+  const user = useAuth((s) => s.user);
+  // Only guests and customers buy; vendors and admins get their own actions instead.
+  const shopper = canShop(user);
   const [tab, setTab] = useState('description');
   const [adding, setAdding] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['product', productId],
     queryFn: () => api.get(`/products/${productId}`).then((r) => r.data),
+    // Stock and price change while the page is open: re-check on return to the tab or page.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
   const product = data?.product;
 
@@ -186,7 +112,6 @@ export default function ProductDetail() {
   }, [product, location.hash]);
 
   useEffect(() => {
-    setQty(1);
     if (product) {
       document.title = `${product.title} · Vendora`;
       rememberProduct({
@@ -213,25 +138,38 @@ export default function ProductDetail() {
   const outOfStock = product.stock <= 0;
   const cardProduct = { ...product, vendorId: product.vendor?._id, storeName: product.vendor?.storeName };
 
+  // The cart line for this product: once it exists, "Add to cart" turns into its quantity stepper.
+  const inCart = cartItems.find((i) => i.productId === product._id);
+  const maxQuantity = Math.min(10, inCart?.maxQuantity ?? product.stock);
+
   const addToCart = async (buyNow = false) => {
+    if (buyNow && inCart) return navigate('/cart');
     setAdding(true);
-    const ok = await add(cardProduct, qty, { openDrawer: !buyNow, silent: buyNow });
+    const ok = await add(cardProduct, 1, { silent: buyNow });
     setAdding(false);
     if (ok && buyNow) navigate('/cart');
+    return undefined;
   };
 
-  const share = async () => {
-    const url = window.location.href;
-    try {
-      if (navigator.share) await navigator.share({ title: product.title, url });
-      else {
-        await navigator.clipboard.writeText(url);
-        toast.success('Link copied');
-      }
-    } catch {
-      /* user cancelled share */
-    }
+  /** Quantity 0 removes the line, which brings "Add to cart" back. */
+  const changeQuantity = async (quantity) => {
+    setAdding(true);
+    await update(product._id, quantity);
+    setAdding(false);
   };
+
+  const cartControl = (compact = false) =>
+    inCart ? (
+      <div className={cn('flex items-center justify-center', !compact && 'flex-1')}>
+        <QuantityStepper value={inCart.quantity} max={maxQuantity} allowRemove disabled={adding} onChange={changeQuantity} size={compact ? 'sm' : 'md'} />
+      </div>
+    ) : (
+      <button type="button" onClick={() => addToCart(false)} disabled={adding} className={cn('btn btn-secondary', !compact && 'btn-lg flex-1')}>
+        {compact ? <Package className="h-4 w-4" /> : <ShoppingBag className="h-4 w-4" />} {compact ? 'Add' : 'Add to cart'}
+      </button>
+    );
+
+  const share = () => setSharing(true);
 
   return (
     <div className="pb-24 lg:pb-6">
@@ -244,18 +182,19 @@ export default function ProductDetail() {
           <span className="line-clamp-1 text-zinc-700 dark:text-zinc-300">{product.title}</span>
         </nav>
 
-        <div className="grid gap-8 lg:grid-cols-[1.1fr_1fr] xl:gap-12">
+        {/* minmax(0, …): a long title or the pincode form can't widen a column past the page. */}
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] xl:gap-12">
           <Gallery images={product.images.length ? product.images : [{ url: product.thumbnail }]} title={product.title} discount={discount} />
 
-          <div>
+          <div className="min-w-0">
             <div className="flex items-start justify-between gap-4">
-              <div>
+              <div className="min-w-0">
                 <Link to={`/search?brand=${encodeURIComponent(product.brand)}`} className="text-sm font-semibold text-brand-600 hover:underline dark:text-brand-300">
                   {product.brand}
                 </Link>
                 <h1 className="mt-1 font-display text-2xl leading-tight font-bold tracking-tight sm:text-3xl">{product.title}</h1>
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex shrink-0 gap-1.5">
                 <button type="button" onClick={share} className="btn-icon border border-zinc-200 dark:border-white/10" aria-label="Share">
                   <Share2 className="h-4 w-4" />
                 </button>
@@ -296,22 +235,18 @@ export default function ProductDetail() {
                 )}
               </div>
 
-              {!outOfStock && (
+              {!shopper && <StaffProductActions user={user} product={product} />}
+              {shopper && !outOfStock && (
                 <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <QuantityStepper value={qty} max={Math.min(product.stock, 10)} onChange={setQty} />
-                  <button type="button" onClick={() => addToCart(false)} disabled={adding} className="btn btn-secondary btn-lg flex-1">
-                    <ShoppingBag className="h-4 w-4" /> Add to cart
-                  </button>
+                  {cartControl()}
                   <button type="button" onClick={() => addToCart(true)} disabled={adding} className="btn btn-accent btn-lg flex-1">
-                    Buy now
+                    {inCart ? 'Go to cart' : 'Buy now'}
                   </button>
                 </div>
               )}
             </div>
 
             <div className="mt-5 space-y-5">
-              <Offers vendorId={product.vendor._id} />
-              <DeliveryCheck />
 
               <Link to={`/store/${product.vendor._id}`} className="group flex items-center gap-4 rounded-2xl border border-zinc-200 p-4 transition hover:border-brand-300 hover:bg-brand-50/30 dark:border-white/10 dark:hover:bg-brand-500/5">
                 <StoreAvatar store={product.vendor} />
@@ -402,20 +337,19 @@ export default function ProductDetail() {
 
       <ProductRail className="mt-8" title="You may also like" subtitle={`More from ${data.category?.name || 'this category'}`} products={data.related} viewAll={`/search?category=${product.category}`} />
 
-      {!outOfStock && (
+      {shopper && !outOfStock && (
         <div className="glass fixed inset-x-0 bottom-0 z-30 flex items-center gap-3 border-t px-4 py-3 lg:hidden">
           <div className="min-w-0 flex-1">
             <p className="truncate text-xs muted">{product.title}</p>
             <p className="font-display text-lg font-bold">{money(product.price)}</p>
           </div>
-          <button type="button" onClick={() => addToCart(false)} className="btn btn-secondary">
-            <Package className="h-4 w-4" /> Add
-          </button>
-          <button type="button" onClick={() => addToCart(true)} className="btn btn-accent">
-            Buy now
+          {cartControl(true)}
+          <button type="button" onClick={() => addToCart(true)} disabled={adding} className="btn btn-accent">
+            {inCart ? 'Go to cart' : 'Buy now'}
           </button>
         </div>
       )}
+      <ShareModal open={sharing} onClose={() => setSharing(false)} product={product} />
     </div>
   );
 }

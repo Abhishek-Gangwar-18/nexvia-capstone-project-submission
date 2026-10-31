@@ -5,9 +5,9 @@ import { ExternalLink, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../../store/auth';
 import { logout } from '../../lib/session';
 import { cn } from '../../lib/format';
-import { Logo, StoreAvatar, UserAvatar } from '../ui/Brand';
+import { Logo, StoreAvatar } from '../ui/Brand';
 import StatusBadge from '../ui/StatusBadge';
-import { ThemeToggle } from './Navbar';
+import { AccountMenu, ThemeToggle } from './Navbar';
 
 /** Sidebar shell shared by the seller dashboard and the admin console. */
 export default function DashboardLayout({ nav, title, variant }) {
@@ -112,13 +112,7 @@ export default function DashboardLayout({ nav, title, variant }) {
         <p className="text-sm font-semibold text-zinc-500 dark:text-zinc-400">{title}</p>
         <div className="ml-auto flex items-center gap-2">
           <ThemeToggle />
-          <div className="flex items-center gap-2 rounded-2xl py-1 pr-3 pl-1">
-            <UserAvatar user={user} className="h-8 w-8" />
-            <div className="hidden leading-tight sm:block">
-              <p className="text-sm font-semibold">{user?.name}</p>
-              <p className="text-[11px] muted">{user?.email}</p>
-            </div>
-          </div>
+          {user && <AccountMenu user={user} />}
         </div>
       </header>
 

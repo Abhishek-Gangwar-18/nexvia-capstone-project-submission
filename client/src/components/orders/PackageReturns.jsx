@@ -19,10 +19,15 @@ export function returnDeadline(pkg, windowDays) {
   return delivered ? new Date(new Date(delivered).getTime() + windowDays * DAY) : null;
 }
 
-function ReturnForm({ order, pkg, returns, onDone }) {
+/** Package lines that still have units to return (requested, approved, received or refunded units don't count). */
+function returnableLines(pkg, returns) {
   const returned = new Map();
   returns.filter((r) => COUNTED.includes(r.status)).forEach((r) => r.items.forEach((i) => returned.set(String(i.product), (returned.get(String(i.product)) || 0) + i.quantity)));
-  const lines = pkg.items.map((i) => ({ ...i, left: i.quantity - (returned.get(String(i.product)) || 0) })).filter((i) => i.left > 0);
+  return pkg.items.map((i) => ({ ...i, left: i.quantity - (returned.get(String(i.product)) || 0) })).filter((i) => i.left > 0);
+}
+
+function ReturnForm({ order, pkg, returns, onDone }) {
+  const lines = returnableLines(pkg, returns);
   const [qty, setQty] = useState(Object.fromEntries(lines.map((l) => [l.product, 0])));
   const [reasonCode, setReasonCode] = useState('');
   const [note, setNote] = useState('');
@@ -92,7 +97,9 @@ export default function PackageReturns({ order, pkg, returns, windowDays }) {
   });
   const mine = returns.filter((r) => String(r.package) === String(pkg._id));
   const deadline = returnDeadline(pkg, windowDays);
-  const canReturn = pkg.status === 'delivered' && deadline && Date.now() <= deadline.getTime() && !['releasing', 'released'].includes(pkg.payout?.status);
+  const inWindow = pkg.status === 'delivered' && deadline && Date.now() <= deadline.getTime() && !['releasing', 'released'].includes(pkg.payout?.status);
+  // Hidden once every unit already has a return (a rejected or withdrawn return frees its units again).
+  const canReturn = inWindow && returnableLines(pkg, mine).length > 0;
   if (!mine.length && !canReturn) return null;
 
   return (

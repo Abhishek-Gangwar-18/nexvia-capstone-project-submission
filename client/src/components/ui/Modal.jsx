@@ -1,11 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, X } from 'lucide-react';
 import { cn } from '../../lib/format';
 import { Spinner } from './Feedback';
 
-export function Modal({ open, onClose, title, description, children, footer, size = 'md' }) {
+/** `bare` drops the header bar and body padding (only a floating close button), for custom layouts. */
+export function Modal({ open, onClose, title, description, children, footer, size = 'md', bare = false }) {
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => e.key === 'Escape' && onClose?.();
@@ -43,7 +44,12 @@ export function Modal({ open, onClose, title, description, children, footer, siz
               widths[size],
             )}
           >
-            {(title || onClose) && (
+            {bare && onClose && (
+              <button type="button" onClick={onClose} className="btn-icon absolute top-3 right-3 z-10 h-9 w-9" aria-label="Close">
+                <X className="h-4 w-4" />
+              </button>
+            )}
+            {!bare && (title || onClose) && (
               <div className="flex items-start justify-between gap-4 border-b border-zinc-100 px-6 py-4 dark:border-white/[0.06]">
                 <div>
                   {title && <h2 className="font-display text-lg font-bold">{title}</h2>}
@@ -56,7 +62,7 @@ export function Modal({ open, onClose, title, description, children, footer, siz
                 )}
               </div>
             )}
-            <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
+            <div className={cn('flex-1 overflow-y-auto', !bare && 'px-6 py-5')}>{children}</div>
             {footer && <div className="flex justify-end gap-2 border-t border-zinc-100 bg-zinc-50/60 px-6 py-4 dark:border-white/[0.06] dark:bg-white/[0.02]">{footer}</div>}
           </motion.div>
         </div>
@@ -99,5 +105,23 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, description, co
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** ConfirmDialog that asks for a required reason; onConfirm receives the trimmed text. */
+export function ReasonDialog({ open, onClose, onConfirm, label = 'Reason', placeholder, ...props }) {
+  const [reason, setReason] = useState('');
+  useEffect(() => {
+    if (open) setReason('');
+  }, [open]);
+  const text = reason.trim();
+  return (
+    <ConfirmDialog open={open} onClose={onClose} onConfirm={() => text && onConfirm(text)} {...props}>
+      <form className="mt-4" onSubmit={(e) => { e.preventDefault(); if (text) onConfirm(text); }}>
+        <label className="label">{label}</label>
+        <textarea autoFocus rows={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} placeholder={placeholder} className="input resize-none" />
+        {!text && <p className="mt-1 text-xs muted">A reason is required.</p>}
+      </form>
+    </ConfirmDialog>
   );
 }

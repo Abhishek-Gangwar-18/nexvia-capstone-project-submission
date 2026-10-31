@@ -52,23 +52,23 @@ export default function StorePage() {
 
   return (
     <div>
-      <div className={cn('relative h-48 bg-gradient-to-br sm:h-60', gradientFor(store.storeName))}>
-        {store.banner && <img src={store.banner} alt="" className="absolute inset-0 h-full w-full object-cover" />}
-        <div className="absolute inset-0 bg-grid opacity-30" />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
+      {/* Banner is decoration only: no text sits on it, so any banner colour/image stays readable. */}
+      <div className={cn('relative h-40 overflow-hidden bg-gradient-to-br sm:h-56', gradientFor(store.storeName))}>
+        {store.banner ? <img src={store.banner} alt="" className="absolute inset-0 h-full w-full object-cover" /> : <div className="absolute inset-0 bg-grid opacity-30" />}
       </div>
       <div className="container-page">
-        <div className="relative -mt-16 flex flex-col gap-5 sm:flex-row sm:items-end">
-          <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
-            <StoreAvatar store={store} size="h-28 w-28 text-3xl" rounded="rounded-3xl" className="ring-4 ring-canvas dark:ring-canvas-dark" />
+        {/* Logo and text sit side by side below the banner, vertically centred on each other. */}
+        <div className="mt-6 flex items-center gap-4 sm:gap-6">
+          <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="shrink-0">
+            <StoreAvatar store={store} size="h-20 w-20 text-2xl sm:h-24 sm:w-24 sm:text-3xl" rounded="rounded-3xl" className="shadow-lg" />
           </motion.div>
-          <div className="flex-1 pb-1">
-            <h1 className="flex items-center gap-2 font-display text-3xl font-extrabold tracking-tight">
-              {store.storeName} <BadgeCheck className="h-6 w-6 text-sky-500" />
+          <div className="min-w-0 flex-1">
+            <h1 className="flex items-center gap-2 font-display text-2xl font-extrabold tracking-tight sm:text-3xl">
+              <span className="truncate">{store.storeName}</span> <BadgeCheck className="h-6 w-6 shrink-0 text-sky-500" />
             </h1>
-            <p className="muted">{store.tagline}</p>
+            {store.tagline && <p className="mt-0.5 muted">{store.tagline}</p>}
             {store.address?.city && (
-              <p className="mt-1 flex items-center gap-1 text-xs muted">
+              <p className="mt-1.5 flex items-center gap-1 text-xs muted">
                 <MapPin className="h-3.5 w-3.5" /> {store.address.city}, {store.address.state}
               </p>
             )}
@@ -103,7 +103,7 @@ export default function StorePage() {
             ))}
           </div>
           <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }} className="input w-auto py-2">
-            {SORT_OPTIONS.filter((o) => o.value !== 'relevance').map((o) => (
+            {SORT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>Sort: {o.label}</option>
             ))}
           </select>

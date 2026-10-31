@@ -47,6 +47,8 @@ export default function ProductForm() {
   const [errors, setErrors] = useState({});
   const [tagInput, setTagInput] = useState('');
   const [saving, setSaving] = useState(false);
+  /** The product as loaded (edit mode): only changed fields are sent, with its editVersion and stock as the base. */
+  const [base, setBase] = useState(null);
 
   const existing = useQuery({
     queryKey: ['vendor-product', id],
@@ -61,6 +63,7 @@ export default function ProductForm() {
         title: p.title, description: p.description || '', brand: p.brand || '', category: p.category, price: p.price, mrp: p.mrp > p.price ? p.mrp : '',
         stock: p.stock, sku: p.sku || '', images: p.images.map(({ url, key }) => ({ url, key })), tags: p.tags || [], specs: p.specs || [], isActive: p.isActive,
       });
+      setBase(p);
     }
   }, [existing.data]);
 
@@ -94,14 +97,31 @@ export default function ProductForm() {
     };
     setSaving(true);
     try {
-      if (editing) await api.patch(`/vendor/products/${id}`, payload);
-      else await api.post('/vendor/products', payload);
+      if (editing) {
+        // Send only what changed: an untouched stock field must never overwrite sales made meanwhile.
+        const original = {
+          title: base.title, description: base.description || '', brand: base.brand || 'Generic', category: base.category, price: base.price,
+          mrp: base.mrp, stock: base.stock, sku: base.sku || '', images: base.images.map(({ url, key }) => (key ? { url, key } : { url })),
+          tags: base.tags || [], specs: base.specs || [], isActive: base.isActive,
+        };
+        const changes = Object.fromEntries(Object.entries(payload).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(original[k])));
+        if ('stock' in changes) changes.stockBase = base.stock;
+        await api.patch(`/vendor/products/${id}`, { ...changes, editVersion: base.editVersion || 0 });
+      } else await api.post('/vendor/products', payload);
       toast.success(editing ? 'Product updated' : 'Product published! It’s now searchable.');
       queryClient.invalidateQueries({ queryKey: ['vendor-products'] });
       queryClient.invalidateQueries({ queryKey: ['vendor-product', id] });
       navigate('/vendor/products');
     } catch (err) {
-      toast.error(errorMessage(err));
+      const code = err.response?.data?.details?.code;
+      toast.error(errorMessage(err), { duration: 7000 });
+      if (code === 'STOCK_CHANGED') {
+        // Keep the seller's other edits; show the real stock so they can decide again.
+        const stock = err.response.data.details.stock;
+        setForm((f) => ({ ...f, stock }));
+        setBase((b) => ({ ...b, stock, editVersion: (b.editVersion || 0) + 1 }));
+      }
+      if (code === 'PRODUCT_CHANGED') existing.refetch(); // load what the other tab/person saved
     } finally {
       setSaving(false);
     }

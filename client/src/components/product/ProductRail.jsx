@@ -47,7 +47,7 @@ export default function ProductRail({ title, subtitle, products = [], loading, v
           </div>
         </div>
       </div>
-      <div ref={scroller} onScroll={update} className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-4 scrollbar-none sm:gap-4">
+      <div ref={scroller} onScroll={update} data-wheel="page" className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-4 scrollbar-none sm:gap-4">
         {(loading ? Array.from({ length: 6 }) : products).map((p, i) => (
           <div key={p?._id || i} className="w-[46%] shrink-0 snap-start sm:w-[31%] lg:w-[23.5%] xl:w-[19%]">
             {loading ? <ProductCardSkeleton /> : <ProductCard product={p} index={i} />}

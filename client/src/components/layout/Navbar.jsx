@@ -5,6 +5,7 @@ import {
   ChevronDown, Heart, LayoutDashboard, LogOut, Menu, Moon, Package, Search, Shield, ShoppingBag, Store, Sun, User, X,
 } from 'lucide-react';
 import { useAuth } from '../../store/auth';
+import { useAuthModal } from '../../store/authModal';
 import { useCartStore } from '../../store/cart';
 import { useTheme } from '../../store/theme';
 import { useCart } from '../../lib/cart';
@@ -52,7 +53,32 @@ function CartButton() {
   );
 }
 
-function AccountMenu({ user }) {
+/** Wishlist link with the number of saved products (same badge as the cart). */
+function WishlistLink() {
+  const count = useAuth((s) => s.user?.wishlist?.length || 0);
+  return (
+    <Link to="/account?tab=wishlist" className="btn-icon relative hidden sm:inline-flex" aria-label={`Wishlist, ${count} items`}>
+      <Heart className="h-5 w-5" />
+      <AnimatePresence>
+        {count > 0 && (
+          <motion.span
+            key={count}
+            initial={{ scale: 0.4 }}
+            animate={{ scale: 1 }}
+            exit={{ scale: 0 }}
+            transition={{ type: 'spring', stiffness: 600, damping: 15 }}
+            className="absolute -top-0.5 -right-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white ring-2 ring-white dark:ring-canvas-dark"
+          >
+            {count > 99 ? '99+' : count}
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </Link>
+  );
+}
+
+/** Profile dropdown, shared by the marketplace navbar and the seller/admin dashboards. */
+export function AccountMenu({ user }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const close = useCallback(() => setOpen(false), []);
@@ -68,10 +94,12 @@ function AccountMenu({ user }) {
     vendor: [
       { to: '/vendor', label: 'Seller dashboard', icon: LayoutDashboard },
       { to: '/vendor/products', label: 'My products', icon: Package },
+      { to: '/', label: 'Visit marketplace', icon: Store },
       { to: '/account', label: 'Account settings', icon: User },
     ],
     admin: [
       { to: '/admin', label: 'Admin console', icon: Shield },
+      { to: '/', label: 'Visit marketplace', icon: Store },
       { to: '/account', label: 'Account settings', icon: User },
     ],
   }[user.role];
@@ -160,6 +188,7 @@ function CategoryStrip() {
 export default function Navbar() {
   const user = useAuth((s) => s.user);
   const location = useLocation();
+  const openAuth = useAuthModal((s) => s.open);
   const [mobileSearch, setMobileSearch] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -180,14 +209,6 @@ export default function Navbar() {
 
   return (
     <header className={cn('glass sticky top-0 z-40 border-b transition-shadow', scrolled && 'shadow-lg shadow-zinc-900/[0.03]')}>
-      <div className="bg-gradient-to-r from-brand-700 via-indigo-600 to-brand-600 text-white">
-        <div className="container-page flex h-8 items-center justify-center gap-2 text-center text-xs font-medium sm:justify-between">
-          <p className="truncate">🚚 Free delivery on orders above ₹999 · Secure payments by Stripe</p>
-          <Link to="/sell" className="hidden font-semibold underline-offset-4 hover:underline sm:block">
-            Sell on Vendora →
-          </Link>
-        </div>
-      </div>
 
       <div className="container-page flex h-[68px] items-center gap-3 sm:gap-6">
         <button type="button" className="btn-icon -ml-2 md:hidden" onClick={() => setMobileMenu(true)} aria-label="Open menu">
@@ -200,22 +221,18 @@ export default function Navbar() {
             {mobileSearch ? <X className="h-5 w-5" /> : <Search className="h-5 w-5" />}
           </button>
           <ThemeToggle />
-          {user?.role === 'customer' && (
-            <Link to="/account?tab=wishlist" className="btn-icon hidden sm:inline-flex" aria-label="Wishlist">
-              <Heart className="h-5 w-5" />
-            </Link>
-          )}
+          {user?.role === 'customer' && <WishlistLink />}
           {canShop && <CartButton />}
           {user ? (
             <AccountMenu user={user} />
           ) : (
             <div className="flex items-center gap-1.5 pl-1">
-              <Link to="/login" state={{ from: location }} className="btn btn-ghost hidden sm:inline-flex">
+              <button type="button" onClick={() => openAuth('login')} className="btn btn-ghost hidden sm:inline-flex">
                 Sign in
-              </Link>
-              <Link to="/register" className="btn btn-primary px-3.5 sm:px-4">
+              </button>
+              <button type="button" onClick={() => openAuth('register')} className="btn btn-primary px-3.5 sm:px-4">
                 Join
-              </Link>
+              </button>
             </div>
           )}
         </div>
@@ -231,7 +248,8 @@ export default function Navbar() {
         )}
       </AnimatePresence>
 
-      <CategoryStrip />
+      {/* Shopping categories don't belong on the account pages (profile, addresses, wishlist, security). */}
+      {!location.pathname.startsWith('/account') && <CategoryStrip />}
 
       <AnimatePresence>
         {mobileMenu && <MobileMenu user={user} onClose={() => setMobileMenu(false)} />}
@@ -242,6 +260,7 @@ export default function Navbar() {
 
 function MobileMenu({ user, onClose }) {
   const { data: categories = [] } = useCategories();
+  const openAuth = useAuthModal((s) => s.open);
   return (
     <div className="fixed inset-0 z-[70] md:hidden">
       <motion.div className="absolute inset-0 bg-zinc-950/50 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
@@ -261,8 +280,8 @@ function MobileMenu({ user, onClose }) {
         <nav className="flex-1 overflow-y-auto p-3">
           {!user && (
             <div className="mb-4 grid grid-cols-2 gap-2">
-              <Link to="/login" className="btn btn-secondary">Sign in</Link>
-              <Link to="/register" className="btn btn-primary">Create account</Link>
+              <button type="button" onClick={() => { onClose(); openAuth('login'); }} className="btn btn-secondary">Sign in</button>
+              <button type="button" onClick={() => { onClose(); openAuth('register'); }} className="btn btn-primary">Create account</button>
             </div>
           )}
           <p className="px-3 pt-2 pb-1 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Shop by category</p>

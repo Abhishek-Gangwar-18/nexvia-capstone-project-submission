@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Database, PackageSearch, SlidersHorizontal, X, Zap } from 'lucide-react';
+import { PackageSearch, SlidersHorizontal, X } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn, money } from '../lib/format';
 import { useCategoryName } from '../lib/hooks';
@@ -12,7 +12,6 @@ import Pagination from '../components/ui/Pagination';
 import { EmptyState, ErrorState } from '../components/ui/Feedback';
 
 export const SORT_OPTIONS = [
-  { value: 'relevance', label: 'Relevance' },
   { value: 'popular', label: 'Popularity' },
   { value: 'price_asc', label: 'Price: low to high' },
   { value: 'price_desc', label: 'Price: high to low' },
@@ -32,7 +31,8 @@ export function useFilters(fixed = {}) {
     maxPrice: params.get('maxPrice') ? Number(params.get('maxPrice')) : undefined,
     rating: params.get('rating') ? Number(params.get('rating')) : undefined,
     inStock: params.get('inStock') === '1',
-    sort: params.get('sort') || 'relevance',
+    // Unknown values (e.g. an old ?sort=relevance link) show as the default, like the API treats them.
+    sort: SORT_OPTIONS.some((o) => o.value === params.get('sort')) ? params.get('sort') : 'popular',
     page: Number(params.get('page')) || 1,
   };
   const update = (changes, { resetPage = true } = {}) => {
@@ -106,18 +106,6 @@ export default function Search() {
           <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm muted">
             {data ? `${data.total.toLocaleString('en-IN')} products` : 'Searching…'}
-            {data?.engine && (
-              <span
-                className={cn(
-                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold',
-                  data.engine === 'elasticsearch' ? 'bg-amber-100 text-amber-800 dark:bg-amber-400/10 dark:text-amber-300' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-300',
-                )}
-                title="Search engine that served this query"
-              >
-                {data.engine === 'elasticsearch' ? <Zap className="h-3 w-3" /> : <Database className="h-3 w-3" />}
-                {data.engine === 'elasticsearch' ? 'Elasticsearch' : 'MongoDB search'}
-              </span>
-            )}
           </div>
           {data?.relaxed && (
             <p className="mt-2 text-sm text-amber-700 dark:text-amber-300">No product matches every word, so these match some of them.</p>

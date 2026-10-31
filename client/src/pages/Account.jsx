@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -9,13 +9,72 @@ import { formatDate, timeAgo } from '../lib/format';
 import { logoutEverywhere } from '../lib/session';
 import { useAuth } from '../store/auth';
 import AddressForm from '../components/account/AddressForm';
-import ImageUploader from '../components/ui/ImageUploader';
 import { Field, PasswordInput } from '../components/ui/Controls';
 import { ConfirmDialog } from '../components/ui/Modal';
 import { EmptyState, Spinner } from '../components/ui/Feedback';
 import { UserAvatar } from '../components/ui/Brand';
 import { ProductGrid } from '../components/product/ProductCard';
 import { cn } from '../lib/format';
+
+/**
+ * Profile photo as an editable circle: hover shows edit (and delete once a photo is set). A picked photo
+ * is uploaded and previewed here only; it is saved to the profile with "Save changes".
+ */
+function AvatarEditor({ user, value, onChange }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+
+  const pick = async (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return toast.error('Choose an image file (PNG, JPG or WEBP)');
+    if (file.size > 5 * 1024 * 1024) return toast.error('The photo must be 5 MB or smaller');
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append('images', file);
+      const { data } = await api.post('/uploads?folder=avatars', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+      onChange(data.files[0].url);
+      toast('Photo ready. Click "Save changes" to keep it.');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+      inputRef.current.value = '';
+    }
+    return undefined;
+  };
+
+  const remove = () => onChange('');
+
+  const iconButton = 'flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-zinc-800 shadow transition hover:scale-110 hover:bg-white';
+  return (
+    <div className="group relative h-20 w-20 shrink-0">
+      <UserAvatar user={{ ...user, avatar: value }} size="h-20 w-20" className="text-xl" />
+      <div
+        className={cn(
+          'absolute inset-0 flex items-center justify-center gap-1.5 rounded-full bg-black/50 transition',
+          busy ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100',
+        )}
+      >
+        {busy ? (
+          <Spinner className="h-5 w-5 text-white" />
+        ) : (
+          <>
+            <button type="button" onClick={() => inputRef.current.click()} className={iconButton} aria-label={value ? 'Change profile photo' : 'Add profile photo'} title={value ? 'Change photo' : 'Add photo'}>
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            {value && (
+              <button type="button" onClick={remove} className={cn(iconButton, 'text-rose-600')} aria-label="Remove profile photo" title="Remove photo">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </>
+        )}
+      </div>
+      <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => pick(e.target.files[0])} />
+    </div>
+  );
+}
 
 function Profile() {
   const user = useAuth((s) => s.user);
@@ -39,15 +98,12 @@ function Profile() {
       className="space-y-5"
     >
       <div className="flex items-center gap-4">
-        <UserAvatar user={{ ...user, avatar: form.avatar }} size="h-20 w-20" className="text-xl" />
+        <AvatarEditor user={user} value={form.avatar} onChange={(avatar) => setForm((f) => ({ ...f, avatar }))} />
         <div>
           <p className="font-display text-xl font-bold">{user.name}</p>
           <p className="text-sm muted">{user.email} · member since {formatDate(user.createdAt, { day: undefined })}</p>
         </div>
       </div>
-      <Field label="Profile photo">
-        <ImageUploader single folder="avatars" value={form.avatar ? [{ url: form.avatar }] : []} onChange={(files) => setForm((f) => ({ ...f, avatar: files[0]?.url || '' }))} />
-      </Field>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Full name">
           <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="input" />
@@ -184,7 +240,7 @@ function Security() {
       <Field label="Confirm new password" error={mismatch ? 'Passwords don’t match' : undefined}>
         <PasswordInput value={form.confirm} onChange={(e) => setForm((f) => ({ ...f, confirm: e.target.value }))} className={cn(mismatch && 'input-error')} autoComplete="new-password" />
       </Field>
-      <button type="submit" disabled={mutation.isPending || !form.currentPassword || form.newPassword.length < 8 || mismatch} className="btn btn-primary">
+      <button type="submit" disabled={mutation.isPending || !form.currentPassword || form.newPassword.length < 8 || form.confirm !== form.newPassword}className="btn btn-primary">
         {mutation.isPending && <Spinner className="h-4 w-4" />} Update password
       </button>
     </form>

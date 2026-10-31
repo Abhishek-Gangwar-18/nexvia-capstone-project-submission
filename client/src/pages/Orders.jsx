@@ -16,7 +16,6 @@ const TABS = [
   { value: 'processing', label: 'Processing' },
   { value: 'shipped', label: 'Shipped' },
   { value: 'delivered', label: 'Delivered' },
-  { value: 'pending_payment', label: 'Unpaid' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
 

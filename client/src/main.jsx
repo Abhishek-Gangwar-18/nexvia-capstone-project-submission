@@ -5,7 +5,10 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
 import App from './App';
 import { queryClient } from './lib/queryClient';
+import { installWheelScroll } from './lib/wheelScroll';
 import './index.css';
+
+installWheelScroll();
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

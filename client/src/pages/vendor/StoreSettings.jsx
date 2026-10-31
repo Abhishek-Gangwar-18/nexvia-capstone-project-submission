@@ -7,6 +7,7 @@ import { refreshMe } from '../../lib/session';
 import { PageHeader } from '../../components/layout/DashboardLayout';
 import { PasswordInput } from '../../components/ui/Controls';
 import { PageLoader, Spinner } from '../../components/ui/Feedback';
+import StorePreview from '../../components/vendor/StorePreview';
 import { BusinessSection, EMPTY_STORE, PayoutSection, StoreSection, storePayload, validateStore } from './StoreForm';
 
 export default function StoreSettings() {
@@ -62,12 +63,17 @@ export default function StoreSettings() {
   return (
     <form onSubmit={save} noValidate className="space-y-6">
       <PageHeader title="Store settings" description="Branding, business details and payout preferences." actions={saveButton} />
-      <div className="grid gap-6 xl:grid-cols-2">
-        <div className="card p-6">
+      {/* Branding form on the left, live preview on the right (stays in view while scrolling). */}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)]">
+        <div className="card min-w-0 p-6">
           <h2 className="mb-5 font-semibold">Branding</h2>
           <StoreSection form={form} setForm={setForm} errors={errors} />
         </div>
-        <div className="space-y-6">
+        <aside className="min-w-0 lg:sticky lg:top-24 lg:self-start">
+          <StorePreview form={form} stats={{ rating: vendor.rating }} />
+        </aside>
+      </div>
+      <div className="grid gap-6 xl:grid-cols-2">
           <div className="card p-6">
             <h2 className="mb-5 font-semibold">Business details</h2>
             <BusinessSection form={form} setForm={setForm} errors={errors} />
@@ -86,7 +92,6 @@ export default function StoreSettings() {
               </label>
             )}
           </div>
-        </div>
       </div>
       <div className="flex justify-end">{saveButton}</div>
     </form>

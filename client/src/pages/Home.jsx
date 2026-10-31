@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  ArrowRight, BadgeCheck, Copy, PackageCheck, Rocket, ShieldCheck, Sparkles, Star, Store, Timer, TrendingUp, Wallet, Zap,
+  ArrowRight, BadgeCheck, Copy, PackageCheck, Rocket, Star, Store, Timer, TrendingUp, Wallet, Zap,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../lib/api';
@@ -13,6 +13,8 @@ import ProductRail from '../components/product/ProductRail';
 import { Segmented } from '../components/ui/Controls';
 import { ErrorState, Skeleton } from '../components/ui/Feedback';
 import { StoreAvatar } from '../components/ui/Brand';
+import { useAuth } from '../store/auth';
+import { sellerHome } from '../lib/roles';
 
 const WORDS = ['gadgets', 'fashion', 'beauty', 'home decor', 'groceries'];
 
@@ -41,8 +43,10 @@ function RotatingWord() {
 }
 
 function Hero({ data }) {
+  const user = useAuth((s) => s.user);
+  // Sellers and admins get a way back to their console instead of a "Become a seller" invitation.
+  const own = sellerHome(user);
   const showcase = data?.trending?.slice(0, 3) || [];
-  const productCount = data?.categories?.reduce((s, c) => s + c.productCount, 0) || 0;
   const tilts = ['-6deg', '4deg', '-2deg'];
   const positions = ['top-4 left-0 sm:left-4', 'top-24 right-0 sm:right-2', 'bottom-0 left-16 sm:left-28'];
 
@@ -58,15 +62,11 @@ function Hero({ data }) {
 
         <div className="relative grid items-center gap-12 lg:grid-cols-[1.15fr_1fr]">
           <div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold backdrop-blur">
-              <Sparkles className="h-3.5 w-3.5 text-amber-300" />
-              {data ? `${data.vendors.length} verified sellers · ${productCount}+ products` : 'Multi-vendor marketplace'}
-            </motion.div>
             <motion.h1
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.05 }}
-              className="mt-5 font-display text-4xl leading-[1.08] font-extrabold tracking-tight sm:text-5xl lg:text-6xl"
+              className="font-display text-4xl leading-[1.08] font-extrabold tracking-tight sm:text-5xl lg:text-6xl"
             >
               Shop <RotatingWord />
               <br />
@@ -79,23 +79,10 @@ function Hero({ data }) {
               <Link to="/search" className="btn btn-accent btn-lg">
                 Start shopping <ArrowRight className="h-4 w-4" />
               </Link>
-              <Link to="/sell" className="btn btn-lg border border-white/20 bg-white/10 text-white backdrop-blur hover:bg-white/20">
-                <Store className="h-4 w-4" /> Become a seller
+              <Link to={own?.to || '/sell'} className="btn btn-lg border border-white/20 bg-white/10 text-white backdrop-blur hover:bg-white/20">
+                <Store className="h-4 w-4" /> {own?.label || 'Become a seller'}
               </Link>
             </motion.div>
-            <div className="mt-10 flex flex-wrap items-center gap-6 text-sm text-indigo-100/80">
-              <div className="flex -space-x-2">
-                {(data?.vendors || []).slice(0, 5).map((v) => (
-                  <StoreAvatar key={v._id} store={v} size="h-9 w-9" rounded="rounded-full" className="ring-2 ring-[#100b2e]" />
-                ))}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Star className="h-4 w-4 fill-amber-300 text-amber-300" /> <span className="font-semibold text-white">4.5/5</span> average rating
-              </div>
-              <div className="flex items-center gap-1.5">
-                <ShieldCheck className="h-4 w-4 text-emerald-300" /> Stripe secured
-              </div>
-            </div>
           </div>
 
           <div className="relative hidden h-[420px] sm:block">
@@ -112,7 +99,7 @@ function Hero({ data }) {
                 <p className="mt-2 truncate text-sm font-semibold">{p.title}</p>
                 <div className="mt-1 flex items-center justify-between">
                   <span className="font-display font-bold">{money(p.price)}</span>
-                  {p.discount > 0 && <span className="rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-600">−{p.discount}%</span>}
+                  {p.discount > 0 && <span className="rounded-md bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-600">−{p.discount}% OFF</span>}
                 </div>
               </Link>
             ))}
@@ -260,11 +247,16 @@ export function StoreCard({ store, index = 0 }) {
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: index * 0.05 }}>
       <Link to={`/store/${store._id}`} className="group card block overflow-hidden transition hover:-translate-y-1 hover:shadow-xl hover:shadow-brand-900/5">
-        <div className={cn('relative h-20 bg-gradient-to-br', gradientFor(store.storeName))}>
-          <div className="absolute inset-0 bg-grid opacity-30" />
+        {/* The store's own banner; the name-based gradient only when the store hasn't uploaded one. */}
+        <div className={cn('relative h-20 overflow-hidden bg-gradient-to-br', gradientFor(store.storeName))}>
+          {store.banner ? (
+            <img src={store.banner} alt="" loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+          ) : (
+            <div className="absolute inset-0 bg-grid opacity-30" />
+          )}
         </div>
         <div className="px-4 pb-4">
-          <StoreAvatar store={store} size="h-14 w-14" className="-mt-7 ring-4 ring-white dark:ring-surface-dark" />
+          <StoreAvatar store={store} size="h-14 w-14" className="relative z-10 -mt-7 ring-4 ring-white dark:ring-surface-dark" />
           <div className="mt-2 flex items-center gap-1.5">
             <p className="truncate font-semibold group-hover:text-brand-600 dark:group-hover:text-brand-300">{store.storeName}</p>
             <BadgeCheck className="h-4 w-4 shrink-0 text-sky-500" />
@@ -339,6 +331,7 @@ function SellerCta() {
 }
 
 export default function Home() {
+  const user = useAuth((s) => s.user);
   const [tab, setTab] = useState('topRated');
   const { data, isLoading, error, refetch } = useQuery({ queryKey: ['home'], queryFn: () => api.get('/home').then((r) => r.data) });
   const [recent] = useState(readRecentlyViewed);
@@ -393,7 +386,7 @@ export default function Home() {
       />
 
       {recent.length > 0 && <ProductRail title="Recently viewed" subtitle="Pick up where you left off" products={recent} />}
-      <SellerCta />
+      {!sellerHome(user) && <SellerCta />}
     </div>
   );
 }

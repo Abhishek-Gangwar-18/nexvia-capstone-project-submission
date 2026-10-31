@@ -10,11 +10,6 @@ import { BarList, StatCard, TrendChart } from '../../components/dashboard/Charts
 import StatusBadge from '../../components/ui/StatusBadge';
 import { ErrorState, Skeleton } from '../../components/ui/Feedback';
 
-const greeting = () => {
-  const h = new Date().getHours();
-  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
-};
-
 export default function VendorDashboard() {
   const user = useAuth((s) => s.user);
   const { data, isLoading, error, refetch } = useQuery({ queryKey: ['vendor-dashboard'], queryFn: () => api.get('/vendor/dashboard').then((r) => r.data) });
@@ -24,7 +19,7 @@ export default function VendorDashboard() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title={`${greeting()}, ${user.name.split(' ')[0]} 👋`}
+        title={`Hello, ${user.name.split(' ')[0]} 👋`}
         description="Here’s how your store performed over the last 30 days."
         actions={
           <>

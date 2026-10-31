@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ArrowRight, BarChart3, Check, Coins, Percent, ShieldCheck, Ticket, Truck, Upload } from 'lucide-react';
 import { useAuth } from '../store/auth';
+import { useAuthModal } from '../store/authModal';
 import { money } from '../lib/format';
+import { sellerHome } from '../lib/roles';
 
 const FEATURES = [
   { icon: Upload, title: 'Easy product listing', text: 'Drag-and-drop images to S3, rich specs, live preview.' },
@@ -18,11 +20,15 @@ export default function Sell() {
   const user = useAuth((s) => s.user);
   const [price, setPrice] = useState(2499);
   const [units, setUnits] = useState(120);
+  const own = sellerHome(user);
   const rate = 10;
   const revenue = price * units;
   const commission = (revenue * rate) / 100;
 
-  const cta = !user ? '/register?role=vendor' : user.role === 'vendor' ? (user.vendor?.status === 'approved' ? '/vendor' : '/vendor/onboarding') : user.role === 'customer' ? '/vendor/onboarding' : '/admin';
+  // Already a seller (any status) or an admin: no sign-up pitch, go to their own area.
+  if (own) return <Navigate to={own.to} replace />;
+
+  const cta = !user ? null : user.role === 'vendor' ? (user.vendor?.status === 'approved' ? '/vendor' : '/vendor/onboarding') : user.role === 'customer' ? '/vendor/onboarding' : '/admin';
   const ctaLabel = user?.role === 'vendor' ? 'Go to Seller Hub' : user?.role === 'admin' ? 'Open admin console' : 'Start selling today';
 
   return (
@@ -35,9 +41,15 @@ export default function Sell() {
             <span className="rounded-full bg-white/15 px-3 py-1 text-xs font-bold tracking-wide uppercase">Sell on Vendora</span>
             <h1 className="mt-4 font-display text-4xl leading-tight font-extrabold sm:text-5xl">Your store. Our customers. Automatic payouts.</h1>
             <p className="mt-4 text-lg text-indigo-100">Register your business, list products and start receiving orders. We handle payments and split them automatically.</p>
-            <Link to={cta} className="btn btn-accent btn-lg mt-8">
-              {ctaLabel} <ArrowRight className="h-4 w-4" />
-            </Link>
+            {cta ? (
+              <Link to={cta} className="btn btn-accent btn-lg mt-8">
+                {ctaLabel} <ArrowRight className="h-4 w-4" />
+              </Link>
+            ) : (
+              <button type="button" onClick={() => useAuthModal.getState().open('register', { role: 'vendor' })} className="btn btn-accent btn-lg mt-8">
+                {ctaLabel} <ArrowRight className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </section>

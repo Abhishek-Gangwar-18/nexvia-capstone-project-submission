@@ -18,7 +18,7 @@
   --color-brand-900: #3a1f93;
   --color-brand-950: #221163;
 
-  --color-canvas: #f6f6fa;
+  --color-canvas: #ffffff;
   --color-canvas-dark: #0a0a10;
   --color-surface-dark: #12121a;
   --color-surface-dark-2: #1a1a25;
@@ -60,6 +60,21 @@
   html {
     -webkit-tap-highlight-color: transparent;
     scroll-behavior: smooth;
+    /* Native controls (selects, scrollbars, autofill) follow the app theme, not the OS one */
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  /* A select's translucent dark background can't paint its native option list, which then falls back to
+     white with the light text inherited from dark mode. Give the options solid colours in both themes. */
+  select option,
+  select optgroup {
+    @apply bg-white text-zinc-900;
+  }
+  .dark select option,
+  .dark select optgroup {
+    @apply bg-surface-dark-2 text-zinc-100;
   }
   body {
     @apply bg-canvas font-sans text-zinc-900 antialiased dark:bg-canvas-dark dark:text-zinc-100;
