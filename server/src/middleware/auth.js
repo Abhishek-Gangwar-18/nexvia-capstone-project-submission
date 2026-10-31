@@ -1,7 +1,8 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { Vendor } from '../models/Vendor.js';
-import { isSessionActive, loadSessionUser } from '../services/session.js';
+import { accountBlocked, blockedSessionOwner, isSessionActive, loadSessionUser } from '../services/session.js';
+import { BLOCKED_COOKIE, clearBlockedCookie, readBlockedCookie, readCookie } from '../utils/cookies.js';
 import { ApiError, asyncHandler } from '../utils/http.js';
 
 /**
@@ -20,11 +21,16 @@ export const protect = asyncHandler(async (req, _res, next) => {
     if (err.name === 'TokenExpiredError') throw new ApiError(401, 'Access token expired', { code: 'TOKEN_EXPIRED' });
     throw new ApiError(401, 'Please log in to continue', { code: 'INVALID_TOKEN' });
   }
-  if (!(await isSessionActive(payload.sid))) throw new ApiError(401, 'You have been logged out. Please log in again.', { code: 'SESSION_ENDED' });
 
   const user = await loadSessionUser(payload.sub);
   if (!user) throw new ApiError(401, 'Account not found');
-  if (user.status === 'blocked') throw new ApiError(403, 'Your account has been suspended. Please contact support.');
+  // Before the session check: blocking ends every session, and the browser should be told why.
+  if (user.status === 'blocked') throw accountBlocked(user);
+  if (!(await isSessionActive(payload.sid))) {
+    const owner = await blockedSessionOwner(payload.sid);
+    if (owner) throw accountBlocked(owner);
+    throw new ApiError(401, 'You have been logged out. Please log in again.', { code: 'SESSION_ENDED' });
+  }
   // Tokens issued before the last password change are no longer valid.
   if (user.passwordChangedAt && payload.iat < Math.floor(new Date(user.passwordChangedAt).getTime() / 1000)) {
     throw new ApiError(401, 'Your password was changed. Please log in again.', { code: 'SESSION_ENDED' });
@@ -35,14 +41,56 @@ export const protect = asyncHandler(async (req, _res, next) => {
   next();
 });
 
-/** Attaches req.user when a valid token is present, but never rejects the request. */
+/** Attaches req.user when a valid token is present; only a blocked account is rejected. */
 export const optionalAuth = (req, res, next) => {
   if (!req.headers.authorization) return next();
   return protect(req, res, (err) => {
+    if (err?.blockedUserId) return next(err);
     if (err) req.user = undefined;
     next();
   });
 };
+
+// What a blocked browser can still do: sign in with another account, and log out.
+const OPEN_WHILE_BLOCKED = new Set(['POST /auth/login', 'POST /auth/logout']);
+
+/** The account of a browser marked as blocked, while it still is; the mark is dropped once it isn't. */
+async function markedAccount(req, res) {
+  if (!readCookie(req, BLOCKED_COOKIE)) return null;
+  const userId = readBlockedCookie(req);
+  const user = userId ? await loadSessionUser(userId) : null;
+  if (user?.status === 'blocked') return user;
+  clearBlockedCookie(res);
+  return null;
+}
+
+/**
+ * The blocked account a Bearer token belongs to, or null. Expired tokens count too: this only ever
+ * refuses, and a tab left open past the token's 15 minutes must not keep browsing the public pages.
+ */
+async function tokenAccount(req) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Bearer ')) return null;
+  let payload;
+  try {
+    payload = jwt.verify(header.slice(7), env.jwtSecret, { ignoreExpiration: true });
+  } catch {
+    return null;
+  }
+  const user = await loadSessionUser(payload.sub);
+  return user?.status === 'blocked' ? user : null;
+}
+
+/**
+ * Runs before every route, public catalog included: a blocked account's token, or a browser marked as
+ * used by one (utils/cookies.js), gets 403 ACCOUNT_BLOCKED from the whole API until an admin unblocks
+ * the account or someone signs in there with an account that isn't blocked.
+ */
+export const blockedGuard = asyncHandler(async (req, res, next) => {
+  const user = (await markedAccount(req, res)) || (await tokenAccount(req));
+  if (!user || OPEN_WHILE_BLOCKED.has(`${req.method} ${req.path}`)) return next();
+  throw accountBlocked(user);
+});
 
 /** Role-based access control. */
 export const authorize = (...roles) => (req, _res, next) => {

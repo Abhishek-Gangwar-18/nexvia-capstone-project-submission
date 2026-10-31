@@ -1,6 +1,7 @@
 import multer from 'multer';
 import mongoose from 'mongoose';
 import { isProd } from '../config/env.js';
+import { setBlockedCookie } from '../utils/cookies.js';
 import { logger } from '../utils/logger.js';
 
 export const notFound = (req, res) => {
@@ -30,6 +31,9 @@ export const errorHandler = (err, req, res, _next) => {
     status = 400;
     message = 'Malformed JSON body';
   }
+
+  // A blocked account (services/session.js accountBlocked): keep this browser closed to the whole site.
+  if (err.blockedUserId) setBlockedCookie(res, err.blockedUserId);
 
   if (status >= 500) logger.error(`${req.method} ${req.originalUrl} ->`, err);
 

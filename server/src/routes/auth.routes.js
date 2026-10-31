@@ -46,6 +46,7 @@ router.post('/logout-all', protect, asyncHandler(auth.logoutAll));
 router.get('/sessions', protect, asyncHandler(auth.sessions));
 router.delete('/sessions/:id', protect, asyncHandler(auth.revokeDevice));
 
+router.get('/status', protect, auth.status);
 router.get('/me', protect, asyncHandler(auth.me));
 router.patch('/me', protect, validate(auth.profileSchema), asyncHandler(auth.updateMe));
 router.patch('/me/password', protect, passwordLimiter, validate(auth.passwordSchema), asyncHandler(auth.changePassword));

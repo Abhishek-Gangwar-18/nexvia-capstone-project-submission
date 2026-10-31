@@ -17,6 +17,7 @@ import shopRoutes from './routes/shop.routes.js';
 import vendorRoutes from './routes/vendor.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import { errorHandler, notFound } from './middleware/error.js';
+import { blockedGuard } from './middleware/auth.js';
 import { asyncHandler } from './utils/http.js';
 
 export function createApp() {
@@ -63,6 +64,9 @@ export function createApp() {
       },
     });
   });
+
+  // A browser used by a blocked account gets nothing but the "account blocked" answer.
+  app.use(blockedGuard);
 
   // Routes sit at the root (no /api prefix): this server only serves the API; the client is deployed separately.
   app.use('/auth', authRoutes);

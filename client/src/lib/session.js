@@ -40,7 +40,20 @@ export async function logoutEverywhere() {
   return data.message;
 }
 
+let lastCheck = 0;
+
+/**
+ * Asks the API whether this session still stands, so a block (or a logout elsewhere) shows up on the
+ * next click even when the page comes from the query cache. The API client reacts to the answer.
+ */
+export function checkSession() {
+  if (Date.now() - lastCheck < 2000) return;
+  lastCheck = Date.now();
+  api.get('/auth/status').catch(() => {});
+}
+
 export async function refreshMe() {
+  lastCheck = Date.now();
   const { data } = await api.get('/auth/me');
   useAuth.getState().setUser(data.user);
   return data.user;

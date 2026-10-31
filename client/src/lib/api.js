@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { useAuth } from '../store/auth';
+import { queryClient } from './queryClient';
 
 const base = import.meta.env.VITE_API_URL?.replace(/\/$/, '');
 
@@ -8,6 +9,19 @@ export const API_URL = base || '/api';
 
 // withCredentials: the refresh cookie is sent to the auth routes (also when the API is on another domain).
 export const api = axios.create({ baseURL: API_URL, timeout: 25000, withCredentials: true });
+
+/**
+ * The API answers 403 ACCOUNT_BLOCKED to every request from a blocked account's browser: drop the
+ * session and its cached data, and the app shows the blocked screen instead of the site (App.jsx).
+ */
+export const isBlockedError = (error) => error?.response?.status === 403 && error.response.data?.details?.code === 'ACCOUNT_BLOCKED';
+function handleBlocked(error) {
+  if (!isBlockedError(error)) return false;
+  const { reason = null, blockedAt = null } = error.response.data.details;
+  useAuth.getState().block({ reason, blockedAt });
+  queryClient.clear();
+  return true;
+}
 
 /**
  * Access tokens last ~15 minutes. One refresh runs at a time (single flight): every request that needs
@@ -23,7 +37,7 @@ export function refreshAccessToken() {
         return data.accessToken;
       })
       .catch((error) => {
-        if (error.response?.status === 401) useAuth.getState().clear();
+        if (!handleBlocked(error) && error.response?.status === 401) useAuth.getState().clear();
         throw error;
       })
       .finally(() => {
@@ -46,6 +60,7 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
+    if (handleBlocked(error)) return Promise.reject(error);
     const { config, response } = error;
     const code = response?.data?.details?.code;
     // Expired access token: refresh once and replay the request.

@@ -33,6 +33,7 @@ test('the app builds and the reviewed routes are mounted', () => {
     'GET /admin/orders/export',
     'POST /orders/checkout',
     'POST /cart/items',
+    'GET /cart/events',
     'PATCH /auth/me/password',
   ]) {
     assert.ok(routes.includes(expected), `missing route: ${expected}`);

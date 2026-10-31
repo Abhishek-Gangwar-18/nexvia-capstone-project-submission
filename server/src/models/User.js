@@ -21,6 +21,8 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, minlength: 8, select: false },
     /** Tokens issued before this instant are rejected (see middleware/auth.js). */
     passwordChangedAt: Date,
+    /** Stripe Customer for this user, so dashboard payments show who paid (created on first payment). */
+    stripeCustomerId: { type: String, select: false },
     role: { type: String, enum: ROLES, default: 'customer', index: true },
     phone: { type: String, trim: true },
     avatar: String,
@@ -62,6 +64,7 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     addresses: this.addresses,
     wishlist: this.wishlist.map((id) => id.toString()),
     status: this.status || 'active',
+    ...(this.status === 'blocked' && { blockedReason: this.blockedReason, blockedAt: this.blockedAt }),
     passwordChangedAt: this.passwordChangedAt,
     createdAt: this.createdAt,
   };

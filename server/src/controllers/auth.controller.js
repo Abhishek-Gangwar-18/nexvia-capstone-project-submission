@@ -4,6 +4,7 @@ import { Vendor } from '../models/Vendor.js';
 import { Product } from '../models/Product.js';
 import mongoose from 'mongoose';
 import {
+  accountBlocked,
   createSession,
   invalidateUser,
   listSessions,
@@ -13,7 +14,7 @@ import {
   revokeSession,
   revokeUserSession,
 } from '../services/session.js';
-import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../utils/cookies.js';
+import { clearBlockedCookie, clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../utils/cookies.js';
 import { CARD_FIELDS, toCard } from '../services/catalog.js';
 import { deleteReplaced } from '../services/storage.js';
 import { ApiError } from '../utils/http.js';
@@ -55,10 +56,14 @@ export const addressUpdateSchema = addressSchema
   .partial()
   .refine((body) => Object.keys(body).length > 0, 'Send at least one field to update');
 
-/** Starts a session: the refresh token goes in the httpOnly cookie, the access token in the body. */
+/**
+ * Starts a session: the refresh token goes in the httpOnly cookie, the access token in the body.
+ * A browser marked as blocked opens again only when an account that isn't blocked signs in there.
+ */
 async function signIn(res, user, req) {
   const { accessToken, refreshToken, refreshExpiresAt } = await createSession(user, req);
   setRefreshCookie(res, refreshToken, refreshExpiresAt);
+  clearBlockedCookie(res);
   return accessToken;
 }
 
@@ -79,7 +84,7 @@ export async function register(req, res) {
 export async function login(req, res) {
   const user = await User.findOne({ email: req.body.email }).select('+password');
   if (!user || !(await user.comparePassword(req.body.password))) throw new ApiError(401, 'Incorrect email or password');
-  if (user.status === 'blocked') throw new ApiError(403, 'Your account has been suspended. Please contact support.');
+  if (user.status === 'blocked') throw accountBlocked(user);
   user.lastLoginAt = new Date();
   await user.save();
   const accessToken = await signIn(res, user, req);
@@ -131,6 +136,9 @@ export async function revokeDevice(req, res) {
   if (String(req.params.id) === String(req.auth.sid)) clearRefreshCookie(res);
   res.json({ message: 'Device logged out' });
 }
+
+/** Cheap "is my session still good?" check the client makes on every page change (protect does the work). */
+export const status = (_req, res) => res.json({ ok: true });
 
 export async function me(req, res) {
   const user = await User.findById(req.user._id);

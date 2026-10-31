@@ -20,6 +20,20 @@ const newSecret = () => crypto.randomBytes(32).toString('hex');
 
 export const REFRESH_COOKIE = 'vendora_rt';
 
+/**
+ * 403 for a blocked account, with the admin's reason for the blocked screen. The error handler also
+ * marks the browser as blocked (blockedUserId), so the rest of the site stays closed to it.
+ */
+export function accountBlocked(user) {
+  const err = new ApiError(403, 'Your account has been blocked. Please contact support.', {
+    code: 'ACCOUNT_BLOCKED',
+    reason: user.blockedReason || null,
+    blockedAt: user.blockedAt || null,
+  });
+  err.blockedUserId = String(user._id);
+  return err;
+}
+
 /** Short-lived JWT for the Authorization header. */
 function signAccessToken(user, sid) {
   return jwt.sign({ sub: String(user._id), role: user.role, sid: String(sid) }, env.jwtSecret, { expiresIn: env.accessTokenTtl });
@@ -60,12 +74,17 @@ export async function refreshSession(refreshToken) {
   const live = { _id: sid, revokedAt: null, expiresAt: { $gt: now } };
 
   const current = await Session.findOne(live).select('+refreshTokenHash +previousTokenHash maxExpiresAt rotatedAt user').lean();
-  if (!current) throw new ApiError(401, 'Your session has ended. Please log in again.', { code: 'NO_SESSION' });
+  if (!current) {
+    const owner = await blockedOwner({ _id: sid, $or: [{ refreshTokenHash: presented }, { previousTokenHash: presented }] });
+    if (owner) throw accountBlocked(owner);
+    throw new ApiError(401, 'Your session has ended. Please log in again.', { code: 'NO_SESSION' });
+  }
 
   const user = await User.findById(current.user);
-  if (!user || user.status === 'blocked') {
+  if (!user) throw new ApiError(401, 'Your session has ended. Please log in again.', { code: 'NO_SESSION' });
+  if (user.status === 'blocked') {
     await revokeSessions({ _id: sid }, 'blocked');
-    throw new ApiError(401, 'Your session has ended. Please log in again.', { code: 'NO_SESSION' });
+    throw accountBlocked(user);
   }
 
   const nextSecret = newSecret();
@@ -86,6 +105,20 @@ export async function refreshSession(refreshToken) {
   await revokeSessions({ _id: sid }, 'reuse_detected');
   throw new ApiError(401, 'Your session has ended for security reasons. Please log in again.', { code: 'NO_SESSION' });
 }
+
+/**
+ * The still-blocked owner of a session the block ended, or null: its holder is told the account is blocked
+ * instead of "log in again". Read from MongoDB, never the profile cache, which a request racing the block
+ * may have refilled with the profile from before it.
+ */
+async function blockedOwner(filter) {
+  const ended = await Session.findOne({ ...filter, revokedReason: 'blocked' }).select('user').lean();
+  const user = ended && (await User.findById(ended.user));
+  return user?.status === 'blocked' ? user : null;
+}
+
+/** For a signed access token whose session has ended. */
+export const blockedSessionOwner = (sid) => blockedOwner({ _id: sid });
 
 /** Is this session still allowed? Cached briefly; a miss reads MongoDB (fails closed). */
 export async function isSessionActive(sid) {
