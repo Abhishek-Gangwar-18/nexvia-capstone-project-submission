@@ -154,3 +154,4 @@ cd frontend && pnpm build   # strict TypeScript check + production build
 | UI says "Can't reach the server" | Django isn't running on :8000 (Vite proxies `/api` there) |
 | Demo login stopped working | Re-run `python manage.py seed_demo --reset` |
 | Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again |
+
