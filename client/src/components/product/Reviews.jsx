@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BadgeCheck, MessageSquarePlus, Pencil, Star, Store, ThumbsUp, Trash2 } from 'lucide-react';
@@ -7,6 +6,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
 import { cn, timeAgo } from '../../lib/format';
 import { useAuth } from '../../store/auth';
+import { useAuthModal } from '../../store/authModal';
 import { Stars, StarPicker } from '../ui/Rating';
 import { Spinner } from '../ui/Feedback';
 import { UserAvatar } from '../ui/Brand';
@@ -173,9 +173,9 @@ export default function Reviews({ product }) {
             {!user ? (
               <>
                 <p className="mt-1 text-sm muted">Bought this product? Help other shoppers decide.</p>
-                <Link to="/login" state={{ from: { pathname: `/product/${product._id}` } }} className="btn btn-secondary mt-4 w-full">
+                <button type="button" onClick={() => useAuthModal.getState().open('login')} className="btn btn-secondary mt-4 w-full">
                   Sign in to rate & review
-                </Link>
+                </button>
               </>
             ) : !first ? null : !first.canReview ? (
               <p className="mt-1 text-sm muted">You can rate and review this product once an order with it has been delivered to you.</p>
@@ -231,7 +231,7 @@ export default function Reviews({ product }) {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: (i % 5) * 0.04 }}
-                  className={cn('card p-5', mine.has(review._id) && 'ring-2 ring-brand-500/40')}
+                  className={cn('card group relative p-5', mine.has(review._id) && 'pb-11 ring-2 ring-brand-500/40')}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3">
@@ -281,12 +281,26 @@ export default function Reviews({ product }) {
                     </button>
                   )}
                   {mine.has(review._id) && (
-                    <div className="mt-3 flex justify-end gap-1">
-                      <button type="button" onClick={() => setEditing(review)} className="btn btn-ghost btn-sm">
-                        <Pencil className="h-3.5 w-3.5" /> Edit
+                    // Icon-only, bottom right, shown on hover (or keyboard focus); always visible on touch screens, which can't hover.
+                    <div className="absolute right-3 bottom-3 flex gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                      <button
+                        type="button"
+                        onClick={() => setEditing(review)}
+                        title="Edit review"
+                        aria-label="Edit review"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+                      >
+                        <Pencil className="h-4 w-4" />
                       </button>
-                      <button type="button" onClick={() => remove.mutate(review._id)} disabled={remove.isPending} className="btn btn-ghost btn-sm text-rose-600">
-                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      <button
+                        type="button"
+                        onClick={() => remove.mutate(review._id)}
+                        disabled={remove.isPending}
+                        title="Delete review"
+                        aria-label="Delete review"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-rose-500 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50 dark:hover:bg-rose-500/10"
+                      >
+                        <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
                   )}

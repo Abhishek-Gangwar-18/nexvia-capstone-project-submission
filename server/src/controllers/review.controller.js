@@ -6,6 +6,7 @@ import { Review, REVIEW_LIMITS } from '../models/Review.js';
 import { ReviewVote } from '../models/ReviewVote.js';
 import { assertDeliveredPurchase, authorName, hasDeliveredPurchase, removeRating, setRating } from '../services/reviews.js';
 import { deleteReplaced } from '../services/storage.js';
+import { withLock } from '../services/locks.js';
 import { ApiError, paginated, parsePagination } from '../utils/http.js';
 
 const L = REVIEW_LIMITS;
@@ -98,11 +99,17 @@ export async function createReview(req, res) {
   const productId = productIdOf(req);
   const product = await existingProduct(productId);
   await assertDeliveredPurchase(req.user._id, productId);
-  if ((await Review.countDocuments({ product: productId, user: req.user._id })) >= L.perUser) {
-    throw new ApiError(400, `You can write up to ${L.perUser} reviews for one product`);
-  }
-  const rating = await Rating.findOne({ product: productId, user: req.user._id }).select('value').lean();
-  const review = await Review.create({ ...req.body, product: product._id, user: req.user._id, authorRating: rating?.value ?? null, verified: true });
+  // One create at a time per customer and product: a double click, retry or second tab can't post the same
+  // review twice or slip past the per-product cap.
+  const review = await withLock(`review:${req.user._id}:${productId}`, 15, 'Your review is being posted. Please wait a moment.', async () => {
+    if ((await Review.countDocuments({ product: productId, user: req.user._id })) >= L.perUser) {
+      throw new ApiError(400, `You can write up to ${L.perUser} reviews for one product`);
+    }
+    const duplicate = await Review.exists({ product: productId, user: req.user._id, comment: req.body.comment, createdAt: { $gte: new Date(Date.now() - 60_000) } });
+    if (duplicate) throw new ApiError(409, 'You just posted this review');
+    const rating = await Rating.findOne({ product: productId, user: req.user._id }).select('value').lean();
+    return Review.create({ ...req.body, product: product._id, user: req.user._id, authorRating: rating?.value ?? null, verified: true });
+  });
   res.status(201).json({ review: toPublic({ ...review.toObject(), user: { _id: req.user._id, name: req.user.name } }) });
 }
 
