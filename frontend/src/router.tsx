@@ -13,6 +13,7 @@ import BacklogPage from "@/pages/project/BacklogPage";
 import BoardPage from "@/pages/project/BoardPage";
 import ProjectLayout from "@/pages/project/ProjectLayout";
 import ProjectsPage from "@/pages/ProjectsPage";
+import WorkflowPage from "@/pages/project/WorkflowPage";
 import SettingsPage from "@/pages/SettingsPage";
 
 export const router = createBrowserRouter([
@@ -39,6 +40,7 @@ export const router = createBrowserRouter([
               { path: "board", element: <BoardPage /> },
               { path: "backlog", element: <BacklogPage /> },
               { path: "issues", element: <IssuesPage /> },
+              { path: "workflow", element: <WorkflowPage /> },
             ],
           },
           { path: "issues", element: <IssuesPage /> },

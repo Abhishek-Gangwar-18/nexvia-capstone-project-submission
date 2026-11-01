@@ -1,4 +1,4 @@
-import { Archive, ArchiveArrowUp, Ellipsis, FolderKanban, List, ListTodo, Plus, Settings, SquareKanban, Trash } from "lucide-react";
+import { Archive, ArchiveArrowUp, Ellipsis, FolderKanban, GitBranch, List, ListTodo, Plus, Settings, SquareKanban, Trash } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, Outlet, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
@@ -43,6 +43,7 @@ export default function ProjectLayout() {
     { to: `${base}/board`, label: "Board", icon: SquareKanban },
     ...(project.board?.board_type === "scrum" ? [{ to: `${base}/backlog`, label: "Backlog", icon: ListTodo }] : []),
     { to: `${base}/issues`, label: "Issues", icon: List },
+    { to: `${base}/workflow`, label: "Workflow", icon: GitBranch },
   ];
 
   return (
