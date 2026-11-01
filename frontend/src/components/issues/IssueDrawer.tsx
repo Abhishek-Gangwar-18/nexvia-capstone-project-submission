@@ -18,6 +18,7 @@ import { useAuth } from "@/store/auth";
 import { useUI } from "@/store/ui";
 import type { IssueDetail, IssueType, Priority } from "@/types";
 import { LabelChip, PriorityIcon, StatusBadge, TypeIcon, useIssueDrawer } from "./IssueMeta";
+import { IssueCollaboration } from "./IssueCollaboration";
 import {
   epicOptions, labelOptions, memberOptions, priorityOptions, sprintOptions, statusOptions, typeOptions,
 } from "./options";
@@ -203,6 +204,8 @@ function IssueEditor({ issue, onClose }: { issue: IssueDetail; onClose: () => vo
               )}
             </section>
           )}
+
+          <IssueCollaboration issueKey={issue.key} members={members.map((membership) => membership.user)} />
         </div>
 
         {/* details sidebar */}
