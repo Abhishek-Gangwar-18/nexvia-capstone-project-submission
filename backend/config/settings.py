@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "apps.tenants",
     "apps.projects",
     "apps.issues",
+    "apps.automation",
 ]
 
 MIDDLEWARE = [
@@ -107,7 +108,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # --- REST API -------------------------------------------------------------------------------
@@ -148,3 +149,13 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 CORS_ALLOW_HEADERS = (*default_headers, "x-workspace")
+
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL)
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_SOFT_TIME_LIMIT = 240
+CELERY_BEAT_SCHEDULE = {
+    "daily-overdue-reminders": {"task": "apps.automation.tasks.create_overdue_reminders", "schedule": 60 * 60 * 24},
+    "daily-workspace-digests": {"task": "apps.automation.tasks.create_daily_digests", "schedule": 60 * 60 * 24},
+}
