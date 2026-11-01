@@ -1,3 +1,5 @@
+import re
+
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -11,6 +13,72 @@ class WorkflowStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkflowStatus
         fields = ["id", "name", "category", "color", "position"]
+
+
+class WorkflowConfigSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=120, required=False)
+    enforce_transitions = serializers.BooleanField()
+    statuses = serializers.ListField(child=serializers.DictField(), min_length=2, max_length=12)
+    # Transition endpoints refer to indexes in the submitted ordered statuses array.
+    transitions = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+
+    def validate(self, data):
+        project = self.context["project"]
+        errors = {}
+        statuses = data["statuses"]
+        allowed = {"id", "name", "category", "color"}
+        names = []
+        categories = {choice for choice, _ in WorkflowStatus.Category.choices}
+        existing_ids = set(project.workflow.statuses.values_list("id", flat=True))
+        seen_ids = set()
+        for index, status in enumerate(statuses):
+            if set(status) - allowed:
+                errors.setdefault("statuses", {})[index] = "Unknown status fields."
+            name = status.get("name")
+            category = status.get("category")
+            if not isinstance(name, str) or not name.strip() or len(name.strip()) > 40:
+                errors.setdefault("statuses", {})[index] = "Name is required (1–40 characters)."
+            elif name.strip().casefold() in names:
+                errors.setdefault("statuses", {})[index] = "Status names must be unique."
+            else:
+                names.append(name.strip().casefold())
+            if not isinstance(category, str) or category not in categories:
+                errors.setdefault("statuses", {})[index] = "Category must be todo, in_progress, or done."
+            color = status.get("color", "#64748b")
+            if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                errors.setdefault("statuses", {})[index] = "Color must be a hex color such as #64748b."
+            if "id" in status:
+                status_id = status["id"]
+                if not isinstance(status_id, int) or isinstance(status_id, bool) or status_id not in existing_ids or status_id in seen_ids:
+                    errors.setdefault("statuses", {})[index] = "Status id is invalid or duplicated."
+                elif isinstance(category, str) and category in categories:
+                    old_status = project.workflow.statuses.get(pk=status_id)
+                    if old_status.category != category and project.issues.filter(status=old_status).exists():
+                        errors.setdefault("statuses", {})[index] = "A status category cannot change while issues use it."
+                if isinstance(status_id, int) and not isinstance(status_id, bool):
+                    seen_ids.add(status_id)
+        submitted_categories = {status.get("category") for status in statuses if isinstance(status.get("category"), str)}
+        if WorkflowStatus.Category.TODO not in submitted_categories or WorkflowStatus.Category.DONE not in submitted_categories:
+            errors["statuses"] = "A workflow must retain at least one To do and one Done status."
+        present_ids = {s["id"] for s in statuses if "id" in s}
+        removed = existing_ids - present_ids
+        if removed and project.issues.filter(status_id__in=removed).exists():
+            errors["statuses"] = "A status used by issues cannot be removed. Move its issues first."
+        transitions = data.get("transitions", [])
+        if len(transitions) > len(statuses) * (len(statuses) - 1):
+            errors["transitions"] = "There are more transitions than this workflow can contain."
+        pairs = set()
+        for index, transition in enumerate(transitions):
+            source, target = transition.get("from"), transition.get("to")
+            if set(transition) != {"from", "to"} or not isinstance(source, int) or isinstance(source, bool) or not isinstance(target, int) or isinstance(target, bool) or source < 0 or target < 0 or source >= len(statuses) or target >= len(statuses) or source == target:
+                errors.setdefault("transitions", {})[index] = "Transition must connect two different submitted status indexes."
+            elif (source, target) in pairs:
+                errors.setdefault("transitions", {})[index] = "Duplicate transition."
+            else:
+                pairs.add((source, target))
+        if errors:
+            raise serializers.ValidationError(errors)
+        return data
 
 
 class BoardSerializer(serializers.ModelSerializer):

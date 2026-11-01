@@ -10,6 +10,9 @@ def required_role(request, view):
     Fallback: reads need VIEWER, writes need MEMBER."""
     roles = getattr(view, "required_roles", {})
     action = getattr(view, "action", None) or request.method.lower()
+    method = request.method.lower()
+    if method in roles:
+        return roles[method]
     if action in roles:
         return roles[action]
     return Role.VIEWER if request.method in SAFE_METHODS else Role.MEMBER

@@ -12,9 +12,10 @@ from rest_framework.response import Response
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
 from apps.tenants.models import Membership
 
-from .models import Board, Project, Sprint, WorkflowStatus
+from .models import Board, Project, Sprint, WorkflowStatus, WorkflowTransition
 from .serializers import (
     BoardSerializer, ProjectSerializer, SprintCompleteSerializer, SprintSerializer, SprintStartSerializer,
+    WorkflowConfigSerializer, WorkflowStatusSerializer,
 )
 from .services import create_project
 
@@ -27,7 +28,8 @@ class ProjectViewSet(TenantModelViewSet):
     queryset = Project.objects.all()
     lookup_field = "key"
     lookup_value_regex = r"[A-Za-z][A-Za-z0-9]{1,9}"
-    required_roles = {"create": Role.ADMIN, "update": Role.ADMIN, "partial_update": Role.ADMIN, "destroy": Role.ADMIN}
+    required_roles = {"create": Role.ADMIN, "update": Role.ADMIN, "partial_update": Role.ADMIN,
+                      "destroy": Role.ADMIN, "workflow": Role.VIEWER, "put": Role.ADMIN}
     search_fields = ["name", "key"]
     filterset_fields = ["is_archived"]
 
@@ -59,6 +61,67 @@ class ProjectViewSet(TenantModelViewSet):
         serializer.validated_data.pop("board_type", None)
         project = serializer.save()
         serializer.instance = self.get_queryset().get(pk=project.pk)
+
+    @extend_schema(request=WorkflowConfigSerializer, responses=WorkflowConfigSerializer)
+    @action(detail=True, methods=["get", "put"], url_path="workflow")
+    def workflow(self, request, key=None):
+        project = self.get_object()
+        workflow = project.workflow
+        statuses = list(workflow.statuses.order_by("position", "id"))
+        if request.method == "GET":
+            index_by_id = {status.id: index for index, status in enumerate(statuses)}
+            return Response({
+                "name": workflow.name,
+                "enforce_transitions": workflow.enforce_transitions,
+                "statuses": WorkflowStatusSerializer(statuses, many=True).data,
+                "transitions": [
+                    {"from": index_by_id[t.from_status_id], "to": index_by_id[t.to_status_id]}
+                    for t in workflow.transitions.select_related("from_status", "to_status")
+                    if t.from_status_id in index_by_id and t.to_status_id in index_by_id
+                ],
+            })
+        payload = WorkflowConfigSerializer(data=request.data, context={"project": project})
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+        with transaction.atomic():
+            existing = {status.id: status for status in statuses}
+            desired_ids = {item["id"] for item in data["statuses"] if "id" in item}
+            removed = set(existing) - desired_ids
+            workflow.transitions.all().delete()
+            if removed:
+                workflow.statuses.filter(id__in=removed).delete()
+            ordered = []
+            # Temporarily rename statuses to allow safe name swaps under the unique constraint.
+            for index, status in enumerate(statuses):
+                if status.id in desired_ids:
+                    WorkflowStatus.objects.filter(pk=status.pk).update(name=f"__workflow_tmp_{workflow.pk}_{index}__")
+            for index, item in enumerate(data["statuses"]):
+                status_id = item.get("id")
+                status = existing.get(status_id) if status_id else WorkflowStatus(workflow=workflow)
+                status.name = item["name"].strip()
+                status.category = item["category"]
+                status.color = item.get("color", "#64748b")
+                status.position = index
+                status.save()
+                ordered.append(status)
+            for transition in data.get("transitions", []):
+                WorkflowTransition.objects.create(
+                    workspace=self.workspace, workflow=workflow,
+                    from_status=ordered[transition["from"]], to_status=ordered[transition["to"]],
+                )
+            workflow.name = data.get("name", workflow.name)
+            workflow.enforce_transitions = data["enforce_transitions"]
+            workflow.save()
+        index_by_id = {status.id: index for index, status in enumerate(ordered)}
+        return Response({
+            "name": workflow.name,
+            "enforce_transitions": workflow.enforce_transitions,
+            "statuses": WorkflowStatusSerializer(ordered, many=True).data,
+            "transitions": [
+                {"from": index_by_id[t.from_status_id], "to": index_by_id[t.to_status_id]}
+                for t in workflow.transitions.all()
+            ],
+        })
 
 
 class BoardViewSet(WorkspaceScopedMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin,
