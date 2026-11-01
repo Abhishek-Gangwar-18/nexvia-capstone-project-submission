@@ -1,3 +1,7 @@
+import mimetypes
+from pathlib import PurePath
+
+from django.conf import settings
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -5,7 +9,7 @@ from apps.accounts.serializers import UserMiniSerializer
 from apps.core.fields import TenantPrimaryKeyRelatedField, WorkspaceMemberField
 from apps.projects.models import Project, Sprint, WorkflowStatus
 
-from .models import Issue, Label
+from .models import Issue, IssueAttachment, IssueAuditLog, IssueComment, Label
 
 
 class LabelSerializer(serializers.ModelSerializer):
@@ -128,3 +132,73 @@ class IssueMoveSerializer(serializers.Serializer):
     sprint = TenantPrimaryKeyRelatedField(queryset=Sprint.objects.all(), required=False, allow_null=True)
     prev_id = serializers.IntegerField(required=False, allow_null=True, help_text="Issue now directly above")
     next_id = serializers.IntegerField(required=False, allow_null=True, help_text="Issue now directly below")
+
+
+class IssueCommentSerializer(serializers.ModelSerializer):
+    author = UserMiniSerializer(read_only=True)
+    mentions = UserMiniSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = IssueComment
+        fields = ["id", "body", "author", "mentions", "created_at", "updated_at"]
+        read_only_fields = fields
+
+
+class IssueCommentCreateSerializer(serializers.Serializer):
+    body = serializers.CharField(max_length=10000, allow_blank=False, trim_whitespace=True)
+
+    def validate_body(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Comment cannot be empty.")
+        return value.strip()
+
+
+class IssueAttachmentSerializer(serializers.ModelSerializer):
+    uploaded_by = UserMiniSerializer(read_only=True)
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IssueAttachment
+        fields = ["id", "original_name", "content_type", "size", "uploaded_by", "download_url", "created_at"]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.URLField())
+    def get_download_url(self, obj):
+        return f"/api/attachments/{obj.pk}/download/"
+
+
+class IssueAttachmentUploadSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    MAX_SIZE = 25 * 1024 * 1024
+    ALLOWED_TYPES = {
+        ".csv": {"text/csv", "application/vnd.ms-excel"},
+        ".gif": {"image/gif"},
+        ".jpeg": {"image/jpeg"},
+        ".jpg": {"image/jpeg"},
+        ".md": {"text/markdown", "text/plain"},
+        ".pdf": {"application/pdf"},
+        ".png": {"image/png"},
+        ".txt": {"text/plain"},
+        ".webp": {"image/webp"},
+        ".zip": {"application/zip", "application/x-zip-compressed"},
+    }
+
+    def validate_file(self, value):
+        if value.size > self.MAX_SIZE:
+            raise serializers.ValidationError("File exceeds the 25 MB limit.")
+        extension = PurePath(value.name).suffix.lower()
+        allowed = self.ALLOWED_TYPES.get(extension)
+        if not allowed:
+            raise serializers.ValidationError("Unsupported file type. Allowed: CSV, GIF, JPEG, Markdown, PDF, PNG, TXT, WebP, ZIP.")
+        content_type = (value.content_type or mimetypes.guess_type(value.name)[0] or "").lower()
+        if content_type not in allowed and content_type != "application/octet-stream":
+            raise serializers.ValidationError("File extension and content type do not match.")
+        return value
+
+
+class IssueAuditLogSerializer(serializers.ModelSerializer):
+    actor = UserMiniSerializer(read_only=True)
+
+    class Meta:
+        model = IssueAuditLog
+        fields = ["id", "issue_key", "issue_title", "actor", "action", "changes", "created_at"]

@@ -122,3 +122,66 @@ class Issue(TenantModel):
                 errors[field] = "User is not a member of this workspace."
         if errors:
             raise ValidationError(errors)
+
+
+class IssueComment(TenantModel):
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="comments")
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="issue_comments")
+    body = models.TextField(max_length=10000)
+    mentions = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True, related_name="mentioned_in_comments")
+
+    tenant_parent = "issue"
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def check_tenant_integrity(self):
+        super().check_tenant_integrity()
+        if self.author_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.author_id).exists():
+            raise ValidationError({"author": "Author is not a member of this workspace."})
+
+
+class IssueAttachment(TenantModel):
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="attachments")
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="issue_attachments")
+    file = models.FileField(upload_to="issues/%Y/%m/")
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120)
+    size = models.PositiveBigIntegerField()
+
+    tenant_parent = "issue"
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def check_tenant_integrity(self):
+        super().check_tenant_integrity()
+        if self.uploaded_by_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.uploaded_by_id).exists():
+            raise ValidationError({"uploaded_by": "Uploader is not a member of this workspace."})
+
+
+class IssueAuditLog(TenantModel):
+    class Action(models.TextChoices):
+        CREATED = "created", "Created"
+        UPDATED = "updated", "Updated"
+        MOVED = "moved", "Moved"
+        COMMENTED = "commented", "Commented"
+        ATTACHED = "attached", "Attachment added"
+        DETACHED = "detached", "Attachment removed"
+        DELETED = "deleted", "Deleted"
+
+    issue_key = models.CharField(max_length=24, db_index=True)
+    issue_title = models.CharField(max_length=255)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="issue_audit_events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="issue_audit_events")
+    action = models.CharField(max_length=16, choices=Action.choices)
+    changes = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["workspace", "issue_key", "created_at"])]
+
+    def check_tenant_integrity(self):
+        super().check_tenant_integrity()
+        if self.actor_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.actor_id).exists():
+            raise ValidationError({"actor": "Actor is not a member of this workspace."})
