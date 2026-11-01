@@ -77,6 +77,22 @@ export interface WorkflowStatus {
   position: number;
 }
 
+export interface WorkflowTransitionRule {
+  from: number;
+  to: number;
+}
+
+export interface WorkflowConfig {
+  name: string;
+  enforce_transitions: boolean;
+  statuses: WorkflowStatus[];
+  transitions: WorkflowTransitionRule[];
+}
+
+export type WorkflowConfigDraft = Omit<WorkflowConfig, "statuses"> & {
+  statuses: Array<Omit<WorkflowStatus, "id"> & { id?: number }>;
+};
+
 export interface Board {
   id: number;
   project: number;
@@ -167,6 +183,82 @@ export interface Issue extends IssueRef {
 export interface IssueDetail extends Issue {
   description: string;
   children: IssueSummary[];
+}
+
+export interface IssueComment {
+  id: number;
+  body: string;
+  author: UserMini | null;
+  mentions: UserMini[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueAttachment {
+  id: number;
+  original_name: string;
+  content_type: string;
+  size: number;
+  uploaded_by: UserMini | null;
+  download_url: string;
+  created_at: string;
+}
+
+export interface IssueActivity {
+  id: number;
+  issue_key: string;
+  issue_title: string;
+  actor: UserMini | null;
+  action: "created" | "updated" | "moved" | "commented" | "attached" | "detached" | "deleted";
+  changes: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface NotificationItem {
+  id: number;
+  actor: UserMini | null;
+  event_key: string;
+  title: string;
+  body: string;
+  url: string;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface WebhookEndpoint {
+  id: number;
+  name: string;
+  url: string;
+  secret: string;
+  events: string[];
+  is_active: boolean;
+  created_by: UserMini | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebhookDelivery {
+  id: number;
+  event_id: string;
+  event: string;
+  state: "pending" | "delivered" | "failed";
+  attempts: number;
+  response_status: number | null;
+  response_body: string;
+  last_error: string;
+  next_attempt_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+export interface WorkspaceReport {
+  id: number;
+  report_type: string;
+  state: "pending" | "ready" | "failed";
+  data: Record<string, unknown>;
+  error: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Paginated<T> {

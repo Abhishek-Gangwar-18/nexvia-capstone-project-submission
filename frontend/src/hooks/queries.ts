@@ -4,7 +4,9 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import type {
   AuthResponse, Board, DashboardData, Invitation, InvitationPreview, Issue, IssueDetail, Label, Me, Member,
-  Paginated, Project, Role, Sprint, StatusCategory, Workspace,
+  IssueActivity, IssueAttachment, IssueComment, Paginated, Project, Role, Sprint, StatusCategory, WorkflowConfig,
+  WorkflowConfigDraft, Workspace,
+  NotificationItem, WebhookDelivery, WebhookEndpoint, WorkspaceReport,
 } from "@/types";
 import { useWorkspaceSlug } from "./useWorkspace";
 
@@ -19,6 +21,7 @@ export function useWsApi() {
       slug,
       get: <T>(url: string, params?: object) => api.get<T>(url, { params, headers }).then((r) => r.data),
       post: <T>(url: string, body?: unknown) => api.post<T>(url, body, { headers }).then((r) => r.data),
+      put: <T>(url: string, body?: unknown) => api.put<T>(url, body, { headers }).then((r) => r.data),
       patch: <T>(url: string, body?: unknown) => api.patch<T>(url, body, { headers }).then((r) => r.data),
       del: (url: string) => api.delete(url, { headers }).then(() => undefined),
     };
@@ -281,6 +284,213 @@ export function useUpdateBoard() {
     mutationFn: ({ id, wip_limits }: { id: number; wip_limits: Record<string, number> }) =>
       w.patch<Board>(`/boards/${id}/`, { wip_limits }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "projects"] }),
+  });
+}
+
+export function useWorkflow(projectKey: string) {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "workflow", projectKey],
+    queryFn: () => w.get<WorkflowConfig>(`/projects/${projectKey}/workflow/`),
+  });
+}
+
+export function useSaveWorkflow(projectKey: string) {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: WorkflowConfigDraft) => w.put<WorkflowConfig>(`/projects/${projectKey}/workflow/`, body),
+    onSuccess: (data) => {
+      qc.setQueryData([...ws(w.slug), "workflow", projectKey], data);
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "projects", projectKey] });
+      refreshWorkData(qc, w.slug);
+    },
+  });
+}
+
+export function useIssueComments(issueKey: string) {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "issue", issueKey, "comments"],
+    queryFn: () => w.get<IssueComment[]>(`/issues/${issueKey}/comments/`),
+  });
+}
+
+function invalidateIssueExtras(qc: QueryClient, slug: string, key: string) {
+  qc.invalidateQueries({ queryKey: [...ws(slug), "issue", key] });
+}
+
+export function useCreateIssueComment(issueKey: string) {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { body: string }) => w.post<IssueComment>(`/issues/${issueKey}/comments/`, body),
+    onSuccess: () => invalidateIssueExtras(qc, w.slug, issueKey),
+  });
+}
+
+export function useEditIssueComment(issueKey: string) {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: number; body: string }) => w.patch<IssueComment>(`/issues/${issueKey}/comments/${id}/`, { body }),
+    onSuccess: () => invalidateIssueExtras(qc, w.slug, issueKey),
+  });
+}
+
+export function useDeleteIssueComment(issueKey: string) {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.del(`/issues/${issueKey}/comments/${id}/`),
+    onSuccess: () => invalidateIssueExtras(qc, w.slug, issueKey),
+  });
+}
+
+export function useIssueAttachments(issueKey: string) {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "issue", issueKey, "attachments"],
+    queryFn: () => w.get<IssueAttachment[]>(`/issues/${issueKey}/attachments/`),
+  });
+}
+
+export function useUploadIssueAttachment(issueKey: string) {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const body = new FormData();
+      body.append("file", file);
+      return w.post<IssueAttachment>(`/issues/${issueKey}/attachments/`, body);
+    },
+    onSuccess: () => invalidateIssueExtras(qc, w.slug, issueKey),
+  });
+}
+
+export function useDeleteIssueAttachment(issueKey: string) {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.del(`/attachments/${id}/`),
+    onSuccess: () => invalidateIssueExtras(qc, w.slug, issueKey),
+  });
+}
+
+export function useIssueActivity(issueKey: string) {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "issue", issueKey, "activity"],
+    queryFn: () => w.get<IssueActivity[]>(`/issues/${issueKey}/activity/`),
+  });
+}
+
+export function useDownloadIssueAttachment() {
+  const w = useWsApi();
+  return useMutation({
+    mutationFn: async (attachment: IssueAttachment) => {
+      const response = await api.get<Blob>(attachment.download_url, {
+        responseType: "blob", headers: { "X-Workspace": w.slug },
+      });
+      const href = URL.createObjectURL(response.data);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = attachment.original_name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+    },
+  });
+}
+
+export function useNotifications() {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "notifications"],
+    queryFn: () => w.get<{ unread_count: number; results: NotificationItem[] }>("/notifications/"),
+    refetchInterval: 60_000,
+  });
+}
+
+export function useMarkNotificationRead() {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.post<NotificationItem>(`/notifications/${id}/read/`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "notifications"] }),
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => w.post<{ updated: number }>("/notifications/read-all/"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "notifications"] }),
+  });
+}
+
+export function useWebhooks(enabled = true) {
+  const w = useWsApi();
+  return useQuery({ queryKey: [...ws(w.slug), "webhooks"], enabled, queryFn: () => w.get<WebhookEndpoint[]>("/webhooks/") });
+}
+
+export function useCreateWebhook() {
+  const w = useWsApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Pick<WebhookEndpoint, "name" | "url" | "events">) => w.post<WebhookEndpoint>("/webhooks/", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhooks"] }),
+  });
+}
+
+export function useDeleteWebhook() {
+  const w = useWsApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.del(`/webhooks/${id}/`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhooks"] }),
+  });
+}
+
+export function useTestWebhook() {
+  const w = useWsApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.post<WebhookDelivery>(`/webhooks/${id}/test/`),
+    onSuccess: (_delivery, id) => {
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhooks"] });
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhook-deliveries", id] });
+    },
+  });
+}
+
+export function useRotateWebhookSecret() {
+  const w = useWsApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.post<{ secret: string }>(`/webhooks/${id}/rotate-secret/`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhooks"] }),
+  });
+}
+
+export function useWebhookDeliveries(id: number | null) {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "webhook-deliveries", id],
+    enabled: id !== null,
+    queryFn: () => w.get<WebhookDelivery[]>(`/webhooks/${id}/deliveries/`),
+    refetchInterval: id === null ? false : 5000,
+  });
+}
+
+export function useWorkspaceReports() {
+  const w = useWsApi();
+  return useQuery({ queryKey: [...ws(w.slug), "reports"], queryFn: () => w.get<WorkspaceReport[]>("/reports/"), refetchInterval: 5000 });
+}
+
+export function useGenerateWorkspaceReport() {
+  const w = useWsApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => w.post<WorkspaceReport>("/reports/"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "reports"] }),
   });
 }
 
