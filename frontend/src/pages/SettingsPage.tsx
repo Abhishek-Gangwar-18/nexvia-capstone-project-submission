@@ -1,4 +1,4 @@
-import { Building, Check, CreditCard, Plus, Tag, Trash, TriangleAlert } from "lucide-react";
+import { Building, Check, Copy, CreditCard, Globe, Plus, Send, Tag, Trash, TriangleAlert } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -8,7 +8,7 @@ import { LabelChip } from "@/components/issues/IssueMeta";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Field, Input } from "@/components/ui/Input";
 import { ConfirmDialog } from "@/components/ui/Modal";
-import { useCreateLabel, useDeleteLabel, useDeleteWorkspace, useLabels, useUpdateWorkspace } from "@/hooks/queries";
+import { useCreateLabel, useCreateWebhook, useDeleteLabel, useDeleteWebhook, useDeleteWorkspace, useGenerateWorkspaceReport, useLabels, useRotateWebhookSecret, useTestWebhook, useUpdateWorkspace, useWebhookDeliveries, useWebhooks, useWorkspaceReports } from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { PLANS, PROJECT_COLORS } from "@/lib/constants";
 import { cn, formatDate } from "@/lib/utils";
@@ -37,6 +37,18 @@ export default function SettingsPage() {
   const labels = useLabels().data ?? [];
   const createLabel = useCreateLabel();
   const deleteLabel = useDeleteLabel();
+  const webhooks = useWebhooks(isAdmin);
+  const createWebhook = useCreateWebhook();
+  const deleteWebhook = useDeleteWebhook();
+  const testWebhook = useTestWebhook();
+  const rotateSecret = useRotateWebhookSecret();
+  const [webhookName, setWebhookName] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookEvents, setWebhookEvents] = useState<string[]>(["issue.created", "issue.updated"]);
+  const [selectedWebhook, setSelectedWebhook] = useState<number | null>(null);
+  const deliveries = useWebhookDeliveries(selectedWebhook);
+  const reports = useWorkspaceReports();
+  const generateReport = useGenerateWorkspaceReport();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const setLastWorkspace = useUI((s) => s.setLastWorkspace);
@@ -132,6 +144,21 @@ export default function SettingsPage() {
               </Button>
             </form>
           )}
+        </Section>
+
+        <Section icon={<Globe className="size-4" />} title="Webhooks" description="Send signed issue events to your integrations. Delivery attempts retry automatically with backoff.">
+          {isAdmin && <form onSubmit={(event) => { event.preventDefault(); createWebhook.mutate({ name: webhookName.trim(), url: webhookUrl.trim(), events: webhookEvents }, { onSuccess: (endpoint) => { setWebhookName(""); setWebhookUrl(""); setSelectedWebhook(endpoint.id); toast.success("Webhook added. Copy its signing secret now."); }, onError: () => toast.error("Couldn't add webhook. Check URL and event selections.") }); }} className="mb-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+            <Input value={webhookName} onChange={(e) => setWebhookName(e.target.value)} placeholder="Webhook name" maxLength={100} />
+            <Input value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://example.com/hooks" type="url" />
+            <Button type="submit" icon={<Plus className="size-4" />} loading={createWebhook.isPending} disabled={!webhookName.trim() || !webhookUrl.trim()}>Add webhook</Button>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 sm:col-span-3">{["issue.created", "issue.updated", "issue.moved", "issue.commented", "issue.attached", "issue.detached", "issue.deleted"].map((event) => <label key={event} className="flex items-center gap-1.5 text-[11px] text-slate-500"><input type="checkbox" checked={webhookEvents.includes(event)} onChange={(e) => setWebhookEvents((current) => e.target.checked ? [...current, event] : current.filter((item) => item !== event))} className="accent-indigo-600" />{event}</label>)}</div>
+          </form>}
+          <div className="space-y-2">{(webhooks.data ?? []).map((endpoint) => <div key={endpoint.id} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700"><div className="flex flex-wrap items-start gap-2"><div className="min-w-0 flex-1"><p className="text-sm font-semibold">{endpoint.name}</p><p className="truncate font-mono text-[11px] text-slate-500">{endpoint.url}</p><p className="mt-1 text-[10px] text-slate-400">Events: {endpoint.events.join(", ") || "none"}</p></div>{isAdmin && <><IconButton label="Copy webhook secret" onClick={() => { navigator.clipboard.writeText(endpoint.secret); toast.success("Signing secret copied"); }}><Copy className="size-4" /></IconButton><IconButton label="Rotate webhook secret" onClick={() => rotateSecret.mutate(endpoint.id, { onSuccess: ({ secret }) => { navigator.clipboard.writeText(secret); toast.success("Secret rotated and copied"); }, onError: () => toast.error("Couldn't rotate secret") })}><span className="text-xs font-bold">↻</span></IconButton><IconButton label="Send test webhook" onClick={() => testWebhook.mutate(endpoint.id, { onSuccess: () => toast.success("Test delivery queued"), onError: () => toast.error("Couldn't queue test") })}><Send className="size-4" /></IconButton><IconButton label="Delete webhook" onClick={() => deleteWebhook.mutate(endpoint.id, { onSuccess: () => toast.success("Webhook deleted") })}><Trash className="size-4 text-rose-500" /></IconButton></>}</div><button onClick={() => setSelectedWebhook((current) => current === endpoint.id ? null : endpoint.id)} className="mt-2 text-[11px] font-medium text-brand-600">{selectedWebhook === endpoint.id ? "Hide deliveries" : "View recent deliveries"}</button>{selectedWebhook === endpoint.id && <div className="mt-2 space-y-1 border-t border-slate-100 pt-2 dark:border-slate-800">{(deliveries.data ?? []).length ? deliveries.data?.map((delivery) => <div key={delivery.id} className="flex flex-wrap items-center gap-2 text-[10px]"><span className={`rounded px-1.5 py-0.5 font-semibold ${delivery.state === "delivered" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : delivery.state === "failed" ? "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" : "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"}`}>{delivery.state}</span><span className="font-mono">{delivery.event}</span><span className="text-slate-400">{delivery.attempts} attempts · HTTP {delivery.response_status ?? "—"}</span>{delivery.last_error && <span className="basis-full text-rose-500">{delivery.last_error}</span>}</div>) : <p className="text-[11px] text-slate-400">No deliveries yet.</p>}</div>}</div>)}{isAdmin && (webhooks.data ?? []).length === 0 && <p className="text-xs text-slate-400">No webhooks configured.</p>}{!isAdmin && <p className="text-xs text-slate-400">Webhook settings are managed by workspace admins.</p>}</div>
+        </Section>
+
+        <Section icon={<Copy className="size-4" />} title="Background reports" description="Generate an issue summary asynchronously. You can keep working while it runs.">
+          <Button icon={<Plus className="size-4" />} loading={generateReport.isPending} onClick={() => generateReport.mutate(undefined, { onSuccess: () => toast.success("Report queued"), onError: () => toast.error("Couldn't queue report") })}>Generate report</Button>
+          <div className="mt-3 space-y-2">{(reports.data ?? []).slice(0, 5).map((report) => <div key={report.id} className="rounded-lg bg-slate-50 px-3 py-2 text-xs dark:bg-slate-800/60"><span className="font-semibold capitalize">{report.report_type.replaceAll("_", " ")}</span><span className="ml-2 text-slate-500">{report.state}</span>{report.state === "ready" && <span className="ml-2 text-slate-500">{String(report.data.issue_count ?? 0)} issues</span>}{report.error && <p className="mt-1 text-rose-500">{report.error}</p>}</div>)}</div>
         </Section>
 
         {isOwner && (
