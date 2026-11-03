@@ -39,8 +39,8 @@ class InvitationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Invitation
-        fields = ["id", "email", "role", "invited_by", "expires_at", "accept_url", "created_at"]
-        read_only_fields = ["expires_at", "created_at"]
+        fields = ["id", "email", "role", "invited_by", "expires_at", "accept_url", "email_sent_at", "created_at"]
+        read_only_fields = ["expires_at", "email_sent_at", "created_at"]
 
     def validate_email(self, value):
         value = value.strip().lower()

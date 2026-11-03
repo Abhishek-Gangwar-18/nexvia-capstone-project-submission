@@ -45,6 +45,7 @@ class User(AbstractUser):
     email = models.EmailField("email address", unique=True)
     avatar_color = models.CharField(max_length=7, default=random_avatar_color)
     job_title = models.CharField(max_length=100, blank=True)
+    email_notifications = models.BooleanField(default=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []

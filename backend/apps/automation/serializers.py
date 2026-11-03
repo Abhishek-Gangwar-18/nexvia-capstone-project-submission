@@ -1,6 +1,12 @@
+import ipaddress
+from urllib.parse import urlparse
+
+from django.conf import settings
 from rest_framework import serializers
 
 from apps.accounts.serializers import UserMiniSerializer
+from apps.core.fields import TenantPrimaryKeyRelatedField
+from apps.projects.models import Project, Sprint
 from .models import Notification, WebhookDelivery, WebhookEndpoint, WorkspaceReport
 
 EVENT_CHOICES = [(f"issue.{event}", f"Issue {event}") for event in
@@ -26,14 +32,24 @@ class WebhookEndpointSerializer(serializers.ModelSerializer):
         return values
 
     def validate_url(self, value):
-        from django.conf import settings
-        from urllib.parse import urlparse
         parsed = urlparse(value)
         if parsed.scheme != "https" and not (settings.DEBUG and parsed.scheme == "http"):
             raise serializers.ValidationError("Use an HTTPS URL (HTTP is allowed in local DEBUG mode).")
         if not parsed.hostname or parsed.username or parsed.password:
             raise serializers.ValidationError("URL must include a hostname and cannot contain credentials.")
+        if not settings.DEBUG and self._is_internal(parsed.hostname):
+            raise serializers.ValidationError("Webhook URLs can't point at internal addresses.")
         return value
+
+
+    @staticmethod
+    def _is_internal(hostname):
+        if hostname.lower() == "localhost" or hostname.lower().endswith(".localhost"):
+            return True
+        try:
+            return not ipaddress.ip_address(hostname).is_global
+        except ValueError:
+            return False  # a DNS name: checked again at delivery time, when it is resolved
 
 
 class WebhookDeliverySerializer(serializers.ModelSerializer):
@@ -56,8 +72,28 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 class WorkspaceReportSerializer(serializers.ModelSerializer):
     state = serializers.CharField(read_only=True)
+    requested_by = UserMiniSerializer(read_only=True)
 
     class Meta:
         model = WorkspaceReport
-        fields = ["id", "report_type", "state", "data", "error", "created_at", "updated_at"]
+        fields = ["id", "report_type", "title", "project", "sprint", "requested_by", "state", "data", "error",
+                  "created_at", "updated_at"]
         read_only_fields = fields
+
+
+class ReportRequestSerializer(serializers.Serializer):
+    report_type = serializers.ChoiceField(choices=WorkspaceReport.ReportType.choices, default=WorkspaceReport.ReportType.SUMMARY)
+    project = TenantPrimaryKeyRelatedField(queryset=Project.objects.all(), required=False, allow_null=True)
+    sprint = TenantPrimaryKeyRelatedField(queryset=Sprint.objects.all(), required=False, allow_null=True)
+
+    def validate(self, attrs):
+        report_type = attrs["report_type"]
+        if report_type == WorkspaceReport.ReportType.VELOCITY and not attrs.get("project"):
+            raise serializers.ValidationError({"project": "Choose a project for the velocity report."})
+        if report_type == WorkspaceReport.ReportType.BURNDOWN:
+            sprint = attrs.get("sprint")
+            if not sprint:
+                raise serializers.ValidationError({"sprint": "Choose a sprint for the burndown report."})
+            if sprint.state == Sprint.State.PLANNED or not sprint.start_date:
+                raise serializers.ValidationError({"sprint": "This sprint hasn't started yet."})
+        return attrs

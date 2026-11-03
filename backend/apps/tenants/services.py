@@ -4,10 +4,17 @@ from django.utils import timezone
 from .models import Membership, Workspace
 
 
+def _audit(*args, **kwargs):
+    from apps.issues.activity import record_event  # issues depends on tenants at import time
+
+    record_event(*args, **kwargs)
+
+
 @transaction.atomic
 def create_workspace(*, name, owner, plan=Workspace.Plan.FREE, slug=""):
     workspace = Workspace.objects.create(name=name, owner=owner, plan=plan, slug=slug)
     Membership.objects.create(workspace=workspace, user=owner, role=Membership.Role.OWNER)
+    _audit(workspace, owner, "created", "workspace", workspace.name)
     return workspace
 
 
@@ -18,9 +25,11 @@ def is_member(workspace, user):
 @transaction.atomic
 def accept_invitation(invitation, user):
     """Join the invited workspace (idempotent if already a member) and close the invitation."""
-    Membership.objects.get_or_create(
+    _, joined = Membership.objects.get_or_create(
         workspace=invitation.workspace, user=user, defaults={"role": invitation.role}
     )
+    if joined:
+        _audit(invitation.workspace, user, "joined", "member", user.email, changes={"role": invitation.role})
     invitation.accepted_at = timezone.now()
     invitation.save(update_fields=["accepted_at", "updated_at"])
     return invitation.workspace

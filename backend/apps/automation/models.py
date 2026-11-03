@@ -25,7 +25,7 @@ class WebhookEndpoint(TenantModel):
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
-        if self.created_by_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.created_by_id).exists():
+        if self._state.adding and self.created_by_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.created_by_id).exists():
             raise ValidationError({"created_by": "Creator is not a workspace member."})
 
 
@@ -60,6 +60,7 @@ class Notification(TenantModel):
     body = models.CharField(max_length=500)
     url = models.CharField(max_length=500, blank=True)
     read_at = models.DateTimeField(null=True, blank=True)
+    emailed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]
@@ -68,6 +69,8 @@ class Notification(TenantModel):
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
+        if not self._state.adding:
+            return
         members = Membership.objects.filter(workspace_id=self.workspace_id)
         if not members.filter(user_id=self.recipient_id).exists():
             raise ValidationError({"recipient": "Recipient is not a workspace member."})
@@ -81,8 +84,16 @@ class WorkspaceReport(TenantModel):
         READY = "ready", "Ready"
         FAILED = "failed", "Failed"
 
-    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="flowboard_reports")
-    report_type = models.CharField(max_length=30, default="workspace_summary")
+    class ReportType(models.TextChoices):
+        SUMMARY = "workspace_summary", "Workspace summary"
+        BURNDOWN = "sprint_burndown", "Sprint burndown"
+        VELOCITY = "velocity", "Velocity"
+
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="flowboard_reports")
+    report_type = models.CharField(max_length=30, choices=ReportType.choices, default=ReportType.SUMMARY)
+    title = models.CharField(max_length=200, blank=True)
+    project = models.ForeignKey("projects.Project", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    sprint = models.ForeignKey("projects.Sprint", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     state = models.CharField(max_length=10, choices=State.choices, default=State.PENDING)
     data = models.JSONField(default=dict)
     error = models.CharField(max_length=500, blank=True)
@@ -92,5 +103,5 @@ class WorkspaceReport(TenantModel):
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
-        if not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.requested_by_id).exists():
+        if self._state.adding and self.requested_by_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.requested_by_id).exists():
             raise ValidationError({"requested_by": "Requester is not a workspace member."})

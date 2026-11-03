@@ -91,6 +91,7 @@ class Invitation(TimeStampedModel):
     invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+")
     expires_at = models.DateTimeField(default=default_invite_expiry)
     accepted_at = models.DateTimeField(null=True, blank=True)
+    email_sent_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
