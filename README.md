@@ -21,9 +21,9 @@ Stripe Billing · Docker · GitHub Actions
 | 1 | Tenant isolation strategy + data models + Faker seed data | ✅ done |
 | 2 | REST API (DRF) + JWT auth + role permissions | ✅ done |
 | 3 | React UI + drag-and-drop Kanban | ✅ done |
-| 4 | Custom workflows, comments, attachments, audit log | ⏳ next |
-| 5 | Webhooks + Celery background jobs (notifications, reports) | ⏳ |
-| 6 | Stripe Billing (test mode) + plan limits | ⏳ |
+| 4 | Custom workflows, comments, attachments, audit log | ✅ done |
+| 5 | Webhooks + Celery background jobs (notifications, reports, email) | ✅ done |
+| 6 | Stripe Billing (test mode) + plan limits | ⏳ next |
 | 7 | Docker images + GitHub Actions CI/CD | ⏳ |
 
 ## Features (so far)
@@ -35,7 +35,7 @@ Stripe Billing · Docker · GitHub Actions
   payloads are rejected.
 - **JWT** auth with rotating refresh tokens, logout blacklisting and login throttling.
 - **Roles**: owner › admin › member › viewer. The UI mirrors what each role can do.
-- Invitations by link (7-day expiry), and one user can belong to several workspaces.
+- Invitations by email or link (7-day expiry), and one user can belong to several workspaces.
 
 **Project management**
 - Projects with keys (`WEB`), per-project workflows (To Do → In Progress → In Review → Done) and boards.
@@ -49,6 +49,20 @@ Stripe Billing · Docker · GitHub Actions
 - **Dashboard**: KPIs, created-vs-resolved trend, status and type charts, sprint progress, team workload.
 - Issues table across projects with search, filters, sorting and pagination.
 - `Ctrl/⌘ K` command palette, `C` to create an issue, light/dark/system theme, responsive layout.
+
+**Collaboration & workflows**
+- **Workflow editor**: custom statuses and allowed transitions per project. The board dims columns a card can't
+  move to, and the API enforces the rules.
+- **Comments** with `@email` mentions, **file attachments** (up to 25 MB, private downloads), and an activity
+  history on every issue.
+- **Audit log** (admins): filterable, workspace-wide history of issue, project, sprint, workflow, member,
+  invitation, label, webhook and workspace changes.
+
+**Automation**
+- **Webhooks**: HMAC-signed events, automatic retries, delivery history and a test button.
+- **Notifications**: in-app bell, plus email for mentions, new assignments, overdue issues and a daily digest
+  (users can opt out).
+- **Reports**: sprint burndown, velocity and workspace summary, generated in the background and exported as CSV.
 
 ---
 
@@ -74,7 +88,17 @@ python manage.py runserver                 # http://127.0.0.1:8000
 cd frontend
 pnpm install
 pnpm dev                                   # http://localhost:5173
+
+# 4. background jobs (terminals 3 and 4, from backend/ with the venv active)
+python -m celery -A config worker --pool=solo -l info   # webhooks, notifications, reports, email
+python -m celery -A config beat -l info                 # daily reminders + digest (08:00 / 08:05 UTC)
 ```
+
+The app runs without the worker, but reports stay queued and webhooks, notifications and email won't go out
+until it starts. `--pool=solo` is the setup tested on Windows.
+
+**Email** prints to the worker's terminal by default. For real delivery, set the SMTP values shown in
+`.env.example`.
 
 Open **http://localhost:5173** and click one of the **one-click demo accounts** on the login page.
 
@@ -97,14 +121,16 @@ Open **http://localhost:5173** and click one of the **one-click demo accounts** 
 
 Things to try: drag a card to **Done** on the board, drag issues from the backlog into the planned
 sprint, press `Ctrl+K` and search, log in as a **viewer** to see the read-only UI, and invite someone
-from **Members** (then open the invite link in a private window).
+from **Members** (then open the invite link in a private window). With the worker running, generate a
+**burndown** under Reports, mention a teammate in a comment and watch the email appear in the worker's
+terminal, then check **Audit log**.
 
 ---
 
 ## Project structure
 
 ```
-backend/                Django project (config/) + apps: core, accounts, tenants, projects, issues
+backend/                Django project (config/) + apps: core, accounts, tenants, projects, issues, automation
 frontend/               React + TypeScript SPA (Vite, pnpm)
 docs/                   ARCHITECTURE.md, API_TEST.md
 docker-compose.yml      Postgres + Redis for local development
@@ -121,6 +147,9 @@ The architecture doc has the full tree and what each app and module owns.
 | Create / edit / move issues, sprints, labels | | ✅ | ✅ | ✅ |
 | Delete an issue | | own | ✅ | ✅ |
 | Create / edit / archive / delete projects, WIP limits | | | ✅ | ✅ |
+| Comment, upload files, generate reports | | ✅ | ✅ | ✅ |
+| See reports | ✅ | ✅ | ✅ | ✅ |
+| Edit workflows; manage webhooks; read the audit log | | | ✅ | ✅ |
 | Invite, change roles, remove members | | | ✅ | ✅ |
 | Delete the workspace | | | | ✅ |
 
@@ -140,7 +169,7 @@ The full walkthrough, endpoint table and security scenarios are in [docs/API_TES
 ## Tests
 
 ```bash
-cd backend && pytest        # 57 tests on PostgreSQL: tenancy, permissions, API, sprints, invitations
+cd backend && pytest        # 235 tests on PostgreSQL: tenancy, permissions, API, workflows, jobs, reports, audit, email
 cd frontend && pnpm build   # strict TypeScript check + production build
 ```
 
@@ -152,6 +181,8 @@ cd frontend && pnpm build   # strict TypeScript check + production build
 | Redis port already allocated | Set `REDIS_HOST_PORT` (and `REDIS_URL`) in `.env` to a free port; the default is 6380 |
 | `pnpm install` complains about ignored build scripts | Already handled in `frontend/pnpm-workspace.yaml` (`allowBuilds: esbuild`); for a new package run `pnpm approve-builds <pkg>` |
 | UI says "Can't reach the server" | Django isn't running on :8000 (Vite proxies `/api` there) |
+| Report stuck on "pending", no emails | The Celery worker isn't running |
+| Issue edits take about 4 seconds | Redis is down, so queuing times out: `docker compose up -d redis` |
 | Demo login stopped working | Re-run `python manage.py seed_demo --reset` |
 | Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again |
 

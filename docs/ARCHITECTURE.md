@@ -4,8 +4,8 @@ How FlowBoard is put together: the moving parts, how tenants are kept apart, the
 the reasoning behind the main design decisions. For setup see the [README](../README.md); for
 exercising the API see [API_TEST.md](API_TEST.md).
 
-> **Status:** Phases 1–3 are implemented (tenancy + models, REST API, React UI). Parts marked
-> *planned* arrive in Phases 4–7 and are described in [section 12](#12-roadmap).
+> **Status:** Phases 1–5 are implemented (tenancy + models, REST API, React UI, workflows and collaboration,
+> background jobs). Parts marked *planned* arrive in Phases 6–7; see [section 12](#12-roadmap).
 
 - [1. System overview](#1-system-overview)
 - [2. Tech stack](#2-tech-stack)
@@ -39,12 +39,16 @@ flowchart LR
     end
     PG[("PostgreSQL 16<br/>shared schema")]
     Redis[("Redis 7")]
-    Worker["Celery worker + beat<br/><i>planned · Phase 5</i>"]
+    Worker["Celery worker + beat"]
+    Hooks["Customer webhook URLs"]
+    Mail["Email (console or SMTP)"]
     Stripe["Stripe Billing<br/><i>planned · Phase 6</i>"]
 
     SPA -- "JWT + X-Workspace" --> Proxy --> MW --> DRF --> ORM --> PG
     DRF -. "enqueue jobs" .-> Redis -.-> Worker
-    Worker -.-> PG
+    Worker --> PG
+    Worker --> Hooks
+    Worker --> Mail
     DRF -. "checkout / webhooks" .-> Stripe
 ```
 
@@ -52,7 +56,9 @@ flowchart LR
   involved. CORS is still configured (`CORS_ALLOWED_ORIGINS`, with `x-workspace` allowed) for setups
   where the SPA is served from somewhere else.
 - Django is a **pure JSON API**. It renders no HTML except the admin and the Swagger UI.
-- Redis is already provisioned by `docker-compose.yml` (host port 6380) for the Celery work in Phase 5.
+- Redis (host port 6380) is the Celery broker. Task outcomes are stored on domain rows, so there is no result
+  backend. If Redis is down, queuing fails after a few seconds, the request still succeeds, and the failure is
+  logged or shown on the report or webhook delivery.
 
 ---
 
@@ -65,7 +71,9 @@ flowchart LR
 | Filtering | django-filter | 26.2 | Declarative query-param filters |
 | API docs | drf-spectacular | 0.30 | OpenAPI 3 schema + Swagger UI from the code |
 | Database | PostgreSQL (psycopg 3) | 16 | Partial unique indexes, check constraints, row locks |
-| Cache/broker | Redis | 7 | Celery broker (Phase 5) |
+| Broker | Redis | 7 | Celery broker |
+| Background jobs | Celery + beat | 5 | Webhooks, notifications, reports, email, daily jobs |
+| TLS trust | certifi | current | Consistent CA list for HTTPS webhooks, including on Windows |
 | Frontend | React + TypeScript | 19.3 · 5.9 | Strict typing across ~50 modules |
 | Build | Vite + pnpm | 7.3 · 12.16 | Fast dev server with proxy; strict, reproducible installs |
 | Routing | React Router (library mode) | 7.18 | Nested layouts (workspace → project → tab) |
@@ -96,7 +104,8 @@ flowchart LR
 │       ├── accounts/           custom User (email login), auth endpoints
 │       ├── tenants/            Workspace, Membership, Invitation
 │       ├── projects/           Project, Workflow, WorkflowStatus, WorkflowTransition, Board, Sprint
-│       └── issues/             Issue, Label, move/rank service, filters, dashboard
+│       ├── issues/             Issue, Label, comments, attachments, AuditLog, move service, filters, dashboard
+│       └── automation/           webhooks, notifications, reports, email, Celery tasks and templates
 └── frontend/
     ├── package.json · pnpm-lock.yaml · pnpm-workspace.yaml · vite.config.ts
     └── src/
@@ -109,8 +118,9 @@ flowchart LR
         │   ├── layout/         WorkspaceLayout, Sidebar, Topbar, CommandPalette…
         │   ├── issues/         IssueCard, IssueDrawer, CreateIssueModal, IssueMeta
         │   ├── board/          KanbanColumn, BoardFilters
-        │   └── sprints/        sprint create/start/complete modals
-        └── pages/              auth/, project/ (Board, Backlog), Dashboard, Issues, Members…
+        │   ├── sprints/        sprint create/start/complete modals
+        │   └── settings/       webhook management
+        └── pages/              auth/, project/ (Board, Backlog, Workflow), Dashboard, Issues, Reports, AuditLog, Members…
 ```
 
 ### Backend apps
@@ -121,7 +131,8 @@ flowchart LR
 | `accounts` | Identity | `User` (email is the username), register/login/refresh/logout/me/change-password |
 | `tenants` | The tenant itself | `Workspace`, `Membership` (role), `Invitation`; services `create_workspace`, `accept_invitation` |
 | `projects` | Containers of work | `Project`, `Workflow` + statuses + transitions, `Board`, `Sprint`; `services.create_project` scaffolds a workflow and a board |
-| `issues` | Work items | `Issue`, `Label`; `services.move_issue` (ranking), `filters.IssueFilter`, `dashboard.DashboardView`, M2M tenant guard in `signals.py` |
+| `issues` | Work items and history | `Issue`, `Label`, `IssueComment`, `IssueAttachment`, `AuditLog`; `services.move_issue` (ranking), `activity.py` (`record_issue_event`, `record_event`), `dashboard.DashboardView`; `signals.py` guards labels, removes attachment files, releases a removed member's work |
+| `automation` | Background work | `WebhookEndpoint`, `WebhookDelivery`, `Notification`, `WorkspaceReport`; `tasks.py`, `queue.py` (`enqueue`), `reports.py`, `emails.py`, `templates/email/` |
 
 ---
 
@@ -213,6 +224,13 @@ erDiagram
     ISSUE |o--o{ ISSUE : "parent (epic / sub-task)"
     ISSUE }o--o{ LABEL : "tagged"
     USER |o--o{ ISSUE : "assignee / reporter"
+    ISSUE ||--o{ ISSUE_COMMENT : "has"
+    ISSUE ||--o{ ISSUE_ATTACHMENT : "has"
+    WORKSPACE ||--o{ AUDIT_LOG : "records"
+    WORKSPACE ||--o{ WEBHOOK_ENDPOINT : "owns"
+    WEBHOOK_ENDPOINT ||--o{ WEBHOOK_DELIVERY : "logs"
+    USER ||--o{ NOTIFICATION : "receives"
+    WORKSPACE ||--o{ WORKSPACE_REPORT : "owns"
 
     WORKSPACE {
         string slug UK
@@ -301,7 +319,10 @@ query is a single indexed `WHERE workspace_id = ?` with no joins.
 | **Issue keys** (`WEB-1`, `WEB-2`…) | `Project.allocate_issue_number()` runs `UPDATE … SET issue_counter = issue_counter + 1` inside the issue's transaction. The row lock serialises concurrent creators, and a failed save rolls the counter back, so no numbers are burned. Numbers of deleted issues are never reused. |
 | **Ordering / drag-and-drop** | `Issue.rank` is a float. A move sends `prev_id` / `next_id` and the server sets `rank = (prev + next) / 2` (or ±1024 at either end). When two neighbours get closer than 1e-6 apart, `rebalance_ranks()` re-spaces the whole project in one `bulk_update`. Moving a card writes 1 row, not N. |
 | **Resolution** | `resolved_at` is set when an issue enters a `done`-category status and cleared when it leaves one. Dashboards and sprint stats rely on it. |
-| **Workflows** | Each project owns one `Workflow` with ordered `WorkflowStatus` rows (category todo/in_progress/done). With `enforce_transitions = False` (the default) any move is allowed; when it's True, only explicit `WorkflowTransition` rows are. This is checked in both the serializer (PATCH) and `move_issue`. The editor UI arrives in Phase 4. |
+| **Workflows** | Each project owns one `Workflow` with ordered `WorkflowStatus` rows (category todo/in_progress/done). With `enforce_transitions = False` (the default) any move is allowed; when it's True, only explicit `WorkflowTransition` rows are. This is checked in both the serializer (PATCH) and `move_issue`, and the board dims blocked columns during a drag. A status in use can't be removed or change category. |
+| **Archived projects** | Their issues are read-only: PATCH, move and create return 400. |
+| **Removed members** | Their assignments and project lead roles are cleared. History such as reporter, comment author and audit actor is kept, and membership is only validated when those rows are created, so old records stay editable. |
+| **Audit log** | `AuditLog` stores labels as text and uses `SET_NULL` on project, so entries outlive what they describe. Reordering inside a column is not logged. Only issue events trigger webhooks and notifications. |
 | **Sprints** | `planned → active → closed`. Only one is active per project (DB-enforced). Completing a sprint moves unfinished issues to a planned sprint or the backlog in one transaction. Closed sprints are read-only and can't receive issues. |
 | **Hierarchy** | Story/task/bug → epic parent. Only `subtask` may have a non-epic parent. A parent must be in the same project and can't be the issue itself. |
 | **Deletion** | `Issue.status` uses `on_delete=RESTRICT`: a status in use can't be deleted on its own, but deleting a project or workspace cascades cleanly. (`PROTECT` would block those cascades.) |
@@ -339,7 +360,7 @@ the owner can't be removed or demoted; you can't change your own role; anyone ma
 | Read the workspace | ✅ | ✅ | ✅ | ✅ |
 | Issues, sprints, labels: create/edit/move | | ✅ | ✅ | ✅ |
 | Delete an issue | | own | ✅ | ✅ |
-| Projects, boards (WIP), delete sprints/labels | | | ✅ | ✅ |
+| Projects, workflows, boards (WIP), webhooks, audit log, delete sprints/labels | | | ✅ | ✅ |
 | Invitations, roles, removing members, renaming the workspace | | | ✅ | ✅ |
 | Delete the workspace | | | | ✅ |
 
@@ -349,6 +370,28 @@ stays the authority either way.
 ---
 
 ## 8. Backend design
+
+### Background jobs
+
+| Job | Trigger | Behaviour |
+|---|---|---|
+| `process_issue_event` | after commit of an issue event | creates webhook deliveries and notifications |
+| `deliver_webhook` | per delivery | HMAC-SHA256 signature; 5 retries with backoff; blocked targets fail without retrying |
+| `generate_workspace_report` | `POST /reports/` | stores JSON on the report, or `failed` with the reason |
+| `send_notification_email`, `send_invitation_email` | on creation or resend | 3 retries on SMTP/network errors; never sends twice for a notification; honours the opt-out |
+| `create_overdue_reminders`, `create_daily_digests` | beat, 08:00 and 08:05 UTC | one per person per day, enforced by a unique constraint |
+
+**Webhook target safety:** outside `DEBUG`, targets must be HTTPS and every resolved address must be public. The
+validated IP is pinned for the connection, so a DNS answer that changes afterwards (DNS rebinding) can't reach
+internal services. TLS still verifies the original hostname. Redirects and proxy variables are ignored. With
+`DEBUG=True`, HTTP and local targets are allowed for development.
+
+**Email policy:** mentions, new assignments, overdue issues and digests are emailed. Routine updates stay in-app.
+
+**Burndown limitation:** it is computed from the issues currently in the sprint and their `resolved_at`, because
+sprint membership history isn't stored. Issues moved out earlier don't appear in past days.
+
+### Conventions
 
 | Concern | Approach |
 |---|---|
@@ -379,8 +422,11 @@ RequireAuth
     ├── projects/:key    ProjectLayout: header + tabs, passes the project via <Outlet context>
     │   ├── board        Kanban (scrum → active sprint, kanban → all)
     │   ├── backlog      sprints + backlog
-    │   └── issues       table scoped to the project
+    │   ├── issues       table scoped to the project
+    │   └── workflow     statuses and transition rules
     ├── issues           table across all projects
+    ├── reports          generate and view reports, CSV
+    ├── audit            workspace history (admins)
     ├── members · settings · profile
 ```
 
@@ -471,6 +517,8 @@ board operable without a mouse.
 | Django | `python manage.py runserver` | 8000 |
 | PostgreSQL 16 | `docker compose up -d db` | 5432 (`POSTGRES_HOST_PORT`) |
 | Redis 7 | `docker compose up -d redis` | **6380** on the host (`REDIS_HOST_PORT`), so it doesn't clash with another Redis on 6379 |
+| Celery worker | `python -m celery -A config worker --pool=solo -l info` | n/a |
+| Celery beat | `python -m celery -A config beat -l info` | n/a |
 
 | Env var | Default (dev) | Used for |
 |---|---|---|
@@ -478,7 +526,10 @@ board operable without a mouse.
 | `DJANGO_DEBUG` / `DJANGO_ALLOWED_HOSTS` | `True` / `localhost,127.0.0.1` | |
 | `DATABASE_URL` | `postgres://flowboard:flowboard@localhost:5432/flowboard` | dj-database-url |
 | `POSTGRES_DB/USER/PASSWORD/HOST_PORT` | `flowboard` ×3 / 5432 | docker compose |
-| `REDIS_URL` / `REDIS_HOST_PORT` | `redis://localhost:6380/0` / 6380 | Celery (Phase 5) |
+| `REDIS_URL` / `REDIS_HOST_PORT` | `redis://localhost:6380/0` / 6380 | Celery broker |
+| `EMAIL_BACKEND` | console backend | SMTP backend for real delivery |
+| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` | unset / 587 / TLS on | SMTP settings |
+| `DEFAULT_FROM_EMAIL` | `FlowBoard <no-reply@flowboard.test>` | sender |
 | `FRONTEND_URL` | `http://localhost:5173` | building invitation links |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | non-proxied setups |
 | `VITE_API_PROXY` | `http://127.0.0.1:8000` | where Vite forwards `/api` (used by Docker in Phase 7) |
@@ -492,8 +543,7 @@ pnpm 12 blocks dependency build scripts by default. The one that's needed (`esbu
 
 | Level | Tooling | Scope |
 |---|---|---|
-| Model / tenancy | pytest-django on **real PostgreSQL** | query isolation, write guards, constraints, domain rules (21 tests) |
-| API | DRF `APIClient` | auth flows, every role boundary, cross-tenant attacks, sprints, invitations, dashboard, schema (36 tests) |
+| Backend (235 tests) | pytest-django on **real PostgreSQL**, DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, malformed input. Tasks run in-process and never reach the real Redis |
 | Types | `tsc -b` (strict, `noUnused*`) | the whole frontend |
 | End-to-end | headless Chromium (Playwright) during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode. Automated E2E in CI is planned with the Phase 7 pipeline |
 
@@ -506,7 +556,5 @@ row-locking behaviour are part of what's being tested.
 
 | Phase | Adds | Architectural impact |
 |---|---|---|
-| 4 | Workflow editor, comments (@mentions), attachments, audit log | `WorkflowTransition` UI and board drop-target rules; new tenant models `Comment`, `Attachment` (media storage, plan-based size limits) and `AuditLog` (signals with before/after diffs) |
-| 5 | Webhooks + Celery | Celery worker + beat on Redis; tasks bind the tenant with `workspace_context()`; HMAC-signed webhook delivery with retries and a delivery log; notifications and reports |
 | 6 | Stripe Billing (test mode) | `Subscription`/plan models, Checkout + Customer Portal, webhook endpoint, plan limits enforced in services (HTTP 402 → upgrade prompt) |
 | 7 | Docker + GitHub Actions | backend (gunicorn) and frontend (nginx serving `dist/` and proxying `/api`) images; CI: lint → pytest with Postgres/Redis services → `pnpm build` → images → deploy |

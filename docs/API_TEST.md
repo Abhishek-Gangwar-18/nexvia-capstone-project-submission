@@ -137,6 +137,7 @@ to get a paginated envelope:
 | 401 | missing/expired/blacklisted token, wrong credentials |
 | 403 | authenticated member, but the role is too low (e.g. viewer writing) |
 | 404 | not found **or not yours**: other tenants' workspaces and rows are indistinguishable from missing ones |
+| 202 | accepted for background processing (reports, webhook test, invitation resend) |
 | 409 | database constraint conflict (rare race, e.g. two sprints started at once) |
 | 429 | rate limit on `auth/login/` and `auth/register/` (20 requests/minute) |
 
@@ -457,6 +458,98 @@ curl -s -X POST $API/auth/change-password/ -H "$AUTH" -H "Content-Type: applicat
 
 > Re-run `python manage.py seed_demo --reset` afterwards to restore the demo passwords and data.
 
+### 4.9 Workflows
+
+```bash
+curl -s $API/projects/WEB/workflow/ -H "$AUTH" -H "$WS"       # any role
+# {"name": "...", "enforce_transitions": false, "statuses": [...], "transitions": [{"from": 0, "to": 1}]}
+```
+
+`PUT` (admin) replaces the workflow. List order sets the status order, and transitions use **indexes into that
+list**. A status with an `id` is kept, one without is created, and one left out is deleted. A status in use can't
+be removed or change category. At least one `todo` and one `done` status are required.
+
+```bash
+WF=$(curl -s $API/projects/WEB/workflow/ -H "$AUTH" -H "$WS")
+curl -s -X PUT $API/projects/WEB/workflow/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" -d "$WF"   # 200
+```
+
+### 4.10 Comments, attachments, activity
+
+```bash
+curl -s -X POST $API/issues/WEB-4/comments/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" \
+  -d '{"body":"Please review @admin@acme.test"}'             # 201, mentions resolved to members
+curl -s $API/issues/WEB-4/comments/ -H "$AUTH" -H "$WS"
+curl -s $API/issues/WEB-4/activity/ -H "$AUTH" -H "$WS"
+
+echo hello > note.txt
+ATT=$(curl -s -X POST $API/issues/WEB-4/attachments/ -H "$AUTH" -H "$WS" -F "file=@note.txt;type=text/plain" | json "['id']")
+curl -s $API/attachments/$ATT/download/ -H "$AUTH" -H "$WS"   # hello
+curl -s -X DELETE $API/attachments/$ATT/ -H "$AUTH" -H "$WS" -o /dev/null -w "%{http_code}\n"   # 204
+```
+
+Allowed files: CSV, GIF, JPEG, Markdown, PDF, PNG, TXT, WebP, ZIP, up to 25 MB. Comment edits and deletes need
+the author or an admin; attachment deletes need the uploader or an admin.
+
+### 4.11 Webhooks (admin)
+
+```bash
+HOOK=$(curl -s -X POST $API/webhooks/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" \
+  -d '{"name":"Receiver","url":"https://example.com/hook","events":["issue.created","issue.moved"]}' | json "['id']")
+curl -s -X POST $API/webhooks/$HOOK/test/ -H "$AUTH" -H "$WS"           # 202, needs the worker
+curl -s $API/webhooks/$HOOK/deliveries/ -H "$AUTH" -H "$WS"
+curl -s -X POST $API/webhooks/$HOOK/rotate-secret/ -H "$AUTH" -H "$WS"
+```
+
+Events: `issue.created|updated|moved|commented|attached|detached|deleted`, or `*`. Each request carries
+`X-FlowBoard-Event`, `X-FlowBoard-Delivery` and `X-FlowBoard-Signature: sha256=<HMAC of the raw body using the
+secret>`. Failed deliveries retry up to 5 times with backoff. Outside `DEBUG`, targets must be HTTPS and public:
+internal addresses are refused when created and when delivered.
+
+### 4.12 Notifications
+
+```bash
+curl -s $API/notifications/ -H "$AUTH" -H "$WS"               # {"unread_count": 1, "results": [...]}
+curl -s -X POST $API/notifications/<id>/read/ -H "$AUTH" -H "$WS"
+curl -s -X POST $API/notifications/read-all/ -H "$AUTH" -H "$WS"
+```
+
+### 4.13 Reports (generate: member+; read: any role)
+
+```bash
+SPRINT3=$(curl -s "$API/sprints/?project=WEB&state=active" -H "$AUTH" -H "$WS" | json "[0]['id']")
+R=$(curl -s -X POST $API/reports/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" \
+  -d "{\"report_type\":\"sprint_burndown\",\"sprint\":$SPRINT3}" | json "['id']")     # 202, state "pending"
+curl -s $API/reports/$R/ -H "$AUTH" -H "$WS"                  # state "ready" once the worker has run it
+curl -s $API/reports/$R/download/ -H "$AUTH" -H "$WS"         # CSV; 400 until ready
+```
+
+| `report_type` | Required | Result |
+|---|---|---|
+| `sprint_burndown` | `sprint` (started) | remaining points and issues per day, with the ideal line |
+| `velocity` | `project` | points delivered per closed sprint (last 10), with the average |
+| `workspace_summary` | none (default) | issue counts by status, priority and project |
+
+### 4.14 Audit log (admin)
+
+```bash
+curl -s "$API/audit-log/?entity_type=sprint&project=WEB&page=1&page_size=20" -H "$AUTH" -H "$WS"
+```
+
+Filters: `entity_type`, `action`, `actor` (user id), `project` (key), `date_from`, `date_to`, `search`. The endpoint
+is read-only.
+
+### 4.15 Email
+
+With the worker running, emails print in its terminal: invitations, mentions, new assignments, overdue reminders
+and digests. Resend an invitation with `POST /invitations/{id}/resend/`. Opt out of notification emails with
+`PATCH /auth/me/ {"email_notifications": false}`; invitations aren't affected. To run the daily jobs without waiting
+for beat:
+
+```bash
+python manage.py shell -c "from apps.automation.tasks import create_overdue_reminders as o, create_daily_digests as d; o.delay(); d.delay()"
+```
+
 ---
 
 ## 5. Endpoint reference
@@ -499,6 +592,20 @@ curl -s -X POST $API/auth/change-password/ -H "$AUTH" -H "Content-Type: applicat
 | `GET /labels/` · `POST/PATCH /labels/…` | ✅ | viewer / member | |
 | `DELETE /labels/{id}/` | ✅ | admin | |
 | `GET /dashboard/` | ✅ | viewer | aggregated stats |
+| `GET /projects/{key}/workflow/` | ✅ | viewer | statuses + transitions |
+| `PUT /projects/{key}/workflow/` | ✅ | admin | replace the workflow |
+| `GET/POST /issues/{key}/comments/` | ✅ | viewer / member | list / add |
+| `PATCH/DELETE /issues/{key}/comments/{id}/` | ✅ | author or admin | edit / delete |
+| `GET/POST /issues/{key}/attachments/` | ✅ | viewer / member | list / upload (multipart) |
+| `GET /attachments/{id}/download/` | ✅ | viewer | download |
+| `DELETE /attachments/{id}/` | ✅ | uploader or admin | delete |
+| `GET /issues/{key}/activity/` | ✅ | viewer | issue history |
+| `/webhooks/` CRUD · `POST /webhooks/{id}/test/` · `POST /webhooks/{id}/rotate-secret/` · `GET /webhooks/{id}/deliveries/` | ✅ | admin | webhooks |
+| `GET /notifications/` · `POST /notifications/{id}/read/` · `POST /notifications/read-all/` | ✅ | viewer | your own notifications |
+| `GET /reports/` · `GET /reports/{id}/` · `GET /reports/{id}/download/` | ✅ | viewer | read / CSV |
+| `POST /reports/` | ✅ | member | generate |
+| `GET /audit-log/` | ✅ | admin | workspace history |
+| `POST /invitations/{id}/resend/` | ✅ | admin | email again |
 | `GET /schema/` · `GET /docs/` | | public | OpenAPI 3 + Swagger UI |
 
 ### Issue list filters
@@ -550,6 +657,11 @@ GLOBEX="Authorization: Bearer $(login owner@globex.test)"
 | 12 | Accept someone else's invite | logged in as a different email → `POST /invitations/accept/` | **403** |
 | 13 | Disallowed workflow transition | with `enforce_transitions` on, move To Do → Done without a rule | **400** `Transition 'To Do' → 'Done' is not allowed.` |
 | 14 | Brute-force login | > 20 logins/minute from one client | **429** |
+| 15 | Another tenant's attachment or report | their id on `/attachments/{id}/download/` or `/reports/{id}/download/` | **404** |
+| 16 | Non-admin reads the audit log or webhooks | member token | **403** |
+| 17 | Webhook to an internal address | `https://169.254.169.254/` with `DEBUG=False` | **400** |
+| 18 | Write to an archived project's issues | `PATCH` or `move` | **400** `This project is archived…` |
+| 19 | Upload a blocked file type | `run.html` | **400** |
 
 Quick run of 1–3 and 7:
 
@@ -608,7 +720,7 @@ through M2M) are converted to the same `400` format. Database constraint races b
 
 ```bash
 cd backend
-pytest                                   # all 57 tests (Postgres must be running)
+pytest                                   # all 235 tests (Postgres must be running; Redis isn't needed)
 pytest -k Isolation                      # just the tenant-isolation tests
 pytest apps/core/tests/test_api.py::TestSprints -v
 pytest --create-db                       # rebuild the test DB after a migration
@@ -629,6 +741,11 @@ production, so constraints such as "one active sprint per project" are really ex
 | `test_api.py::TestSprints` | create → start → second start refused → complete with carry-over → closed sprint is read-only; active sprint can't be deleted |
 | `test_api.py::TestInvitations` | invite → preview → register with token → joined; email must match; members can't invite |
 | `test_api.py::TestDashboardAndDocs` | dashboard aggregates; OpenAPI schema builds |
+| `test_phase4.py` | workflow editor, comments and mentions, attachments, issue audit events |
+| `automation/tests/test_api.py` | webhook CRUD and signing, notifications, async reports |
+| `test_phase45_regressions.py` | move auditing, removed members, broker outages, scheduled jobs, webhook target safety and IP pinning |
+| `test_reports_audit_email.py` | report calculations and CSV, audit coverage and filters, email content, opt-out and resend |
+| `test_api_robustness.py` | malformed input across the API returns 4xx, never a server error |
 
 Frontend checks:
 
@@ -650,6 +767,7 @@ pnpm build            # type-check + production bundle
 | `404 Workspace not found.` with the right slug | the logged-in user isn't a member of it: log in as that workspace's user |
 | `401 … token_not_valid` | access tokens last 30 min: log in again or call `/auth/refresh/` |
 | `429` on login | wait a minute (20 logins/min limit) |
+| report stays `pending`, webhook delivery never happens | start the Celery worker |
 | Swagger UI is blank | it loads from a CDN: check your internet connection |
 | ids in this doc don't match | ids change on every `seed_demo --reset`; look them up from the list endpoints |
 | demo login fails after section 4.8 | you changed the password: `python manage.py seed_demo --reset` |
