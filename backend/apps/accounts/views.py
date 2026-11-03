@@ -46,8 +46,10 @@ class LogoutView(APIView):
         responses={205: None},
     )
     def post(self, request):
+        refresh = request.data.get("refresh") if isinstance(request.data, dict) else None
         try:
-            RefreshToken(request.data.get("refresh", "")).blacklist()
+            if isinstance(refresh, str):
+                RefreshToken(refresh).blacklist()
         except TokenError:
             pass  # already invalid: logging out is idempotent
         return Response(status=status.HTTP_205_RESET_CONTENT)

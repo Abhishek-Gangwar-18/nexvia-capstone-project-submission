@@ -28,6 +28,8 @@ class WorkspaceScopedMixin:
         slug = request.META.get("HTTP_X_WORKSPACE") or request.query_params.get("workspace")
         if not slug:
             raise exceptions.ValidationError({"workspace": "The X-Workspace header is required."})
+        if "\x00" in slug:  # PostgreSQL can't store NUL, so no workspace can match it
+            raise exceptions.NotFound("Workspace not found.")
         membership = (
             Membership.objects.select_related("workspace")
             .filter(user=request.user, workspace__slug=slug)
