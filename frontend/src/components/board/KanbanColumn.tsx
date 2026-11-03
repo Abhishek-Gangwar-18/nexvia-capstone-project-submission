@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import type { Issue, Label, WorkflowStatus } from "@/types";
 
 export function KanbanColumn({
-  id, status, issueIds, issuesById, labels, wipLimit, canEdit, isAdmin, onOpen, onQuickAdd, onEditWip,
+  id, status, issueIds, issuesById, labels, wipLimit, canEdit, isAdmin, blocked, onOpen, onQuickAdd, onEditWip,
 }: {
   id: string;
   status: WorkflowStatus;
@@ -18,6 +18,8 @@ export function KanbanColumn({
   wipLimit?: number;
   canEdit: boolean;
   isAdmin: boolean;
+  /** The card being dragged isn't allowed to move here (workflow rules). */
+  blocked?: boolean;
   onOpen: (key: string) => void;
   onQuickAdd: (statusId: number, title: string) => Promise<unknown>;
   onEditWip: (status: WorkflowStatus) => void;
@@ -48,6 +50,7 @@ export function KanbanColumn({
         "flex max-h-full min-w-[260px] max-w-[380px] flex-1 flex-col rounded-2xl bg-slate-100/80 transition-colors dark:bg-slate-900/70",
         isOver && "bg-brand-50 ring-2 ring-brand-400/40 dark:bg-brand-500/5",
         overLimit && "bg-rose-50 ring-1 ring-rose-300 dark:bg-rose-500/5 dark:ring-rose-500/30",
+        blocked && "opacity-40 grayscale",
       )}
     >
       <div className="group/header flex items-center gap-2 px-3 pt-3 pb-2">

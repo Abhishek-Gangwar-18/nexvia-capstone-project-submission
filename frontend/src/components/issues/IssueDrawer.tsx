@@ -65,13 +65,14 @@ function IssuePanel({ issueKey, onClose }: { issueKey: string; onClose: () => vo
 }
 
 function IssueEditor({ issue, onClose }: { issue: IssueDetail; onClose: () => void }) {
-  const { canEdit, isAdmin } = usePermissions();
+  const { canEdit: canEditWorkspace, isAdmin } = usePermissions();
   const update = useUpdateIssue(issue.key);
   const remove = useDeleteIssue();
   const projects = useProjects().data ?? [];
   const members = useMembers().data ?? [];
   const labels = useLabels().data ?? [];
   const project = projects.find((p) => p.id === issue.project);
+  const canEdit = canEditWorkspace && !project?.is_archived; // archived projects are read-only
   const sprints = useSprints(project?.key).data ?? [];
   const epics = useIssues({ project: issue.project, issue_type: "epic" }).data ?? [];
   const openCreate = useUI((s) => s.openCreateIssue);
@@ -205,7 +206,7 @@ function IssueEditor({ issue, onClose }: { issue: IssueDetail; onClose: () => vo
             </section>
           )}
 
-          <IssueCollaboration issueKey={issue.key} members={members.map((membership) => membership.user)} />
+          <IssueCollaboration key={issue.key} issueKey={issue.key} members={members.map((membership) => membership.user)} />
         </div>
 
         {/* details sidebar */}

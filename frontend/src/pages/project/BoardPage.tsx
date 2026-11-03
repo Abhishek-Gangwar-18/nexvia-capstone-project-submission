@@ -14,7 +14,7 @@ import { Field, Input } from "@/components/ui/Input";
 import { EmptyState, ProgressBar, Skeleton } from "@/components/ui/Misc";
 import { Modal } from "@/components/ui/Modal";
 import {
-  useCreateIssue, useIssues, useLabels, useMembers, useMoveIssue, useSprints, useUpdateBoard,
+  useCreateIssue, useIssues, useLabels, useMembers, useMoveIssue, useSprints, useUpdateBoard, useWorkflow,
 } from "@/hooks/queries";
 import { useSortableContainers, type DropResult } from "@/hooks/useSortableContainers";
 import { usePermissions, useProjectContext, useWorkspace } from "@/hooks/useWorkspace";
@@ -53,6 +53,16 @@ export default function BoardPage() {
   const [wipValue, setWipValue] = useState("");
 
   const statuses = project.statuses;
+  const workflow = useWorkflow(project.key, project.enforce_transitions).data;
+  // "from:to" status id pairs the workflow allows; null means every move is allowed.
+  const allowedMoves = useMemo(() => {
+    if (!project.enforce_transitions || !workflow) return null;
+    return new Set(workflow.transitions.map((t) => `${workflow.statuses[t.from].id}:${workflow.statuses[t.to].id}`));
+  }, [project.enforce_transitions, workflow]);
+  const canMove = useCallback(
+    (fromId: number, toId: number) => fromId === toId || !allowedMoves || allowedMoves.has(`${fromId}:${toId}`),
+    [allowedMoves],
+  );
   const issuesById = useMemo(() => new Map(issues.map((i) => [String(i.id), i])), [issues]);
   const visible = useMemo(
     () => applyBoardFilters(issues, filters, me?.id).sort((a, b) => a.rank - b.rank || a.id - b.id),
@@ -71,19 +81,26 @@ export default function BoardPage() {
       const issue = issuesById.get(id);
       const status = statuses.find((s) => columnId(s.id) === to);
       if (!issue || !status) return;
+      if (!canMove(issue.status, status.id)) {
+        toast.error(`This workflow doesn't allow moving ${issue.key} to ${status.name}.`);
+        return;
+      }
       const prev = prevId ? issuesById.get(prevId) : undefined;
       const next = nextId ? issuesById.get(nextId) : undefined;
-      move.mutate({
-        issue,
-        status: status.id,
-        statusCategory: status.category,
-        prevId: prev?.id ?? null,
-        nextId: next?.id ?? null,
-        rank: rankBetween(prev?.rank, next?.rank),
-      });
-      if (status.id !== issue.status && status.category === "done") toast.success(`${issue.key} done ✓`);
+      const finishing = status.id !== issue.status && status.category === "done";
+      move.mutate(
+        {
+          issue,
+          status: status.id,
+          statusCategory: status.category,
+          prevId: prev?.id ?? null,
+          nextId: next?.id ?? null,
+          rank: rankBetween(prev?.rank, next?.rank),
+        },
+        { onSuccess: () => finishing && toast.success(`${issue.key} done ✓`) },
+      );
     },
-    [issuesById, statuses, move],
+    [issuesById, statuses, move, canMove],
   );
 
   const dnd = useSortableContainers(serverItems, onDrop);
@@ -193,6 +210,7 @@ export default function BoardPage() {
                 wipLimit={project.board?.wip_limits[String(status.id)]}
                 canEdit={canEdit}
                 isAdmin={isAdmin}
+                blocked={!!activeIssue && !canMove(activeIssue.status, status.id)}
                 onOpen={drawer.open}
                 onQuickAdd={quickAdd}
                 onEditWip={(s) => {
