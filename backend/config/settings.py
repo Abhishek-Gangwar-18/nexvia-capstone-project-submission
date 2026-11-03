@@ -4,6 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import dj_database_url
+from celery.schedules import crontab
 from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
 
@@ -150,12 +151,29 @@ SPECTACULAR_SETTINGS = {
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 CORS_ALLOW_HEADERS = (*default_headers, "x-workspace")
 
+# Prints emails to the worker's terminal by default. For real delivery set EMAIL_BACKEND to
+# django.core.mail.backends.smtp.EmailBackend and fill in the SMTP values.
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+EMAIL_TIMEOUT = 10
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "FlowBoard <no-reply@flowboard.test>")
+
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL)
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
-CELERY_TASK_TRACK_STARTED = True
+# Nothing reads task results: outcomes are stored on WebhookDelivery / WorkspaceReport / Notification.
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TIMEZONE = TIME_ZONE
+# Fail fast when Redis is down. By default publishing blocks for minutes, which would hang every issue edit.
+CELERY_TASK_PUBLISH_RETRY = False
+CELERY_BROKER_CONNECTION_TIMEOUT = 2
+CELERY_BROKER_TRANSPORT_OPTIONS = {"socket_connect_timeout": 2, "socket_timeout": 5}
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_TIME_LIMIT = 300
 CELERY_TASK_SOFT_TIME_LIMIT = 240
 CELERY_BEAT_SCHEDULE = {
-    "daily-overdue-reminders": {"task": "apps.automation.tasks.create_overdue_reminders", "schedule": 60 * 60 * 24},
-    "daily-workspace-digests": {"task": "apps.automation.tasks.create_daily_digests", "schedule": 60 * 60 * 24},
+    "daily-overdue-reminders": {"task": "apps.automation.tasks.create_overdue_reminders", "schedule": crontab(hour=8, minute=0)},
+    "daily-workspace-digests": {"task": "apps.automation.tasks.create_daily_digests", "schedule": crontab(hour=8, minute=5)},
 }
