@@ -6,7 +6,7 @@ import type {
   AuthResponse, Board, DashboardData, Invitation, InvitationPreview, Issue, IssueDetail, Label, Me, Member,
   IssueActivity, IssueAttachment, IssueComment, Paginated, Project, Role, Sprint, StatusCategory, WorkflowConfig,
   WorkflowConfigDraft, Workspace,
-  NotificationItem, WebhookDelivery, WebhookEndpoint, WorkspaceReport,
+  AuditEntry, NotificationItem, ReportType, WebhookDelivery, WebhookEndpoint, WorkspaceReport,
 } from "@/types";
 import { useWorkspaceSlug } from "./useWorkspace";
 
@@ -94,7 +94,7 @@ export function useUpdateMe() {
   const qc = useQueryClient();
   const setUser = useAuth((s) => s.setUser);
   return useMutation({
-    mutationFn: (body: Partial<Pick<Me, "first_name" | "last_name" | "job_title" | "avatar_color">>) =>
+    mutationFn: (body: Partial<Pick<Me, "first_name" | "last_name" | "job_title" | "avatar_color" | "email_notifications">>) =>
       api.patch<Me>("/auth/me/", body).then((r) => r.data),
     onSuccess: (user) => {
       setUser(user);
@@ -287,10 +287,11 @@ export function useUpdateBoard() {
   });
 }
 
-export function useWorkflow(projectKey: string) {
+export function useWorkflow(projectKey: string, enabled = true) {
   const w = useWsApi();
   return useQuery({
     queryKey: [...ws(w.slug), "workflow", projectKey],
+    enabled,
     queryFn: () => w.get<WorkflowConfig>(`/projects/${projectKey}/workflow/`),
   });
 }
@@ -389,17 +390,10 @@ export function useDownloadIssueAttachment() {
   const w = useWsApi();
   return useMutation({
     mutationFn: async (attachment: IssueAttachment) => {
-      const response = await api.get<Blob>(attachment.download_url, {
+      const response = await api.get<Blob>(`/attachments/${attachment.id}/download/`, {
         responseType: "blob", headers: { "X-Workspace": w.slug },
       });
-      const href = URL.createObjectURL(response.data);
-      const anchor = document.createElement("a");
-      anchor.href = href;
-      anchor.download = attachment.original_name;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+      saveBlob(response.data, attachment.original_name);
     },
   });
 }
@@ -477,20 +471,78 @@ export function useWebhookDeliveries(id: number | null) {
     queryKey: [...ws(w.slug), "webhook-deliveries", id],
     enabled: id !== null,
     queryFn: () => w.get<WebhookDelivery[]>(`/webhooks/${id}/deliveries/`),
-    refetchInterval: id === null ? false : 5000,
+    refetchInterval: (query) => (query.state.data?.some((d) => d.state === "pending") ? 3000 : false),
   });
 }
 
 export function useWorkspaceReports() {
   const w = useWsApi();
-  return useQuery({ queryKey: [...ws(w.slug), "reports"], queryFn: () => w.get<WorkspaceReport[]>("/reports/"), refetchInterval: 5000 });
+  return useQuery({
+    queryKey: [...ws(w.slug), "reports"],
+    queryFn: () => w.get<WorkspaceReport[]>("/reports/"),
+    refetchInterval: (query) => (query.state.data?.some((r) => r.state === "pending") ? 3000 : false),
+  });
 }
 
 export function useGenerateWorkspaceReport() {
   const w = useWsApi(); const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => w.post<WorkspaceReport>("/reports/"),
+    mutationFn: (body: { report_type: ReportType; project?: number; sprint?: number }) =>
+      w.post<WorkspaceReport>("/reports/", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "reports"] }),
+  });
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+export function useDownloadReport() {
+  const w = useWsApi();
+  return useMutation({
+    mutationFn: async (report: WorkspaceReport) => {
+      const response = await api.get<Blob>(`/reports/${report.id}/download/`, {
+        responseType: "blob", headers: { "X-Workspace": w.slug },
+      });
+      saveBlob(response.data, `${report.title.replace(/[^\w-]+/g, "-").toLowerCase()}.csv`);
+    },
+  });
+}
+
+export interface AuditParams {
+  search?: string;
+  entity_type?: string;
+  action?: string;
+  actor?: number;
+  project?: string;
+  date_from?: string;
+  date_to?: string;
+  page: number;
+  page_size: number;
+}
+
+export function useAuditLog(params: AuditParams) {
+  const w = useWsApi();
+  return useQuery({
+    queryKey: [...ws(w.slug), "audit-log", params],
+    placeholderData: keepPreviousData,
+    queryFn: () => w.get<Paginated<AuditEntry>>("/audit-log/", params),
+  });
+}
+
+export function useResendInvitation() {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => w.post<{ queued: boolean }>(`/invitations/${id}/resend/`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "invitations"] }),
   });
 }
 

@@ -18,6 +18,7 @@ export interface UserMini {
 export interface Me extends UserMini {
   first_name: string;
   last_name: string;
+  email_notifications: boolean;
   is_staff: boolean;
   date_joined: string;
 }
@@ -55,6 +56,7 @@ export interface Invitation {
   invited_by: UserMini | null;
   expires_at: string;
   accept_url: string;
+  email_sent_at: string | null;
   created_at: string;
 }
 
@@ -251,14 +253,66 @@ export interface WebhookDelivery {
   created_at: string;
 }
 
+export type ReportType = "workspace_summary" | "sprint_burndown" | "velocity";
+
 export interface WorkspaceReport {
   id: number;
-  report_type: string;
+  report_type: ReportType;
+  title: string;
+  project: number | null;
+  sprint: number | null;
+  requested_by: UserMini | null;
   state: "pending" | "ready" | "failed";
   data: Record<string, unknown>;
   error: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BurndownData {
+  sprint: string;
+  state: SprintState;
+  goal: string;
+  start_date: string;
+  end_date: string;
+  total_points: number;
+  total_issues: number;
+  completed_points: number;
+  completed_issues: number;
+  days: { date: string; ideal_points: number; remaining_points: number | null; remaining_issues: number | null }[];
+}
+
+export interface VelocityData {
+  project: string;
+  average_points: number;
+  sprints: {
+    name: string;
+    start_date: string | null;
+    end_date: string | null;
+    completed_points: number;
+    completed_issues: number;
+    open_issues: number;
+  }[];
+}
+
+export interface SummaryData {
+  issue_count: number;
+  by_status: { status__name: string; count: number }[];
+  by_priority: { priority: number; count: number }[];
+  projects: { project__key: string; project__name: string; count: number }[];
+}
+
+export interface AuditEntry {
+  id: number;
+  entity_type: string;
+  entity_label: string;
+  project_key: string;
+  issue_key: string;
+  issue_title: string;
+  actor: UserMini | null;
+  action: string;
+  changes: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface Paginated<T> {
