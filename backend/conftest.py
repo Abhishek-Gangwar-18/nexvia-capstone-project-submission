@@ -2,10 +2,14 @@ import pytest
 from django.core.cache import cache
 from rest_framework.test import APIClient
 
+from config.celery import app as celery_app
 from apps.accounts.models import User
 from apps.projects.services import create_project
 from apps.tenants.models import Membership
 from apps.tenants.services import create_workspace
+
+# Tests must never publish to the real Redis, where a running worker would act on the dev database.
+celery_app.conf.task_always_eager = True
 
 
 @pytest.fixture

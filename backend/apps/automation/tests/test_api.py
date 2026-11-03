@@ -5,7 +5,7 @@ import pytest
 
 from apps.automation.models import Notification, WebhookDelivery, WebhookEndpoint, WorkspaceReport
 from apps.automation.tasks import deliver_webhook, generate_workspace_report, process_issue_event
-from apps.issues.models import Issue, IssueAuditLog, IssueComment
+from apps.issues.models import Issue, AuditLog, IssueComment
 from apps.tenants.models import Membership
 
 pytestmark = pytest.mark.django_db
@@ -67,8 +67,8 @@ def test_delivery_hmac_success_and_workspace_state(api, team, monkeypatch):
 def test_issue_event_creates_signed_delivery_and_member_notification(api, team, monkeypatch):
     issue = Issue.objects.create(project=team["project"], title="Task", assignee=team["users"][Membership.Role.MEMBER])
     endpoint = WebhookEndpoint.objects.create(workspace=team["workspace"], created_by=team["owner"], name="hook", url="https://hooks.example.test", events=["issue.created"])
-    audit = IssueAuditLog.objects.create(workspace=team["workspace"], project=team["project"], issue_key=issue.key,
-        issue_title=issue.title, actor=team["owner"], action=IssueAuditLog.Action.CREATED, changes={})
+    audit = AuditLog.objects.create(workspace=team["workspace"], project=team["project"], issue_key=issue.key,
+        issue_title=issue.title, actor=team["owner"], action=AuditLog.Action.CREATED, changes={})
     delivery_task = MagicMock()
     monkeypatch.setattr("apps.automation.tasks.deliver_webhook.delay", delivery_task)
     process_issue_event.apply(args=(audit.pk,), throw=True)
@@ -86,7 +86,7 @@ def test_comment_mentions_generate_private_notification(api, team, monkeypatch):
     owner_client = api(team["owner"], team["workspace"])
     response = owner_client.post(f"/api/issues/{issue.key}/comments/", {"body": f"Please check @{member.email}"}, format="json")
     assert response.status_code == 201
-    audit = IssueAuditLog.objects.get(issue_key=issue.key, action=IssueAuditLog.Action.COMMENTED)
+    audit = AuditLog.objects.get(issue_key=issue.key, action=AuditLog.Action.COMMENTED)
     process_issue_event.apply(args=(audit.pk,), throw=True)
     assert Notification.objects.filter(recipient=member, workspace=team["workspace"]).exists()
     member_client = api(member, team["workspace"])

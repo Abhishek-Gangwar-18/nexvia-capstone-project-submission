@@ -1,7 +1,7 @@
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from apps.issues.models import Issue, IssueAttachment, IssueAuditLog, IssueComment
+from apps.issues.models import Issue, IssueAttachment, AuditLog, IssueComment
 from apps.projects.models import WorkflowStatus
 from apps.tenants.models import Membership
 
@@ -61,6 +61,15 @@ def test_workflow_cannot_remove_status_in_use_and_is_admin_write(api, team):
         format="json",
     )
     assert res.status_code == 400
+    assert "cannot be removed" in str(res.data["statuses"])
+
+
+def test_workflow_get_response_can_be_saved_back(api, team):
+    client = api(team["owner"], team["workspace"])
+    workflow = client.get("/api/projects/WEB/workflow/").data
+    res = client.put("/api/projects/WEB/workflow/", {**workflow, "name": "Renamed"}, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["name"] == "Renamed"
 
 
 def test_comments_mentions_activity_and_workspace_isolation(api, team, tenant_b):
@@ -94,8 +103,8 @@ def test_comment_author_or_admin_can_edit_and_delete(api, team):
     assert api(member, team["workspace"]).delete(f"/api/issues/{issue.key}/comments/{comment_id}/").status_code == 204
 
 
-def test_attachment_upload_download_delete_and_validation(api, team, tenant_b, settings):
-    settings.MEDIA_ROOT = settings.BASE_DIR / ".test-media"
+def test_attachment_upload_download_delete_and_validation(api, team, tenant_b, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
     issue = Issue.objects.create(project=team["project"], title="With file")
     client = api(team["users"][Membership.Role.MEMBER], team["workspace"])
     res = client.post(
@@ -128,12 +137,11 @@ def test_attachment_upload_download_delete_and_validation(api, team, tenant_b, s
     foreign_attachment.file.delete(save=False)
 
 
-def test_issue_changes_and_attachment_events_are_audited(api, team, settings):
-    settings.MEDIA_ROOT = settings.BASE_DIR / ".test-media"
+def test_issue_changes_and_attachment_events_are_audited(api, team):
     client = api(team["owner"], team["workspace"])
     issue = Issue.objects.create(project=team["project"], title="Before")
     assert client.patch(f"/api/issues/{issue.key}/", {"title": "After"}, format="json").status_code == 200
-    assert IssueAuditLog.objects.filter(issue_key=issue.key, action=IssueAuditLog.Action.UPDATED,
+    assert AuditLog.objects.filter(issue_key=issue.key, action=AuditLog.Action.UPDATED,
                                         changes__title__from="Before", changes__title__to="After").exists()
 
 
@@ -142,5 +150,5 @@ def test_api_issue_creation_is_audited(api, team):
         "/api/issues/", {"project": team["project"].id, "title": "Audit me"}, format="json"
     )
     assert response.status_code == 201
-    assert IssueAuditLog.objects.filter(issue_key=response.data["key"], action=IssueAuditLog.Action.CREATED).exists()
+    assert AuditLog.objects.filter(issue_key=response.data["key"], action=AuditLog.Action.CREATED).exists()
 
