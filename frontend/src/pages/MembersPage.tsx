@@ -1,4 +1,4 @@
-import { Copy, LogOut, Mail, Trash, UserPlus, Users } from "lucide-react";
+import { Copy, LogOut, Mail, Send, Trash, UserPlus, Users } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -9,7 +9,8 @@ import { Avatar, Badge, EmptyState, Skeleton } from "@/components/ui/Misc";
 import { ConfirmDialog, Modal } from "@/components/ui/Modal";
 import { Select, type Option } from "@/components/ui/Select";
 import {
-  useCreateInvitation, useInvitations, useMembers, useRemoveMember, useRevokeInvitation, useUpdateMember,
+  useCreateInvitation, useInvitations, useMembers, useRemoveMember, useResendInvitation, useRevokeInvitation,
+  useUpdateMember,
 } from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { ROLES } from "@/lib/constants";
@@ -165,6 +166,7 @@ export default function MembersPage() {
 }
 
 function InviteRow({ invite, onRevoke }: { invite: Invitation; onRevoke: () => void }) {
+  const resend = useResendInvitation();
   return (
     <div className="flex flex-wrap items-center gap-3 px-5 py-3">
       <span className="flex size-10 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800">
@@ -174,9 +176,27 @@ function InviteRow({ invite, onRevoke }: { invite: Invitation; onRevoke: () => v
         <p className="truncate text-sm font-medium">{invite.email}</p>
         <p className="text-xs text-slate-500">
           Invited {timeAgo(invite.created_at)} by {invite.invited_by?.display_name ?? "someone"} · expires {formatDate(invite.expires_at)}
+          {" · "}
+          {invite.email_sent_at ? `email sent ${timeAgo(invite.email_sent_at)}` : "email not sent yet"}
         </p>
       </div>
       <RoleBadge role={invite.role} />
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={<Send className="size-3.5" />}
+        loading={resend.isPending}
+        onClick={() =>
+          resend.mutate(invite.id, {
+            onSuccess: ({ queued }) => {
+              if (queued) toast.success("Invitation email queued");
+              else toast.error("Couldn't queue the email. Copy the link instead.");
+            },
+          })
+        }
+      >
+        Resend
+      </Button>
       <Button size="sm" variant="ghost" icon={<Copy className="size-3.5" />} onClick={() => copy(invite.accept_url)}>
         Copy link
       </Button>
@@ -213,7 +233,7 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
       {created ? (
         <div className="space-y-4">
           <div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
-            Invitation created for <strong>{created.email}</strong>. Share this link with them to join:
+            We're emailing an invitation to <strong>{created.email}</strong>. You can also share this link with them:
           </div>
           <div className="flex gap-2">
             <Input readOnly value={created.accept_url} onFocus={(e) => e.target.select()} className="font-mono text-xs" />

@@ -1,4 +1,4 @@
-import { Check, KeyRound, User } from "lucide-react";
+import { Check, KeyRound, Mail, User } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { PageBody, PageHeader } from "@/components/layout/PageHeader";
@@ -97,6 +97,29 @@ export default function ProfilePage() {
             </Field>
             <Button type="submit" variant="primary" loading={updateMe.isPending}>Save profile</Button>
           </form>
+        </Card>
+
+        <Card icon={<Mail className="size-4" />} title="Email notifications">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={user.email_notifications}
+              disabled={updateMe.isPending}
+              onChange={(e) =>
+                updateMe.mutate(
+                  { email_notifications: e.target.checked },
+                  { onSuccess: (me) => toast.success(me.email_notifications ? "Email notifications on" : "Email notifications off") },
+                )
+              }
+              className="mt-0.5 size-4 accent-brand-600"
+            />
+            <span>
+              <span className="block text-sm font-medium">Email me about important updates</span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                Mentions, new assignments, overdue issues and the daily digest. You'll still see everything in the bell.
+              </span>
+            </span>
+          </label>
         </Card>
 
         <Card icon={<KeyRound className="size-4" />} title="Change password">
