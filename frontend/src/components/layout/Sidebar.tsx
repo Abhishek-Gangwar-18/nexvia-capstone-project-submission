@@ -1,5 +1,5 @@
 import {
-  Check, ChevronsUpDown, FolderKanban, LayoutDashboard, ListTodo, PanelLeftClose, PanelLeftOpen, Plus, Settings,
+  ChartColumn, Check, ChevronsUpDown, FolderKanban, History, LayoutDashboard, ListTodo, PanelLeftClose, PanelLeftOpen, Plus, Settings,
   SquareKanban, Users, List,
 } from "lucide-react";
 import { useState } from "react";
@@ -7,7 +7,7 @@ import { NavLink, useMatch, useNavigate } from "react-router";
 import { Dropdown } from "@/components/ui/Dropdown";
 import { Logo } from "@/components/ui/Misc";
 import { useProjects, useWorkspaces } from "@/hooks/queries";
-import { useWorkspace } from "@/hooks/useWorkspace";
+import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { PLANS, ROLES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { useUI } from "@/store/ui";
@@ -111,6 +111,7 @@ function NavItem({
 
 export function Sidebar() {
   const workspace = useWorkspace();
+  const { isAdmin } = usePermissions();
   const collapsedPref = useUI((s) => s.sidebarCollapsed);
   const toggle = useUI((s) => s.toggleSidebar);
   const mobileOpen = useUI((s) => s.mobileNavOpen);
@@ -145,6 +146,7 @@ export function Sidebar() {
           <NavItem to={`${base}/dashboard`} icon={LayoutDashboard} label="Dashboard" collapsed={collapsed} />
           <NavItem to={`${base}/projects`} icon={FolderKanban} label="Projects" collapsed={collapsed} end />
           <NavItem to={`${base}/issues`} icon={List} label="All issues" collapsed={collapsed} />
+          <NavItem to={`${base}/reports`} icon={ChartColumn} label="Reports" collapsed={collapsed} />
 
           {!collapsed && visibleProjects.length > 0 && (
             <p className="px-2.5 pt-5 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">Projects</p>
@@ -187,6 +189,7 @@ export function Sidebar() {
 
         <div className="space-y-0.5 border-t border-slate-100 px-3 py-3 dark:border-slate-800">
           <NavItem to={`${base}/members`} icon={Users} label="Members" collapsed={collapsed} />
+          {isAdmin && <NavItem to={`${base}/audit`} icon={History} label="Audit log" collapsed={collapsed} />}
           <NavItem to={`${base}/settings`} icon={Settings} label="Settings" collapsed={collapsed} />
           <button
             onClick={toggle}
