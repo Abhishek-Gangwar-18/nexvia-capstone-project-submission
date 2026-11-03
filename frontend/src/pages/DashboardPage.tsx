@@ -104,7 +104,7 @@ export default function DashboardPage() {
     return (
       <PageBody className="pt-6">
         <Skeleton className="mb-6 h-10 w-72" />
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-32" />)}
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -133,7 +133,7 @@ export default function DashboardPage() {
         description={`Here's what's happening across ${workspace.name} today.`}
       />
       <PageBody className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             icon={CircleDot}
             label="Open issues"
@@ -164,7 +164,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Panel
             title="Created vs resolved"
             className="lg:col-span-2"
@@ -221,12 +221,12 @@ export default function DashboardPage() {
           </Panel>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Panel title="Active sprints" className="lg:col-span-2">
             {data.active_sprints.length === 0 ? (
               <EmptyState icon={<Rocket className="size-5" />} title="No active sprints" description="Start a sprint from a project's backlog." className="py-8" />
             ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {data.active_sprints.map((sprint) => (
                   <Link
                     key={sprint.id}
@@ -270,7 +270,7 @@ export default function DashboardPage() {
           </Panel>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Panel title="Assigned to you" className="lg:col-span-2">
             <IssueList issues={data.my_issues} empty="Nothing assigned to you right now 🎉" />
           </Panel>
@@ -296,7 +296,7 @@ export default function DashboardPage() {
           </Panel>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Panel title="Recently updated" className="lg:col-span-2">
             <IssueList issues={data.recent} empty="No issues yet." />
           </Panel>
