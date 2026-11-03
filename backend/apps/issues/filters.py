@@ -3,7 +3,7 @@ from django_filters import rest_framework as filters
 
 from apps.projects.models import WorkflowStatus
 
-from .models import Issue
+from .models import AuditLog, Issue
 
 
 class NumberInFilter(filters.BaseInFilter, filters.NumberFilter):
@@ -56,3 +56,16 @@ class IssueFilter(filters.FilterSet):
         if not value:
             return qs
         return qs.filter(due_date__lt=timezone.localdate()).exclude(status__category=WorkflowStatus.Category.DONE)
+
+
+class AuditLogFilter(filters.FilterSet):
+    entity_type = filters.CharFilter(field_name="entity_type")
+    action = filters.CharFilter(field_name="action")
+    actor = filters.NumberFilter(field_name="actor_id")
+    project = filters.CharFilter(field_name="project_key", lookup_expr="iexact")
+    date_from = filters.DateFilter(field_name="created_at", lookup_expr="date__gte")
+    date_to = filters.DateFilter(field_name="created_at", lookup_expr="date__lte")
+
+    class Meta:
+        model = AuditLog
+        fields = []

@@ -30,6 +30,8 @@ def rank_between(prev_rank, next_rank):
 @transaction.atomic
 def move_issue(issue, *, status=None, sprint=UNSET, prev_id=None, next_id=None):
     """Drag-and-drop move: optionally change status/sprint, then slot between two neighbours."""
+    if issue.project.is_archived:
+        raise ValidationError({"project": "This project is archived. Restore it to make changes."})
     if status is not None and status.pk != issue.status_id:
         if status.workflow.project_id != issue.project_id:
             raise ValidationError({"status": "This status belongs to a different project."})

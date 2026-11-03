@@ -2,6 +2,9 @@ from django.core.exceptions import ValidationError
 from django.db.models.signals import m2m_changed, post_delete
 from django.dispatch import receiver
 
+from apps.projects.models import Project
+from apps.tenants.models import Membership
+
 from .models import Issue, IssueAttachment, Label
 
 
@@ -17,6 +20,13 @@ def labels_stay_in_workspace(sender, instance, action, pk_set, reverse, **kwargs
         foreign = Label.objects.filter(pk__in=pk_set).exclude(workspace_id=instance.workspace_id)
     if foreign.exists():
         raise ValidationError("Labels and issues must belong to the same workspace.")
+
+
+@receiver(post_delete, sender=Membership)
+def release_work_of_removed_member(sender, instance, **kwargs):
+    """Someone who left can't own open work: unassign them and clear them as project lead."""
+    Issue.objects.filter(workspace_id=instance.workspace_id, assignee_id=instance.user_id).update(assignee=None)
+    Project.objects.filter(workspace_id=instance.workspace_id, lead_id=instance.user_id).update(lead=None)
 
 
 @receiver(post_delete, sender=IssueAttachment)

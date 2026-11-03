@@ -13,7 +13,7 @@ from django.utils import timezone
 from faker import Faker
 
 from apps.accounts.models import User
-from apps.issues.models import Issue, Label
+from apps.issues.models import AuditLog, Issue, Label
 from apps.projects.models import Sprint, WorkflowStatus
 from apps.projects.services import create_project
 from apps.tenants.models import Membership, Workspace
@@ -214,11 +214,36 @@ class Command(BaseCommand):
                 parent=random.choice(epics) if issue_type == Issue.IssueType.STORY and random.random() < 0.7 else None,
                 assignee=random.choice(team) if random.random() < 0.85 else None,
                 reporter=random.choice(team),
-                story_points=random.choice([1, 2, 3, 5, 8, 13]) if issue_type != Issue.IssueType.BUG else None,
+                story_points=random.choice([1, 2, 3, 5, 8, 13]),
                 due_date=today + timedelta(days=random.randint(-10, 30)) if random.random() < 0.35 else None,
             )
             issue.labels.set(random.sample(labels, k=random.randint(0, 2)))
             self._backdate(issue, sprint)
+        self._seed_audit(project, sprints, team)
+
+    def _seed_audit(self, project, sprints, team):
+        """A believable history so the audit log page isn't empty on a fresh demo."""
+        workspace = project.workspace
+        start = timezone.make_aware(datetime.combine(sprints[0].start_date, time(9)))
+        events = [(start - timedelta(days=3), AuditLog.Action.CREATED, AuditLog.Entity.PROJECT, project.name, {})]
+        for sprint in sprints:
+            sprint_start = timezone.make_aware(datetime.combine(sprint.start_date, time(9)))
+            events.append((sprint_start - timedelta(days=2), AuditLog.Action.CREATED, AuditLog.Entity.SPRINT, sprint.name, {}))
+            if sprint.state != Sprint.State.PLANNED:
+                events.append((sprint_start, AuditLog.Action.STARTED, AuditLog.Entity.SPRINT, sprint.name, {}))
+            if sprint.state == Sprint.State.CLOSED:
+                events.append((sprint.completed_at, AuditLog.Action.COMPLETED, AuditLog.Entity.SPRINT, sprint.name, {"moved_to": "Backlog"}))
+        latest = timezone.now() - timedelta(hours=1)  # planned sprints start in the future; history can't
+        for when, action, entity, label, changes in events:
+            when = min(when, latest)
+            event = AuditLog.objects.create(
+                workspace=workspace, project=project, actor=random.choice(team),
+                action=action, entity_type=entity, entity_label=label, changes=changes,
+            )
+            AuditLog.objects.filter(pk=event.pk).update(created_at=when)
+        AuditLog.objects.filter(workspace=workspace, entity_type=AuditLog.Entity.WORKSPACE).update(
+            created_at=start - timedelta(days=7)
+        )
 
     def _backdate(self, issue, sprint):
         """Give the issue a believable history so trend charts and 'done this week' look real."""

@@ -9,7 +9,7 @@ from apps.accounts.serializers import UserMiniSerializer
 from apps.core.fields import TenantPrimaryKeyRelatedField, WorkspaceMemberField
 from apps.projects.models import Project, Sprint, WorkflowStatus
 
-from .models import Issue, IssueAttachment, IssueAuditLog, IssueComment, Label
+from .models import Issue, IssueAttachment, AuditLog, IssueComment, Label
 
 
 class LabelSerializer(serializers.ModelSerializer):
@@ -75,6 +75,8 @@ class IssueSerializer(serializers.ModelSerializer):
         instance = self.instance
         project = attrs.get("project") or getattr(instance, "project", None)
         errors = {}
+        if project is not None and project.is_archived:
+            raise serializers.ValidationError({"project": "This project is archived. Restore it to make changes."})
         if instance and "project" in attrs and attrs["project"].pk != instance.project_id:
             errors["project"] = "Issues can't be moved between projects."
 
@@ -196,9 +198,9 @@ class IssueAttachmentUploadSerializer(serializers.Serializer):
         return value
 
 
-class IssueAuditLogSerializer(serializers.ModelSerializer):
+class AuditLogSerializer(serializers.ModelSerializer):
     actor = UserMiniSerializer(read_only=True)
 
     class Meta:
-        model = IssueAuditLog
-        fields = ["id", "issue_key", "issue_title", "actor", "action", "changes", "created_at"]
+        model = AuditLog
+        fields = ["id", "entity_type", "entity_label", "project_key", "issue_key", "issue_title", "actor", "action", "changes", "created_at"]

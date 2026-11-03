@@ -10,6 +10,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
+from apps.issues.activity import field_changes, record_event
+from apps.issues.models import AuditLog
 from apps.tenants.models import Membership
 
 from .models import Board, Project, Sprint, WorkflowStatus, WorkflowTransition
@@ -56,11 +58,27 @@ class ProjectViewSet(TenantModelViewSet):
             color=data.get("color", "#6366f1"), lead=data.get("lead"), board_type=data.get("board_type"),
         )
         serializer.instance = self.get_queryset().get(pk=project.pk)
+        record_event(self.workspace, self.request.user, AuditLog.Action.CREATED, AuditLog.Entity.PROJECT,
+                     project.name, project=project)
 
     def perform_update(self, serializer):
         serializer.validated_data.pop("board_type", None)
+        tracked = ("name", "description", "color", "lead_id", "is_archived")
+        before = {field: getattr(serializer.instance, field) for field in tracked}
         project = serializer.save()
+        changes = field_changes(project, before, tracked)
+        if changes:
+            action = AuditLog.Action.UPDATED
+            if "is_archived" in changes:
+                action = AuditLog.Action.ARCHIVED if project.is_archived else AuditLog.Action.RESTORED
+            record_event(self.workspace, self.request.user, action, AuditLog.Entity.PROJECT, project.name,
+                         project=project, changes=changes)
         serializer.instance = self.get_queryset().get(pk=project.pk)
+
+    def perform_destroy(self, instance):
+        record_event(self.workspace, self.request.user, AuditLog.Action.DELETED, AuditLog.Entity.PROJECT,
+                     instance.name, project_key=instance.key)
+        instance.delete()
 
     @extend_schema(request=WorkflowConfigSerializer, responses=WorkflowConfigSerializer)
     @action(detail=True, methods=["get", "put"], url_path="workflow")
@@ -112,6 +130,12 @@ class ProjectViewSet(TenantModelViewSet):
             workflow.name = data.get("name", workflow.name)
             workflow.enforce_transitions = data["enforce_transitions"]
             workflow.save()
+            record_event(self.workspace, request.user, AuditLog.Action.UPDATED, AuditLog.Entity.WORKFLOW, workflow.name,
+                         project=project, changes={
+                             "statuses": [status.name for status in ordered],
+                             "enforce_transitions": workflow.enforce_transitions,
+                             "transition_count": len(data.get("transitions", [])),
+                         })
         index_by_id = {status.id: index for index, status in enumerate(ordered)}
         return Response({
             "name": workflow.name,
@@ -133,6 +157,14 @@ class BoardViewSet(WorkspaceScopedMixin, mixins.RetrieveModelMixin, mixins.Updat
 
     def get_queryset(self):
         return Board.objects.for_workspace(self.workspace)
+
+    def perform_update(self, serializer):
+        before = {"wip_limits": serializer.instance.wip_limits}
+        board = serializer.save()
+        changes = field_changes(board, before, ("wip_limits",))
+        if changes:
+            record_event(self.workspace, self.request.user, AuditLog.Action.UPDATED, AuditLog.Entity.BOARD, board.name,
+                         project=board.project, changes=changes)
 
 
 def sprint_queryset(workspace):
@@ -168,15 +200,31 @@ class SprintViewSet(TenantModelViewSet):
     def _refetch(self, sprint):
         return sprint_queryset(self.workspace).get(pk=sprint.pk)
 
+    def _audit(self, action, sprint, changes=None):
+        record_event(self.workspace, self.request.user, action, AuditLog.Entity.SPRINT, sprint.name,
+                     project=sprint.project, changes=changes)
+
     def perform_create(self, serializer):
-        serializer.instance = self._refetch(serializer.save(workspace=self.workspace))
+        sprint = serializer.save(workspace=self.workspace)
+        self._audit(AuditLog.Action.CREATED, sprint)
+        serializer.instance = self._refetch(sprint)
 
     def perform_update(self, serializer):
-        serializer.instance = self._refetch(serializer.save())
+        tracked = ("name", "goal", "start_date", "end_date")
+        before = {field: getattr(serializer.instance, field) for field in tracked}
+        sprint = serializer.save()
+        changes = field_changes(sprint, before, tracked)
+        if changes:
+            self._audit(AuditLog.Action.UPDATED, sprint, {
+                field: {key: str(value) if value is not None else None for key, value in diff.items()}
+                for field, diff in changes.items()
+            })
+        serializer.instance = self._refetch(sprint)
 
     def perform_destroy(self, instance):
         if instance.state == Sprint.State.ACTIVE:
             raise exceptions.ValidationError("Complete the sprint before deleting it.")
+        self._audit(AuditLog.Action.DELETED, instance)
         instance.delete()  # issues fall back to the backlog (FK is SET_NULL)
 
     @extend_schema(request=SprintStartSerializer, responses=SprintSerializer)
@@ -198,6 +246,7 @@ class SprintViewSet(TenantModelViewSet):
             sprint.goal = data["goal"]
         sprint.state = Sprint.State.ACTIVE
         sprint.save()
+        self._audit(AuditLog.Action.STARTED, sprint)
         return Response(SprintSerializer(self._refetch(sprint), context=self.get_serializer_context()).data)
 
     @extend_schema(request=SprintCompleteSerializer, responses=SprintSerializer)
@@ -212,8 +261,11 @@ class SprintViewSet(TenantModelViewSet):
         if target and (target.project_id != sprint.project_id or target.state != Sprint.State.PLANNED):
             raise exceptions.ValidationError({"move_open_issues_to": "Pick a planned sprint of the same project."})
         with transaction.atomic():
-            sprint.issues.exclude(status__category=DONE).update(sprint=target, updated_at=timezone.now())
+            moved = sprint.issues.exclude(status__category=DONE).update(sprint=target, updated_at=timezone.now())
             sprint.state = Sprint.State.CLOSED
             sprint.completed_at = timezone.now()
             sprint.save()
+            self._audit(AuditLog.Action.COMPLETED, sprint, {
+                "open_issues_moved": moved, "moved_to": target.name if target else "Backlog",
+            })
         return Response(SprintSerializer(self._refetch(sprint), context=self.get_serializer_context()).data)

@@ -26,7 +26,8 @@ class WorkflowConfigSerializer(serializers.Serializer):
         project = self.context["project"]
         errors = {}
         statuses = data["statuses"]
-        allowed = {"id", "name", "category", "color"}
+        # "position" is accepted so a GET response can be sent straight back; list order decides the real position.
+        allowed = {"id", "name", "category", "color", "position"}
         names = []
         categories = {choice for choice, _ in WorkflowStatus.Category.choices}
         existing_ids = set(project.workflow.statuses.values_list("id", flat=True))
@@ -60,7 +61,7 @@ class WorkflowConfigSerializer(serializers.Serializer):
         submitted_categories = {status.get("category") for status in statuses if isinstance(status.get("category"), str)}
         if WorkflowStatus.Category.TODO not in submitted_categories or WorkflowStatus.Category.DONE not in submitted_categories:
             errors["statuses"] = "A workflow must retain at least one To do and one Done status."
-        present_ids = {s["id"] for s in statuses if "id" in s}
+        present_ids = {s["id"] for s in statuses if isinstance(s.get("id"), int)}
         removed = existing_ids - present_ids
         if removed and project.issues.filter(status_id__in=removed).exists():
             errors["statuses"] = "A status used by issues cannot be removed. Move its issues first."

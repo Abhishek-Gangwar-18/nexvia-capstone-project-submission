@@ -116,7 +116,9 @@ class Issue(TenantModel):
             errors["parent"] = "Parent issue belongs to a different project."
         if self.parent_id and self.pk and self.parent_id == self.pk:
             errors["parent"] = "An issue cannot be its own parent."
-        for field in ("assignee", "reporter"):
+        # The reporter is historical: they may leave the workspace later, and that must not lock the issue.
+        # Assignees are cleared when a member leaves (see signals.py), so that check always applies.
+        for field in ("assignee", "reporter") if self._state.adding else ("assignee",):
             user_id = getattr(self, f"{field}_id")
             if user_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=user_id).exists():
                 errors[field] = "User is not a member of this workspace."
@@ -137,7 +139,7 @@ class IssueComment(TenantModel):
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
-        if self.author_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.author_id).exists():
+        if self._state.adding and self.author_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.author_id).exists():
             raise ValidationError({"author": "Author is not a member of this workspace."})
 
 
@@ -156,11 +158,13 @@ class IssueAttachment(TenantModel):
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
-        if self.uploaded_by_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.uploaded_by_id).exists():
+        if self._state.adding and self.uploaded_by_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.uploaded_by_id).exists():
             raise ValidationError({"uploaded_by": "Uploader is not a member of this workspace."})
 
 
-class IssueAuditLog(TenantModel):
+class AuditLog(TenantModel):
+    """Who changed what in a workspace. Survives deletion of what it describes, so labels are stored as text."""
+
     class Action(models.TextChoices):
         CREATED = "created", "Created"
         UPDATED = "updated", "Updated"
@@ -169,19 +173,55 @@ class IssueAuditLog(TenantModel):
         ATTACHED = "attached", "Attachment added"
         DETACHED = "detached", "Attachment removed"
         DELETED = "deleted", "Deleted"
+        ARCHIVED = "archived", "Archived"
+        RESTORED = "restored", "Restored"
+        STARTED = "started", "Started"
+        COMPLETED = "completed", "Completed"
+        INVITED = "invited", "Invited"
+        REVOKED = "revoked", "Revoked"
+        JOINED = "joined", "Joined"
+        LEFT = "left", "Left"
+        REMOVED = "removed", "Removed"
+        ROLE_CHANGED = "role_changed", "Role changed"
+        SECRET_ROTATED = "secret_rotated", "Secret rotated"
 
-    issue_key = models.CharField(max_length=24, db_index=True)
-    issue_title = models.CharField(max_length=255)
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="issue_audit_events")
-    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="issue_audit_events")
+    class Entity(models.TextChoices):
+        ISSUE = "issue", "Issue"
+        PROJECT = "project", "Project"
+        SPRINT = "sprint", "Sprint"
+        WORKFLOW = "workflow", "Workflow"
+        BOARD = "board", "Board"
+        MEMBER = "member", "Member"
+        INVITATION = "invitation", "Invitation"
+        WORKSPACE = "workspace", "Workspace"
+        LABEL = "label", "Label"
+        WEBHOOK = "webhook", "Webhook"
+
+    entity_type = models.CharField(max_length=16, choices=Entity.choices, default=Entity.ISSUE)
+    entity_label = models.CharField(max_length=255, blank=True)
+    issue_key = models.CharField(max_length=24, blank=True, db_index=True)
+    issue_title = models.CharField(max_length=255, blank=True)
+    project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_events")
+    project_key = models.CharField(max_length=10, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="audit_events")
     action = models.CharField(max_length=16, choices=Action.choices)
     changes = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]
-        indexes = [models.Index(fields=["workspace", "issue_key", "created_at"])]
+        indexes = [
+            models.Index(fields=["workspace", "issue_key", "created_at"]),
+            models.Index(fields=["workspace", "-created_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.project_id and not self.project_key:
+            self.project_key = self.project.key
+        if self.issue_key and not self.entity_label:
+            self.entity_label = f"{self.issue_key} {self.issue_title}"[:255]
+        super().save(*args, **kwargs)
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
-        if self.actor_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.actor_id).exists():
+        if self._state.adding and self.actor_id and not Membership.objects.filter(workspace_id=self.workspace_id, user_id=self.actor_id).exists():
             raise ValidationError({"actor": "Actor is not a member of this workspace."})
