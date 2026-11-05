@@ -16,10 +16,10 @@ const ACTIONS: Record<string, string> = {
   created: "created", updated: "updated", moved: "moved", commented: "commented on", attached: "added a file to",
   detached: "removed a file from", deleted: "deleted", archived: "archived", restored: "restored", started: "started",
   completed: "completed", invited: "invited", revoked: "revoked the invitation for", joined: "joined as",
-  left: "left as", removed: "removed", role_changed: "changed the role of", secret_rotated: "rotated the secret of",
+  left: "left as", removed: "removed", role_changed: "changed the role of", secret_rotated: "rotated the secret of", plan_changed: "changed the plan of",
 };
 
-const ENTITIES = ["issue", "project", "sprint", "workflow", "board", "member", "invitation", "workspace", "label", "webhook"];
+const ENTITIES = ["issue", "project", "sprint", "workflow", "board", "member", "invitation", "workspace", "label", "webhook", "billing"];
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).replaceAll("_", " ");
 
 const entityOptions: Option<string | null>[] = [
@@ -57,7 +57,7 @@ function sentence(entry: AuditEntry) {
     const role = entry.changes.role;
     return `${ACTIONS[entry.action]} ${typeof role === "string" ? role : "member"}`;
   }
-  const noun = ["member", "invitation"].includes(entry.entity_type) ? "" : `${entry.entity_type} `;
+  const noun = ["member", "invitation", "billing"].includes(entry.entity_type) ? "" : `${entry.entity_type} `;
   return `${ACTIONS[entry.action] ?? entry.action} ${noun}`;
 }
 
@@ -207,7 +207,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
       <Avatar user={entry.actor} size="md" />
       <div className="min-w-0 flex-1">
         <p className="text-sm break-words">
-          <strong className="font-semibold">{entry.actor?.display_name ?? "Former member"}</strong>{" "}
+          <strong className="font-semibold">{entry.actor?.display_name ?? (entry.entity_type === "billing" ? "Stripe" : "Former member")}</strong>{" "}
           <span className="text-slate-600 dark:text-slate-400">{sentence(entry)}</span>
           {!selfDescribing && <strong className="font-medium">{entry.entity_label}</strong>}
         </p>

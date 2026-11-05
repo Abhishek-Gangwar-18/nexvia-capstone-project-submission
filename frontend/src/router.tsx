@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import AuditLogPage from "@/pages/AuditLogPage";
+import BillingPage from "@/pages/BillingPage";
 import { HomeRedirect, RequireAuth, WorkspaceLayout } from "@/components/layout/WorkspaceLayout";
 import AcceptInvitePage from "@/pages/auth/AcceptInvitePage";
 import LoginPage from "@/pages/auth/LoginPage";
@@ -52,6 +53,7 @@ export const router = createBrowserRouter([
               { path: "issues", element: <IssuesPage /> },
               { path: "reports", element: <ReportsPage /> },
               { path: "audit", element: <AuditLogPage /> },
+              { path: "billing", element: <BillingPage /> },
               { path: "members", element: <MembersPage /> },
               { path: "settings", element: <SettingsPage /> },
               { path: "profile", element: <ProfilePage /> },

@@ -1,5 +1,5 @@
 import {
-  ChartColumn, Check, ChevronsUpDown, FolderKanban, History, LayoutDashboard, ListTodo, PanelLeftClose, PanelLeftOpen, Plus, Settings,
+  ChartColumn, Check, ChevronsUpDown, CreditCard, FolderKanban, History, LayoutDashboard, ListTodo, PanelLeftClose, PanelLeftOpen, Plus, Settings,
   SquareKanban, Users, List,
 } from "lucide-react";
 import { useState } from "react";
@@ -190,6 +190,7 @@ export function Sidebar() {
         <div className="space-y-0.5 border-t border-slate-100 px-3 py-3 dark:border-slate-800">
           <NavItem to={`${base}/members`} icon={Users} label="Members" collapsed={collapsed} />
           {isAdmin && <NavItem to={`${base}/audit`} icon={History} label="Audit log" collapsed={collapsed} />}
+          <NavItem to={`${base}/billing`} icon={CreditCard} label="Billing" collapsed={collapsed} />
           <NavItem to={`${base}/settings`} icon={Settings} label="Settings" collapsed={collapsed} />
           <button
             onClick={toggle}

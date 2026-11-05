@@ -1,6 +1,6 @@
 import { Building, Check, CreditCard, Globe, Plus, Tag, Trash, TriangleAlert } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/layout/PageHeader";
@@ -91,7 +91,7 @@ export default function SettingsPage() {
             <div className="flex-1 text-sm text-slate-500">
               {workspace.member_count} members · {workspace.project_count} active projects
             </div>
-            <Button disabled title="Subscription management is enabled with Stripe billing">Manage billing</Button>
+            <Link to={`/w/${workspace.slug}/billing`}><Button>Manage billing</Button></Link>
           </div>
         </Section>
 
