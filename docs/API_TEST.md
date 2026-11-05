@@ -36,6 +36,11 @@ curl http://127.0.0.1:8000/api/health/
 **Base URL:** `http://127.0.0.1:8000/api`. Through the frontend dev server, `http://localhost:5173/api`
 works too, because Vite proxies it.
 
+**Using Docker instead?** `docker compose up -d --build` runs everything (migrations and demo data included).
+Then the base URL is **`http://localhost:8080/api`** (nginx → gunicorn) and every example below works with
+that prefix. Run management commands with `docker compose exec backend python manage.py …`, and see emails in
+`docker compose logs -f worker`.
+
 ### Demo accounts (password `Demo@1234` for all)
 
 | Account | Workspace (slug) | Role | Use it to test |
@@ -550,6 +555,68 @@ for beat:
 python manage.py shell -c "from apps.automation.tasks import create_overdue_reminders as o, create_daily_digests as d; o.delay(); d.delay()"
 ```
 
+### 4.16 Billing (read: any role; payments: owner)
+
+Needs Stripe **test** keys in `.env` and `python manage.py stripe_setup` run once (see the README). Without
+keys, `GET /billing/` still works and reports `"stripe_configured": false`; the payment endpoints return 503.
+
+```bash
+GLOBEX="Authorization: Bearer $(curl -s -X POST $API/auth/login/ -H 'Content-Type: application/json' \
+  -d '{"email":"owner@globex.test","password":"Demo@1234"}' | json "['access']")"
+GWS="X-Workspace: globex"
+
+curl -s $API/billing/ -H "$GLOBEX" -H "$GWS"
+```
+
+```json
+{"plan": "free",
+ "plans": [{"id": "free", "name": "Free", "price_monthly": 0, "projects": 3, "members": 5, "file_mb": 10, "features": […]},
+           {"id": "pro", "name": "Pro", "price_monthly": 29, "projects": 20, "members": 50, "file_mb": 25, …},
+           {"id": "enterprise", "name": "Enterprise", "price_monthly": 99, "projects": null, "members": null, "file_mb": 100, …}],
+ "usage": {"projects": 2, "members": 8, "pending_invitations": 0},
+ "can_manage": true, "stripe_configured": true, "has_billing_account": false, "subscription": null}
+```
+
+`null` means unlimited. Globex is a demo workspace on Free that already has 8 members, so it shows the "limits only
+block adding more" rule: it keeps all 8, but a new invitation returns 402.
+
+```bash
+# owner: start an upgrade → open the returned URL, pay with 4242 4242 4242 4242
+curl -s -X POST $API/billing/checkout/ -H "$GLOBEX" -H "$GWS" -H "Content-Type: application/json" -d '{"plan":"pro"}'
+# → 200 {"url": "https://checkout.stripe.com/c/pay/cs_test_…"}
+# {"plan":"free"} → 400 {"plan": "Choose a paid plan."}
+# already subscribed → 400 "This workspace already has a subscription. Use Manage billing to change it."
+
+# owner: Stripe Customer Portal (cards, invoices, plan change, cancel); needs a billing account (checkout once)
+curl -s -X POST $API/billing/portal/ -H "$GLOBEX" -H "$GWS"
+# → 200 {"url": "https://billing.stripe.com/p/session/test_…"}
+
+# owner: pull the latest subscription from Stripe (use this when webhooks can't reach you)
+curl -s -X POST $API/billing/sync/ -H "$GLOBEX" -H "$GWS"
+# → 200 same shape as GET /billing/, with "plan": "pro" after a successful payment
+```
+
+**Plan limits** return **402**:
+
+```bash
+# on Free (3 projects): the 4th active project
+curl -s -X POST $API/projects/ -H "$GLOBEX" -H "$GWS" -H "Content-Type: application/json" -d '{"name":"Four","key":"FOUR"}'
+# → 402 {"detail": "Your plan allows 3 active projects. Upgrade or archive a project to add another.",
+#        "code": "plan_limit_reached", "limit": "projects", "current_plan": "free"}
+```
+
+| Limit | Checked on | `limit` value |
+|---|---|---|
+| Active projects | `POST /projects/`, un-archiving with `PATCH {"is_archived": false}` | `projects` |
+| Members + pending invitations | `POST /invitations/` | `members` |
+| File size | `POST /issues/{key}/attachments/` | `file_size` |
+
+**Stripe webhook:** `POST /billing/webhook/` is called by Stripe, not by users. Forward events locally with
+`stripe listen --forward-to localhost:8000/api/billing/webhook/` (Docker: port 8080) and put the printed
+`whsec_…` in `STRIPE_WEBHOOK_SECRET`. Handled events: `checkout.session.completed`, `customer.subscription.*`
+and `invoice.payment_failed` (notifies the owner). Each event id is processed once; a repeat returns
+`{"received": true, "duplicate": true}`.
+
 ---
 
 ## 5. Endpoint reference
@@ -606,6 +673,11 @@ python manage.py shell -c "from apps.automation.tasks import create_overdue_remi
 | `POST /reports/` | ✅ | member | generate |
 | `GET /audit-log/` | ✅ | admin | workspace history |
 | `POST /invitations/{id}/resend/` | ✅ | admin | email again |
+| `GET /billing/` | ✅ | viewer | plan, plan catalog, usage, subscription status |
+| `POST /billing/checkout/` | ✅ | owner | `{"plan": "pro" \| "enterprise"}` → Stripe Checkout URL |
+| `POST /billing/portal/` | ✅ | owner | Stripe Customer Portal URL |
+| `POST /billing/sync/` | ✅ | owner | re-read the subscription from Stripe |
+| `POST /billing/webhook/` | | Stripe signature | Stripe events (not in Swagger) |
 | `GET /schema/` · `GET /docs/` | | public | OpenAPI 3 + Swagger UI |
 
 ### Issue list filters
@@ -662,6 +734,10 @@ GLOBEX="Authorization: Bearer $(login owner@globex.test)"
 | 17 | Webhook to an internal address | `https://169.254.169.254/` with `DEBUG=False` | **400** |
 | 18 | Write to an archived project's issues | `PATCH` or `move` | **400** `This project is archived…` |
 | 19 | Upload a blocked file type | `run.html` | **400** |
+| 20 | Non-owner starts a payment | admin or viewer → `POST /billing/checkout/` (or `/portal/`, `/sync/`) | **403** |
+| 21 | Exceed a plan limit | 4th project on Free, invite past the member cap, file over the plan size | **402** `plan_limit_reached` |
+| 22 | Forged Stripe webhook | `POST /billing/webhook/` without a valid `Stripe-Signature` | **400** `Invalid signature.` (503 when no webhook secret is set) |
+| 23 | Replayed Stripe event | the same signed event twice | second → **200** `{"received": true, "duplicate": true}`, nothing applied twice |
 
 Quick run of 1–3 and 7:
 
@@ -713,6 +789,8 @@ through M2M) are converted to the same `400` format. Database constraint races b
 | second active sprint | 400 | `["This project already has an active sprint. Complete it first."]` |
 | delete active sprint | 400 | `["Complete the sprint before deleting it."]` |
 | remove the owner | 403 | `{"detail": "The workspace owner can't be removed."}` |
+| plan limit reached | 402 | `{"detail": "Your plan allows 3 active projects. …", "code": "plan_limit_reached", "limit": "projects", "current_plan": "free"}` |
+| Stripe not configured / Stripe error | 503 | `{"detail": "Billing isn't available right now. Please try again shortly."}` (details are only logged) |
 
 ---
 
@@ -720,7 +798,7 @@ through M2M) are converted to the same `400` format. Database constraint races b
 
 ```bash
 cd backend
-pytest                                   # all 235 tests (Postgres must be running; Redis isn't needed)
+pytest                                   # all 270 tests (Postgres must be running; Redis and Stripe aren't needed)
 pytest -k Isolation                      # just the tenant-isolation tests
 pytest apps/core/tests/test_api.py::TestSprints -v
 pytest --create-db                       # rebuild the test DB after a migration
@@ -746,6 +824,10 @@ production, so constraints such as "one active sprint per project" are really ex
 | `test_phase45_regressions.py` | move auditing, removed members, broker outages, scheduled jobs, webhook target safety and IP pinning |
 | `test_reports_audit_email.py` | report calculations and CSV, audit coverage and filters, email content, opt-out and resend |
 | `test_api_robustness.py` | malformed input across the API returns 4xx, never a server error |
+| `billing/tests/test_billing.py::TestLimits` | project / member / file-size limits per plan, archived projects don't count, un-archiving is checked |
+| `billing/tests/test_billing.py::TestApi` | billing state per role, owner-only Checkout / Portal / Sync, plan validation, Stripe errors → generic 503 (Stripe mocked) |
+| `billing/tests/test_billing.py::TestWebhook` | signature check, duplicate events skipped, subscription events move the plan, cancellation → Free, payment-failed notification |
+| `billing/tests/test_billing.py::TestWorkspaceDeletion` | the subscription is cancelled before a workspace is deleted |
 
 Frontend checks:
 
@@ -754,6 +836,21 @@ cd frontend
 pnpm typecheck        # strict TypeScript
 pnpm build            # type-check + production bundle
 ```
+
+End-to-end check of the whole Docker stack (stdlib only, no installs needed):
+
+```bash
+docker compose up -d --build --wait
+python scripts/smoke_test.py                         # default http://localhost:8080
+# … PASS lines …
+# 26/26 checks passed
+```
+
+It logs in as the demo users and goes through nginx → gunicorn → Postgres/Redis/Celery: projects, issues,
+boards, sprints, dashboard, tenant isolation, role blocks, comments, attachment upload + download, a report
+built by the worker + CSV, notifications, webhooks, billing, an unsigned Stripe webhook and the OpenAPI
+schema. GitHub Actions runs the same script on every push (see the README's CI/CD section). It adds a comment,
+a report and audit entries to Acme; `seed_demo --reset` clears them.
 
 ---
 
@@ -771,3 +868,7 @@ pnpm build            # type-check + production bundle
 | Swagger UI is blank | it loads from a CDN: check your internet connection |
 | ids in this doc don't match | ids change on every `seed_demo --reset`; look them up from the list endpoints |
 | demo login fails after section 4.8 | you changed the password: `python manage.py seed_demo --reset` |
+| `503` from `/billing/checkout/` | no `STRIPE_SECRET_KEY`, or prices missing: run `python manage.py stripe_setup` |
+| `402 plan_limit_reached` | expected on that plan: upgrade via 4.16, or use Acme (Pro) / Initech (Enterprise) |
+| `400` from `/billing/portal/` | the workspace has no billing account yet: start a checkout first |
+| Docker: `connection refused` on 8080 | `docker compose ps`; wait for `backend` to be healthy, or check `docker compose logs backend` |

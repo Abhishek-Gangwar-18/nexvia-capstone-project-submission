@@ -4,8 +4,8 @@ How FlowBoard is put together: the moving parts, how tenants are kept apart, the
 the reasoning behind the main design decisions. For setup see the [README](../README.md); for
 exercising the API see [API_TEST.md](API_TEST.md).
 
-> **Status:** Phases 1–5 are implemented (tenancy + models, REST API, React UI, workflows and collaboration,
-> background jobs). Parts marked *planned* arrive in Phases 6–7; see [section 12](#12-roadmap).
+> **Status:** all seven phases are implemented: tenancy + models, REST API, React UI, workflows and
+> collaboration, background jobs, Stripe billing, and Docker + GitHub Actions. See [section 12](#12-roadmap).
 
 - [1. System overview](#1-system-overview)
 - [2. Tech stack](#2-tech-stack)
@@ -15,8 +15,10 @@ exercising the API see [API_TEST.md](API_TEST.md).
 - [6. Domain rules](#6-domain-rules)
 - [7. Authentication and authorization](#7-authentication-and-authorization)
 - [8. Backend design](#8-backend-design)
+- [8a. Billing (Stripe)](#8a-billing-stripe)
 - [9. Frontend design](#9-frontend-design)
 - [10. Local environment](#10-local-environment)
+- [10a. Containers and deployment](#10a-containers-and-deployment)
 - [11. Testing strategy](#11-testing-strategy)
 - [12. Roadmap](#12-roadmap)
 
@@ -29,10 +31,10 @@ flowchart LR
     subgraph Browser
         SPA["React SPA<br/>(TypeScript, TanStack Query, dnd-kit)"]
     end
-    subgraph Dev["Vite dev server :5173"]
-        Proxy["/api proxy"]
+    subgraph Dev["nginx :8080 (Docker) / Vite :5173 (dev)"]
+        Proxy["static SPA + /api proxy"]
     end
-    subgraph Backend["Django :8000"]
+    subgraph Backend["Django on gunicorn :8000"]
         MW["TenantMiddleware"]
         DRF["DRF viewsets<br/>WorkspaceScopedMixin"]
         ORM["TenantModel / TenantQuerySet"]
@@ -42,17 +44,19 @@ flowchart LR
     Worker["Celery worker + beat"]
     Hooks["Customer webhook URLs"]
     Mail["Email (console or SMTP)"]
-    Stripe["Stripe Billing<br/><i>planned · Phase 6</i>"]
+    Stripe["Stripe Billing<br/>(Checkout, Portal, webhooks)"]
 
     SPA -- "JWT + X-Workspace" --> Proxy --> MW --> DRF --> ORM --> PG
     DRF -. "enqueue jobs" .-> Redis -.-> Worker
     Worker --> PG
     Worker --> Hooks
     Worker --> Mail
-    DRF -. "checkout / webhooks" .-> Stripe
+    DRF -- "checkout / portal / sync" --> Stripe
+    Stripe -- "signed webhook" --> Proxy
 ```
 
-- The browser only ever talks to **one origin**. In dev, Vite proxies `/api` to Django, so no CORS is
+- The browser only ever talks to **one origin**. In Docker, nginx serves the built SPA and proxies `/api`,
+  `/admin` and `/static` to gunicorn; in dev, Vite proxies `/api` to Django. Either way no CORS is
   involved. CORS is still configured (`CORS_ALLOWED_ORIGINS`, with `x-workspace` allowed) for setups
   where the SPA is served from somewhere else.
 - Django is a **pure JSON API**. It renders no HTML except the admin and the Swagger UI.
@@ -82,7 +86,11 @@ flowchart LR
 | UI | Tailwind CSS v4, Headless UI, lucide-react | 4.3 · 2.2 · 1.x | Accessible primitives, design tokens, dark mode |
 | Drag & drop | dnd-kit (core + sortable) | 6.3 · 10.0 | Multi-container sortable lists, keyboard support |
 | Charts | Recharts | 3.10 | Dashboard charts |
-| Infra | Docker Compose | n/a | Postgres + Redis locally (app images in Phase 7) |
+| Billing | Stripe Billing (`stripe` Python SDK) | 16 | Checkout, Customer Portal, signed webhooks; test mode |
+| App server | gunicorn + whitenoise | 23 · 6 | WSGI server; whitenoise serves admin/Swagger static files in the image |
+| Web server | nginx | 1.29 | Serves the SPA, proxies `/api`, `/admin`, `/static` |
+| Containers | Docker + Docker Compose | n/a | Full stack locally (`docker-compose.yml`) and in production (`docker-compose.prod.yml`) |
+| CI/CD | GitHub Actions + GHCR | n/a | Tests, builds, smoke test, image push, SSH deploy |
 
 ---
 
@@ -90,24 +98,31 @@ flowchart LR
 
 ```
 .
-├── docker-compose.yml          Postgres + Redis for local dev
+├── docker-compose.yml          full stack locally, or just db + redis for dev
+├── docker-compose.prod.yml     production stack from the GHCR images
 ├── .env.example                every setting, with dev defaults (copy to .env)
+├── .gitattributes              keeps LF endings for shell scripts / Dockerfiles
+├── .github/workflows/ci.yml    CI/CD pipeline
+├── scripts/smoke_test.py       end-to-end checks against a running stack
 ├── README.md
 ├── docs/
 │   ├── API_TEST.md             manual + automated API testing guide
 │   └── ARCHITECTURE.md         this file
 ├── backend/
 │   ├── manage.py · requirements.txt · pytest.ini · conftest.py
-│   ├── config/                 settings.py (env-driven), urls.py, wsgi/asgi
+│   ├── Dockerfile · docker-entrypoint.sh · .dockerignore
+│   ├── config/                 settings.py (env-driven), urls.py, wsgi/asgi, celery.py
 │   └── apps/
 │       ├── core/               tenancy primitives, API base classes, seed command, tests
 │       ├── accounts/           custom User (email login), auth endpoints
 │       ├── tenants/            Workspace, Membership, Invitation
 │       ├── projects/           Project, Workflow, WorkflowStatus, WorkflowTransition, Board, Sprint
 │       ├── issues/             Issue, Label, comments, attachments, AuditLog, move service, filters, dashboard
-│       └── automation/           webhooks, notifications, reports, email, Celery tasks and templates
+│       ├── automation/         webhooks, notifications, reports, email, Celery tasks and templates
+│       └── billing/            plans, limits, Subscription, Stripe services + webhook, stripe_setup command
 └── frontend/
     ├── package.json · pnpm-lock.yaml · pnpm-workspace.yaml · vite.config.ts
+    ├── Dockerfile · nginx.conf.template · .dockerignore
     └── src/
         ├── main.tsx · App.tsx · router.tsx · index.css · types.ts
         ├── lib/                api client, query client, utils, constants
@@ -120,7 +135,7 @@ flowchart LR
         │   ├── board/          KanbanColumn, BoardFilters
         │   ├── sprints/        sprint create/start/complete modals
         │   └── settings/       webhook management
-        └── pages/              auth/, project/ (Board, Backlog, Workflow), Dashboard, Issues, Reports, AuditLog, Members…
+        └── pages/              auth/, project/ (Board, Backlog, Workflow), Dashboard, Issues, Reports, AuditLog, Billing, Members…
 ```
 
 ### Backend apps
@@ -133,6 +148,7 @@ flowchart LR
 | `projects` | Containers of work | `Project`, `Workflow` + statuses + transitions, `Board`, `Sprint`; `services.create_project` scaffolds a workflow and a board |
 | `issues` | Work items and history | `Issue`, `Label`, `IssueComment`, `IssueAttachment`, `AuditLog`; `services.move_issue` (ranking), `activity.py` (`record_issue_event`, `record_event`), `dashboard.DashboardView`; `signals.py` guards labels, removes attachment files, releases a removed member's work |
 | `automation` | Background work | `WebhookEndpoint`, `WebhookDelivery`, `Notification`, `WorkspaceReport`; `tasks.py`, `queue.py` (`enqueue`), `reports.py`, `emails.py`, `templates/email/` |
+| `billing` | Plans and payments | `plans.py` (catalog), `limits.py` (402 checks), `Subscription`, `StripeEvent`; `services.py` (Checkout, Portal, sync, webhook handling), `management/commands/stripe_setup.py` |
 
 ---
 
@@ -231,6 +247,7 @@ erDiagram
     WEBHOOK_ENDPOINT ||--o{ WEBHOOK_DELIVERY : "logs"
     USER ||--o{ NOTIFICATION : "receives"
     WORKSPACE ||--o{ WORKSPACE_REPORT : "owns"
+    WORKSPACE ||--o| SUBSCRIPTION : "billed through"
 
     WORKSPACE {
         string slug UK
@@ -291,7 +308,18 @@ erDiagram
         string name "unique per workspace"
         string color
     }
+    SUBSCRIPTION {
+        int workspace_id FK "one per workspace"
+        string stripe_customer_id UK
+        string stripe_subscription_id
+        string status
+        datetime current_period_end
+        bool cancel_at_period_end
+    }
 ```
+
+`Subscription` and `StripeEvent` (processed webhook ids, unique) are platform-level billing records, not
+`TenantModel`s: Stripe webhooks arrive with no workspace context and are matched by customer id.
 
 Every model below `WORKSPACE` inherits `TenantModel`, so each has its own `workspace_id` column,
 even where it could be inferred through a parent. That denormalisation is deliberate: every tenant
@@ -362,7 +390,8 @@ the owner can't be removed or demoted; you can't change your own role; anyone ma
 | Delete an issue | | own | ✅ | ✅ |
 | Projects, workflows, boards (WIP), webhooks, audit log, delete sprints/labels | | | ✅ | ✅ |
 | Invitations, roles, removing members, renaming the workspace | | | ✅ | ✅ |
-| Delete the workspace | | | | ✅ |
+| See the plan and usage (`GET /billing/`) | ✅ | ✅ | ✅ | ✅ |
+| Checkout, Customer Portal, sync; delete the workspace | | | | ✅ |
 
 The frontend mirrors this ladder in `usePermissions()` and hides what the API would refuse. The API
 stays the authority either way.
@@ -403,7 +432,57 @@ sprint membership history isn't stored. Issues moved out earlier don't appear in
 | Errors | `core/exceptions.py` maps Django `ValidationError` (model/tenant guards) → 400 and `IntegrityError` → 409, so the API never 500s on bad input |
 | Query efficiency | `select_related`/`prefetch_related` on every list; counts and story points are aggregated in SQL (`annotate`), and the dashboard is built from grouped queries |
 | OpenAPI | drf-spectacular with a custom `TenantAutoSchema` that adds the `X-Workspace` header to every scoped endpoint; the schema builds with 0 warnings |
-| Seed data | `seed_demo` (Faker, deterministic seed 42): 3 workspaces, 7 projects, ~336 issues, epics, labels, closed/active/planned sprints, believable created/resolved timelines |
+| Seed data | `seed_demo` (Faker, deterministic seed 42): 3 workspaces, 7 projects, ~336 issues, epics, labels, closed/active/planned sprints, believable created/resolved timelines. Idempotent, so the Docker image runs it on every start |
+
+---
+
+## 8a. Billing (Stripe)
+
+**Single source of truth:** `Workspace.plan` (`free | pro | enterprise`) is the only value the limits read.
+Stripe decides what a workspace has paid for; `apps/billing/services.apply_subscription()` copies that onto
+`Subscription` and moves `Workspace.plan`, writing a `plan_changed` audit entry.
+
+| Plan | Price | Projects | Members (+ pending invites) | File size | Stripe lookup key |
+|---|---|---|---|---|---|
+| Free | $0 | 3 | 5 | 10 MB | n/a |
+| Pro | $29/mo | 20 | 50 | 25 MB | `flowboard_pro_monthly` |
+| Enterprise | $99/mo | unlimited | unlimited | 100 MB | `flowboard_enterprise_monthly` |
+
+The catalog lives in `billing/plans.py`. Prices are found in Stripe by **lookup key**, so no price ids are
+configured anywhere; `python manage.py stripe_setup` (test keys only) creates the products, prices and
+Customer Portal settings and is safe to run again.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as Owner (SPA)
+    participant API as Django
+    participant S as Stripe
+    O->>API: POST /billing/checkout/ {plan: "pro"}
+    API->>S: create customer (once) + Checkout Session (subscription mode)
+    API-->>O: {url}
+    O->>S: pay on Stripe's hosted page (card never reaches FlowBoard)
+    S-->>O: redirect /w/<slug>/billing?checkout=success
+    O->>API: POST /billing/sync/ (re-reads the subscription from Stripe)
+    S->>API: POST /api/billing/webhook/ (signed) checkout.session.completed, customer.subscription.*
+    API->>S: retrieve subscription (events may arrive out of order)
+    API->>API: apply_subscription → Workspace.plan, audit log
+```
+
+| Concern | Approach |
+|---|---|
+| **Limits** | `billing/limits.py`: `check_can_add_project` (create and un-archive), `check_can_add_member` (invitations; pending invites count), `check_file_size` (attachments). They raise **402** `{"code": "plan_limit_reached", "limit": …, "current_plan": …}`. Limits only block adding more; a downgraded workspace keeps everything it has |
+| **Webhook security** | `StripeWebhookView` has no user auth; it verifies the `Stripe-Signature` with `STRIPE_WEBHOOK_SECRET` (400 when invalid, 503 when not configured) |
+| **Idempotency** | The event id is stored in `StripeEvent` (unique) in the same transaction as the work, so a repeated event is skipped and a failed one is retried by Stripe |
+| **Event handling** | `checkout.session.completed` and `customer.subscription.*` re-read the subscription from Stripe and apply it; `invoice.payment_failed` notifies the owner (in-app + email). Paid statuses: `active`, `trialing`, `past_due`; ended (`canceled`, `unpaid`, `incomplete_expired`) → Free |
+| **No webhooks locally** | `POST /billing/sync/` reads the latest subscription directly, so billing works on a laptop without `stripe listen` |
+| **Workspace deletion** | The live subscription is cancelled first; a Stripe error blocks the delete instead of leaving a running charge |
+| **Error hygiene** | Stripe errors are logged in full but returned as a generic 503, since Stripe messages can expose account details |
+| **Roles** | Everyone can read `GET /billing/` (plan, usage, `can_manage`); Checkout, Portal and Sync are owner-only |
+
+The frontend `BillingPage` shows the plan, usage bars and plan cards; it syncs after returning from
+Checkout and shows a toast. A global 402 handler (`lib/queryClient.ts`) turns any limit error into a toast
+with an **Upgrade** link.
 
 ---
 
@@ -427,6 +506,7 @@ RequireAuth
     ├── issues           table across all projects
     ├── reports          generate and view reports, CSV
     ├── audit            workspace history (admins)
+    ├── billing          plan, usage, upgrade / manage billing (owner)
     ├── members · settings · profile
 ```
 
@@ -530,12 +610,73 @@ board operable without a mouse.
 | `EMAIL_BACKEND` | console backend | SMTP backend for real delivery |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` | unset / 587 / TLS on | SMTP settings |
 | `DEFAULT_FROM_EMAIL` | `FlowBoard <no-reply@flowboard.test>` | sender |
-| `FRONTEND_URL` | `http://localhost:5173` | building invitation links |
+| `FRONTEND_URL` | `http://localhost:5173` | invitation links, Stripe success/cancel/return URLs |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | non-proxied setups |
-| `VITE_API_PROXY` | `http://127.0.0.1:8000` | where Vite forwards `/api` (used by Docker in Phase 7) |
+| `VITE_API_PROXY` | `http://127.0.0.1:8000` | where Vite forwards `/api` |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | empty (billing disabled) | Stripe **test** keys |
+| `STRIPE_WEBHOOK_SECRET` | empty | verifying webhook signatures (`whsec_…`) |
+| `CSRF_TRUSTED_ORIGINS` | empty | admin logins through a proxy / HTTPS domain |
+| `DJANGO_BEHIND_PROXY` | `False` | trust `X-Forwarded-Proto` from nginx |
+| `DJANGO_SECURE_COOKIES` / `DJANGO_SECURE_SSL_REDIRECT` / `DJANGO_HSTS_SECONDS` | off / off / 0 | HTTPS hardening in production |
+| `DJANGO_STATICFILES_STORAGE` | Django default | the image sets whitenoise's compressed manifest storage (and its middleware) |
+| `DJANGO_MEDIA_ROOT` | `backend/media` | `/app/media` (a volume) in Docker |
+| `DJANGO_LOG_LEVEL` | `INFO` | console logging |
+
+Only Docker uses these: `APP_HTTP_PORT` (8080), `SEED_DEMO_DATA` (true locally, false in prod), `RUN_MIGRATIONS`,
+`GUNICORN_WORKERS`, `CELERY_CONCURRENCY`, `BACKEND_IMAGE` / `FRONTEND_IMAGE`, and in production `IMAGE_PREFIX`,
+`IMAGE_TAG`, `APP_DOMAIN`, `APP_SCHEME`.
 
 pnpm 12 blocks dependency build scripts by default. The one that's needed (`esbuild`) is approved in
 `frontend/pnpm-workspace.yaml` (`allowBuilds`), so a fresh `pnpm install` works unattended.
+
+---
+
+## 10a. Containers and deployment
+
+```mermaid
+flowchart LR
+    U["Browser"] --> N["frontend<br/>nginx :80 → host 8080"]
+    N -- "/ , /assets" --> SPA["built SPA (dist/)"]
+    N -- "/api /admin /static" --> B["backend<br/>gunicorn :8000"]
+    B --> DB[("db<br/>postgres:16")]
+    B -. enqueue .-> R[("redis:7")]
+    R --> W["worker<br/>celery worker"]
+    BT["beat<br/>celery beat"] -. schedule .-> R
+    W --> DB
+    B --- M[("media volume")]
+    W --- M
+```
+
+| Image | Build | Runs |
+|---|---|---|
+| `flowboard-backend` | `python:3.13-slim`; installs `requirements.txt`, runs `collectstatic` at build time, non-root user `flowboard` | `docker-entrypoint.sh` with `web` (wait for DB → `migrate` → optional `seed_demo` → gunicorn), `worker` or `beat`. Health check: `GET /api/health/` |
+| `flowboard-frontend` | stage 1 `node:24-alpine` + corepack pnpm → `pnpm install --frozen-lockfile` + `pnpm build`; stage 2 `nginx:1.29-alpine` | nginx from `nginx.conf.template`: SPA fallback to `index.html`, immutable caching for `/assets/`, gzip, 110 MB upload cap, `/healthz` |
+
+- **Start order:** `backend` waits for healthy `db` and `redis`; `worker`, `beat` and `frontend` wait for a
+  healthy `backend`, so migrations finish before anything else touches the database.
+- **Attachments** stay private: nginx doesn't serve `/media`; downloads go through the authenticated
+  `/api/attachments/{id}/download/` view, reading from the shared `media` volume.
+- **Settings stay identical to dev**: the image only changes env vars (`DJANGO_DEBUG=False`, whitenoise
+  storage, media root), so local dev and the 270 tests run on unchanged defaults.
+- **Production** (`docker-compose.prod.yml`) uses the GHCR images, requires `DJANGO_SECRET_KEY`,
+  `POSTGRES_PASSWORD`, `APP_DOMAIN` and `IMAGE_PREFIX`, doesn't publish the database or Redis ports, defaults
+  `SEED_DEMO_DATA` to false and turns on secure cookies. TLS is terminated by a proxy in front; nginx keeps
+  its `X-Forwarded-Proto`.
+
+### CI/CD pipeline (`.github/workflows/ci.yml`)
+
+```mermaid
+flowchart LR
+    P["push / PR"] --> BE["backend<br/>check · migrations · pytest<br/>(Postgres + Redis services)"]
+    P --> FE["frontend<br/>pnpm install · pnpm build"]
+    BE --> D["docker<br/>compose build · up --wait<br/>smoke_test.py"]
+    FE --> D
+    D -- "main only" --> G["push to GHCR<br/>latest + SHA"]
+    G --> DEP["deploy (production env)<br/>scp compose → pull → up -d"]
+```
+
+The deploy job skips itself, with a notice, until `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_SSH_KEY` exist.
+Image pushes use the workflow's own `GITHUB_TOKEN` (`packages: write`); no personal credentials are stored.
 
 ---
 
@@ -543,9 +684,10 @@ pnpm 12 blocks dependency build scripts by default. The one that's needed (`esbu
 
 | Level | Tooling | Scope |
 |---|---|---|
-| Backend (235 tests) | pytest-django on **real PostgreSQL**, DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, malformed input. Tasks run in-process and never reach the real Redis |
+| Backend (270 tests) | pytest-django on **real PostgreSQL**, DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input. Tasks run in-process and never reach the real Redis; Stripe calls are mocked |
 | Types | `tsc -b` (strict, `noUnused*`) | the whole frontend |
-| End-to-end | headless Chromium (Playwright) during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode. Automated E2E in CI is planned with the Phase 7 pipeline |
+| Stack smoke test | `scripts/smoke_test.py` (stdlib only), run in CI against the Docker stack | 26 checks through nginx: login, projects/issues/boards/sprints/dashboard, tenant isolation, role blocks, comments, upload + download, worker-built report + CSV, notifications, webhooks, billing, unsigned Stripe webhook rejected, OpenAPI schema |
+| Browser checks | headless Chromium during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode, billing, a real Stripe test payment |
 
 The tests use Postgres rather than SQLite because partial unique indexes, check constraints and
 row-locking behaviour are part of what's being tested.
@@ -554,7 +696,15 @@ row-locking behaviour are part of what's being tested.
 
 ## 12. Roadmap
 
-| Phase | Adds | Architectural impact |
+| Phase | Delivered | Status |
 |---|---|---|
-| 6 | Stripe Billing (test mode) | `Subscription`/plan models, Checkout + Customer Portal, webhook endpoint, plan limits enforced in services (HTTP 402 → upgrade prompt) |
-| 7 | Docker + GitHub Actions | backend (gunicorn) and frontend (nginx serving `dist/` and proxying `/api`) images; CI: lint → pytest with Postgres/Redis services → `pnpm build` → images → deploy |
+| 1 | Shared-schema tenancy, models, Faker seed | ✅ |
+| 2 | REST API, JWT, roles, invitations, OpenAPI | ✅ |
+| 3 | React SPA, drag-and-drop Kanban and backlog, dashboard | ✅ |
+| 4 | Workflow editor, comments + mentions, attachments, audit log | ✅ |
+| 5 | Webhooks, notifications, email, reports, Celery beat | ✅ |
+| 6 | Stripe Billing: plans, Checkout, Portal, webhooks, 402 limits ([8a](#8a-billing-stripe)) | ✅ |
+| 7 | Docker images, full-stack compose, GitHub Actions CI/CD ([10a](#10a-containers-and-deployment)) | ✅ |
+
+Possible next steps: frontend unit tests and a linter in CI, splitting the main JS bundle, browser E2E
+tests in CI, and an HTTPS reverse proxy (e.g. Caddy) in the production compose file.

@@ -8,8 +8,8 @@ Stripe Billing · Docker · GitHub Actions
 
 | 📄 Doc | What's inside |
 |---|---|
-| **README.md** (this file) | What it is, how to run it, demo accounts, project status |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, multi-tenancy, data model, auth & roles, frontend architecture, roadmap |
+| **README.md** (this file) | What it is, how to run it (Docker or local), demo accounts, project status |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, multi-tenancy, data model, auth & roles, billing, frontend, Docker and CI/CD |
 | [docs/API_TEST.md](docs/API_TEST.md) | Testing the API with Swagger / curl / PowerShell, endpoint reference, security scenarios, automated tests |
 
 ---
@@ -23,10 +23,10 @@ Stripe Billing · Docker · GitHub Actions
 | 3 | React UI + drag-and-drop Kanban | ✅ done |
 | 4 | Custom workflows, comments, attachments, audit log | ✅ done |
 | 5 | Webhooks + Celery background jobs (notifications, reports, email) | ✅ done |
-| 6 | Stripe Billing (test mode) + plan limits | ⏳ next |
-| 7 | Docker images + GitHub Actions CI/CD | ⏳ |
+| 6 | Stripe Billing (test mode) + plan limits | ✅ done |
+| 7 | Docker images + GitHub Actions CI/CD | ✅ done |
 
-## Features (so far)
+## Features
 
 **Multi-tenancy & security**
 - Every company is an isolated **workspace**. Data is separated with a `workspace_id` on every row,
@@ -64,9 +64,50 @@ Stripe Billing · Docker · GitHub Actions
   (users can opt out).
 - **Reports**: sprint burndown, velocity and workspace summary, generated in the background and exported as CSV.
 
+**Billing (Stripe, test mode)**
+- Three plans: **Free**, **Pro** ($29/mo) and **Enterprise** ($99/mo), each with its own project, member and
+  file-size limits (see [Plans](#plans)).
+- Owners upgrade through **Stripe Checkout** and manage cards, invoices and cancellation in the **Customer
+  Portal**. Card details never touch FlowBoard.
+- Signed **Stripe webhooks** (processed once each) keep the plan in sync; a **Sync** call reads the state
+  straight from Stripe when webhooks can't reach the machine.
+- Hitting a limit returns **HTTP 402** and the UI offers an upgrade. Limits only block adding more: a
+  downgraded workspace keeps its data. Deleting a workspace cancels its subscription first.
+
+**Delivery (Docker + CI/CD)**
+- Production images: Django on **gunicorn** (the same image runs the Celery worker and beat) and the SPA on
+  **nginx**, which also proxies `/api`, `/admin` and `/static`.
+- One command runs the whole stack, migrates and loads the demo data.
+- **GitHub Actions**: backend tests on Postgres + Redis, frontend build, Docker build + end-to-end smoke test,
+  image push to GHCR and an SSH deploy.
+
 ---
 
-## Quick start
+## Quick start: Docker (whole app, one command)
+
+**Prerequisites:** Docker Desktop (running).
+
+```bash
+cp .env.example .env                 # optional: add Stripe test keys / SMTP here
+docker compose up -d --build         # db, redis, backend, worker, beat, frontend
+```
+
+Open **http://localhost:8080**. On first start the backend runs migrations and loads the demo data (it skips
+companies that already exist). Swagger is at http://localhost:8080/api/docs/ and the Django admin at
+http://localhost:8080/admin/.
+
+| Command | What it does |
+|---|---|
+| `docker compose ps` | Status of all 6 services |
+| `docker compose logs -f backend worker` | API and background-job logs (emails print in the worker log) |
+| `docker compose exec backend python manage.py seed_demo --reset` | Reset the demo data |
+| `docker compose exec backend python manage.py stripe_setup` | Create the Stripe test products and prices |
+| `python scripts/smoke_test.py` | 26 end-to-end checks against http://localhost:8080 |
+| `docker compose down` | Stop everything (add `-v` to also delete the database) |
+
+The Docker stack and the local setup below share the same Postgres container and data.
+
+## Quick start: local development (hot reload)
 
 **Prerequisites:** Docker Desktop (running), Python 3.12+, Node 20+, pnpm.
 
@@ -100,6 +141,13 @@ until it starts. `--pool=solo` is the setup tested on Windows.
 **Email** prints to the worker's terminal by default. For real delivery, set the SMTP values shown in
 `.env.example`.
 
+**Stripe (optional).** Put your **test** keys in `.env` (`STRIPE_SECRET_KEY=sk_test_…`,
+`STRIPE_PUBLISHABLE_KEY`), then run `python manage.py stripe_setup` once to create the products, prices and
+portal settings. For webhooks, run `stripe listen --forward-to localhost:8000/api/billing/webhook/` (or
+`localhost:8080/...` for Docker) and copy the `whsec_…` it prints into `STRIPE_WEBHOOK_SECRET`. Test card:
+`4242 4242 4242 4242`, any future date, any CVC. Without keys the app runs normally and the Billing page
+says billing isn't configured.
+
 Open **http://localhost:5173** and click one of the **one-click demo accounts** on the login page.
 
 | URL | What |
@@ -123,18 +171,33 @@ Things to try: drag a card to **Done** on the board, drag issues from the backlo
 sprint, press `Ctrl+K` and search, log in as a **viewer** to see the read-only UI, and invite someone
 from **Members** (then open the invite link in a private window). With the worker running, generate a
 **burndown** under Reports, mention a teammate in a comment and watch the email appear in the worker's
-terminal, then check **Audit log**.
+terminal, then check **Audit log**. As `owner@globex.test` (Free plan, 2 of 3 projects used) create two more
+projects: the second one hits the limit and shows the upgrade prompt, then upgrade under **Billing** with the test card.
+
+### Plans
+
+| Plan | Price | Projects | Members (incl. pending invites) | File size |
+|---|---|---|---|---|
+| Free | $0 | 3 | 5 | 10 MB |
+| Pro | $29 / month | 20 | 50 | 25 MB |
+| Enterprise | $99 / month | Unlimited | Unlimited | 100 MB |
+
+The demo workspaces are set to these plans directly and aren't billed through Stripe.
 
 ---
 
 ## Project structure
 
 ```
-backend/                Django project (config/) + apps: core, accounts, tenants, projects, issues, automation
-frontend/               React + TypeScript SPA (Vite, pnpm)
-docs/                   ARCHITECTURE.md, API_TEST.md
-docker-compose.yml      Postgres + Redis for local development
-.env.example            every setting with a dev default
+backend/                  Django project (config/) + apps: core, accounts, tenants, projects, issues,
+                          automation, billing · Dockerfile · docker-entrypoint.sh
+frontend/                 React + TypeScript SPA (Vite, pnpm) · Dockerfile · nginx.conf.template
+docs/                     ARCHITECTURE.md, API_TEST.md
+scripts/smoke_test.py     end-to-end checks against a running stack
+.github/workflows/ci.yml  CI/CD pipeline
+docker-compose.yml        full stack locally (or just db + redis for development)
+docker-compose.prod.yml   production stack using the images CI pushes to GHCR
+.env.example              every setting with a dev default
 ```
 
 The architecture doc has the full tree and what each app and module owns.
@@ -151,7 +214,8 @@ The architecture doc has the full tree and what each app and module owns.
 | See reports | ✅ | ✅ | ✅ | ✅ |
 | Edit workflows; manage webhooks; read the audit log | | | ✅ | ✅ |
 | Invite, change roles, remove members | | | ✅ | ✅ |
-| Delete the workspace | | | | ✅ |
+| See the plan and usage | ✅ | ✅ | ✅ | ✅ |
+| Upgrade, manage billing, delete the workspace | | | | ✅ |
 
 ## API in one minute
 
@@ -169,9 +233,27 @@ The full walkthrough, endpoint table and security scenarios are in [docs/API_TES
 ## Tests
 
 ```bash
-cd backend && pytest        # 235 tests on PostgreSQL: tenancy, permissions, API, workflows, jobs, reports, audit, email
-cd frontend && pnpm build   # strict TypeScript check + production build
+cd backend && pytest                 # 270 tests on PostgreSQL: tenancy, permissions, API, workflows, jobs, reports, audit, email, billing
+cd frontend && pnpm build            # strict TypeScript check + production build
+python scripts/smoke_test.py         # 26 end-to-end checks against the running Docker stack (http://localhost:8080)
 ```
+
+## CI/CD (GitHub Actions)
+
+`.github/workflows/ci.yml` runs on every push and on pull requests to `main`:
+
+| Job | What it does |
+|---|---|
+| **Backend tests** | Postgres 16 + Redis 7 services, `manage.py check`, missing-migration check, `pytest` |
+| **Frontend build** | pnpm (version from `package.json`), Node 24, `pnpm install --frozen-lockfile`, `pnpm build` |
+| **Docker** | builds both images, starts the full stack, runs `scripts/smoke_test.py`; on `main` pushes the images to `ghcr.io/<owner>/flowboard-backend` and `flowboard-frontend` (tags `latest` and the commit SHA) |
+| **Deploy** | `main` only, in the `production` environment: copies `docker-compose.prod.yml` to the server over SSH, then `pull` + `up -d`. Skipped until the secrets below exist |
+
+To turn on deploys, add the repository secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (and optionally
+`DEPLOY_PATH`, default `~/flowboard`). On the server, install Docker, run `docker login ghcr.io` once (the
+images are private by default), and create a `.env` next to the compose file with at least `IMAGE_PREFIX`,
+`DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD` and `APP_DOMAIN`. Put a TLS proxy in front of it; see the comments in
+`docker-compose.prod.yml`.
 
 ## Troubleshooting
 
@@ -185,4 +267,10 @@ cd frontend && pnpm build   # strict TypeScript check + production build
 | Issue edits take about 4 seconds | Redis is down, so queuing times out: `docker compose up -d redis` |
 | Demo login stopped working | Re-run `python manage.py seed_demo --reset` |
 | Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again |
+| Billing page says billing isn't configured | Add `STRIPE_SECRET_KEY` (test key) to `.env` and restart Django / `docker compose up -d` |
+| Upgrade says prices aren't set up | Run `python manage.py stripe_setup` (Docker: `docker compose exec backend python manage.py stripe_setup`) |
+| Paid in Checkout but the plan didn't change | Webhooks aren't reaching you: run `stripe listen …`. Returning from Checkout also syncs from Stripe, as does `POST /api/billing/sync/` |
+| `402` when creating a project, inviting or uploading | The plan limit is reached; upgrade, or archive a project |
+| Port 8080 already in use | Set `APP_HTTP_PORT` in `.env`, then `docker compose up -d` |
+| Container keeps restarting | `docker compose logs backend` (usually a bad `DATABASE_URL` or the database not ready yet) |
 
