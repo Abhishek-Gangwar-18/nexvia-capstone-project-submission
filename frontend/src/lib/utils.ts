@@ -36,6 +36,10 @@ export function getErrorMessage(error: unknown, fallback = "Something went wrong
   return fallback;
 }
 
+export function isPlanLimit(error: unknown) {
+  return axios.isAxiosError(error) && error.response?.status === 402;
+}
+
 /** Field -> first error message, for inline form errors. */
 export function getFieldErrors(error: unknown): Record<string, string> {
   if (!axios.isAxiosError(error) || !error.response?.data || typeof error.response.data !== "object") return {};

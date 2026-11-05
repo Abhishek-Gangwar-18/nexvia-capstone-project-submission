@@ -356,3 +356,23 @@ export interface DashboardData {
   my_issues: Issue[];
   recent: Issue[];
 }
+
+export interface BillingPlan {
+  id: Plan;
+  name: string;
+  price_monthly: number;
+  projects: number | null;
+  members: number | null;
+  file_mb: number;
+  features: string[];
+}
+
+export interface BillingState {
+  plan: Plan;
+  plans: BillingPlan[];
+  usage: { projects: number; members: number; pending_invitations: number };
+  can_manage: boolean;
+  stripe_configured: boolean;
+  has_billing_account: boolean;
+  subscription: { status: string; current_period_end: string | null; cancel_at_period_end: boolean } | null;
+}

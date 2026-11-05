@@ -6,7 +6,7 @@ import type {
   AuthResponse, Board, DashboardData, Invitation, InvitationPreview, Issue, IssueDetail, Label, Me, Member,
   IssueActivity, IssueAttachment, IssueComment, Paginated, Project, Role, Sprint, StatusCategory, WorkflowConfig,
   WorkflowConfigDraft, Workspace,
-  AuditEntry, NotificationItem, ReportType, WebhookDelivery, WebhookEndpoint, WorkspaceReport,
+  AuditEntry, BillingState, NotificationItem, Plan, ReportType, WebhookDelivery, WebhookEndpoint, WorkspaceReport,
 } from "@/types";
 import { useWorkspaceSlug } from "./useWorkspace";
 
@@ -360,6 +360,7 @@ export function useUploadIssueAttachment(issueKey: string) {
   const w = useWsApi();
   const qc = useQueryClient();
   return useMutation({
+    meta: { silent: true }, // shown inline: toasts can't be clicked while the drawer is open
     mutationFn: (file: File) => {
       const body = new FormData();
       body.append("file", file);
@@ -775,6 +776,36 @@ export function useMoveIssue() {
       context?.snapshot.forEach(([key, data]) => qc.setQueryData(key, data));
     },
     onSettled: () => refreshWorkData(qc, w.slug),
+  });
+}
+
+/* ------------------------------------------------------------------- billing */
+
+export function useBilling() {
+  const w = useWsApi();
+  return useQuery({ queryKey: [...ws(w.slug), "billing"], queryFn: () => w.get<BillingState>("/billing/") });
+}
+
+export function useCheckout() {
+  const w = useWsApi();
+  return useMutation({ mutationFn: (plan: Plan) => w.post<{ url: string }>("/billing/checkout/", { plan }) });
+}
+
+export function usePortal() {
+  const w = useWsApi();
+  return useMutation({ mutationFn: () => w.post<{ url: string }>("/billing/portal/") });
+}
+
+export function useSyncBilling() {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => w.post<BillingState>("/billing/sync/"),
+    onSuccess: (state) => {
+      qc.setQueryData([...ws(w.slug), "billing"], state);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "audit-log"] });
+    },
   });
 }
 
