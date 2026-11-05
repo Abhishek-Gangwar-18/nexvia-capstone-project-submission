@@ -8,6 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
+from apps.billing.limits import check_file_size
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
 from apps.tenants.models import Membership
 
@@ -180,6 +181,7 @@ class IssueViewSet(TenantModelViewSet):
         payload = IssueAttachmentUploadSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         uploaded = payload.validated_data["file"]
+        check_file_size(self.workspace, uploaded.size)
         attachment = IssueAttachment.objects.create(
             workspace=self.workspace,
             issue=issue,

@@ -184,6 +184,7 @@ class AuditLog(TenantModel):
         REMOVED = "removed", "Removed"
         ROLE_CHANGED = "role_changed", "Role changed"
         SECRET_ROTATED = "secret_rotated", "Secret rotated"
+        PLAN_CHANGED = "plan_changed", "Plan changed"
 
     class Entity(models.TextChoices):
         ISSUE = "issue", "Issue"
@@ -196,6 +197,7 @@ class AuditLog(TenantModel):
         WORKSPACE = "workspace", "Workspace"
         LABEL = "label", "Label"
         WEBHOOK = "webhook", "Webhook"
+        BILLING = "billing", "Billing"
 
     entity_type = models.CharField(max_length=16, choices=Entity.choices, default=Entity.ISSUE)
     entity_label = models.CharField(max_length=255, blank=True)

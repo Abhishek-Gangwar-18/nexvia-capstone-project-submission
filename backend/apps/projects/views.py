@@ -9,6 +9,7 @@ from rest_framework import exceptions, mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.billing.limits import check_can_add_project
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
 from apps.issues.activity import field_changes, record_event
 from apps.issues.models import AuditLog
@@ -51,6 +52,7 @@ class ProjectViewSet(TenantModelViewSet):
         )
 
     def perform_create(self, serializer):
+        check_can_add_project(self.workspace)
         data = serializer.validated_data
         project = create_project(
             workspace=self.workspace, created_by=self.request.user,
@@ -63,6 +65,8 @@ class ProjectViewSet(TenantModelViewSet):
 
     def perform_update(self, serializer):
         serializer.validated_data.pop("board_type", None)
+        if serializer.instance.is_archived and serializer.validated_data.get("is_archived") is False:
+            check_can_add_project(self.workspace)
         tracked = ("name", "description", "color", "lead_id", "is_archived")
         before = {field: getattr(serializer.instance, field) for field in tracked}
         project = serializer.save()

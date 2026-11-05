@@ -171,7 +171,6 @@ class IssueAttachmentSerializer(serializers.ModelSerializer):
 
 class IssueAttachmentUploadSerializer(serializers.Serializer):
     file = serializers.FileField()
-    MAX_SIZE = 25 * 1024 * 1024
     ALLOWED_TYPES = {
         ".csv": {"text/csv", "application/vnd.ms-excel"},
         ".gif": {"image/gif"},
@@ -186,8 +185,6 @@ class IssueAttachmentUploadSerializer(serializers.Serializer):
     }
 
     def validate_file(self, value):
-        if value.size > self.MAX_SIZE:
-            raise serializers.ValidationError("File exceeds the 25 MB limit.")
         extension = PurePath(value.name).suffix.lower()
         allowed = self.ALLOWED_TYPES.get(extension)
         if not allowed:

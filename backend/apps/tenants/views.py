@@ -10,6 +10,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.automation.queue import enqueue
+from apps.billing.limits import check_can_add_member
+from apps.billing.services import cancel_for_deleted_workspace
 from apps.automation.tasks import send_invitation_email
 from apps.core.api import WorkspaceScopedMixin
 from apps.issues.activity import record_event
@@ -80,6 +82,10 @@ class CurrentWorkspaceView(WorkspaceScopedMixin, RetrieveUpdateDestroyAPIView):
             record_event(workspace, self.request.user, AuditLog.Action.UPDATED, AuditLog.Entity.WORKSPACE, workspace.name,
                          changes={"name": {"from": old_name, "to": workspace.name}})
 
+    def perform_destroy(self, instance):
+        cancel_for_deleted_workspace(instance)  # stop charging before the data is gone
+        instance.delete()
+
 
 class MemberViewSet(WorkspaceScopedMixin, mixins.ListModelMixin, mixins.UpdateModelMixin,
                     mixins.DestroyModelMixin, viewsets.GenericViewSet):
@@ -134,6 +140,7 @@ class InvitationViewSet(WorkspaceScopedMixin, mixins.ListModelMixin, mixins.Crea
         return Response(self.get_serializer(pending, many=True).data)
 
     def perform_create(self, serializer):
+        check_can_add_member(self.workspace)
         invitation = serializer.save(workspace=self.workspace, invited_by=self.request.user)
         record_event(self.workspace, self.request.user, AuditLog.Action.INVITED, AuditLog.Entity.INVITATION,
                      invitation.email, changes={"role": invitation.role})

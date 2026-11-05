@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "apps.projects",
     "apps.issues",
     "apps.automation",
+    "apps.billing",
 ]
 
 MIDDLEWARE = [
@@ -105,7 +106,43 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", BASE_DIR / "media"))
+
+# Docker sets this to whitenoise's CompressedManifestStaticFilesStorage (needs collectstatic, which the
+# image runs at build time). Local dev and tests keep Django's plain storage so nothing has to be collected.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {
+        "BACKEND": os.getenv("DJANGO_STATICFILES_STORAGE", "django.contrib.staticfiles.storage.StaticFilesStorage"),
+    },
+}
+if STORAGES["staticfiles"]["BACKEND"].startswith("whitenoise."):
+    # Serve the collected admin/Swagger static files from gunicorn, right after SecurityMiddleware.
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+
+# --- Production / reverse proxy ---------------------------------------------------------------
+# nginx terminates the client connection and forwards X-Forwarded-Proto, so Django knows when the
+# original request was HTTPS. The flags below stay off unless set, so plain-HTTP local runs keep working.
+CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS", "")
+USE_X_FORWARDED_HOST = env_bool("DJANGO_USE_X_FORWARDED_HOST", False)
+if env_bool("DJANGO_BEHIND_PROXY", False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT", False)
+SESSION_COOKIE_SECURE = env_bool("DJANGO_SECURE_COOKIES", False)
+CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
+SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"simple": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "simple"}},
+    "root": {"handlers": ["console"], "level": os.getenv("DJANGO_LOG_LEVEL", "INFO")},
+    "loggers": {"django.db.backends": {"level": "WARNING"}},
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -150,6 +187,11 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 CORS_ALLOW_HEADERS = (*default_headers, "x-workspace")
+
+# Test-mode keys only in development. The secret stays on the server; checkout happens on Stripe's own pages.
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
 # Prints emails to the worker's terminal by default. For real delivery set EMAIL_BACKEND to
 # django.core.mail.backends.smtp.EmailBackend and fill in the SMTP values.
