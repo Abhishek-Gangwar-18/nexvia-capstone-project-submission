@@ -10,7 +10,8 @@ import { memberOptions } from "@/components/issues/options";
 import { useCreateProject, useMembers, useUpdateProject } from "@/hooks/queries";
 import { useWorkspace } from "@/hooks/useWorkspace";
 import { PROJECT_COLORS } from "@/lib/constants";
-import { cn, getErrorMessage, getFieldErrors } from "@/lib/utils";
+import { showError } from "@/lib/queryClient";
+import { cn, getFieldErrors, isPlanLimit } from "@/lib/utils";
 import type { BoardType, Project } from "@/types";
 
 function suggestKey(name: string) {
@@ -53,7 +54,8 @@ export function ProjectFormModal({ open, onClose, project }: { open: boolean; on
     const onError = (error: unknown) => {
       const fields = getFieldErrors(error);
       setErrors(fields);
-      if (!Object.keys(fields).some((f) => ["name", "key"].includes(f))) toast.error(getErrorMessage(error));
+      if (isPlanLimit(error)) onClose(); // so the toast's "View plans" button can be clicked
+      if (!Object.keys(fields).some((f) => ["name", "key"].includes(f))) showError(error);
     };
     if (project) {
       update.mutate(body, {

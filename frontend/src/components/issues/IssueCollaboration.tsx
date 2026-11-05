@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import {
+  useBilling,
   useCreateIssueComment,
   useDeleteIssueAttachment,
   useDeleteIssueComment,
@@ -26,8 +27,8 @@ import {
   useIssueComments,
   useUploadIssueAttachment,
 } from "@/hooks/queries";
-import { usePermissions } from "@/hooks/useWorkspace";
-import { formatDate, timeAgo } from "@/lib/utils";
+import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
+import { formatDate, getErrorMessage, isPlanLimit, timeAgo } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 import type { IssueActivity, IssueAttachment, IssueComment, UserMini } from "@/types";
 import { Avatar } from "../ui/Misc";
@@ -223,6 +224,9 @@ function CommentRow({
 }
 
 function Files({ issueKey }: { issueKey: string }) {
+  const workspace = useWorkspace();
+  const billing = useBilling().data;
+  const maxMb = billing?.plans.find((p) => p.id === billing.plan)?.file_mb ?? 10;
   const input = useRef<HTMLInputElement>(null);
   const { canEdit, isAdmin } = usePermissions();
   const user = useAuth((s) => s.user);
@@ -238,7 +242,7 @@ function Files({ issueKey }: { issueKey: string }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">PDF, images, text, CSV or ZIP · max 25 MB</p>
+        <p className="text-xs text-slate-500">PDF, images, text, CSV or ZIP · up to {maxMb} MB</p>
         {canEdit && (
           <>
             <input
@@ -259,6 +263,16 @@ function Files({ issueKey }: { issueKey: string }) {
           </>
         )}
       </div>
+      {upload.isError && (
+        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+          {getErrorMessage(upload.error)}{" "}
+          {isPlanLimit(upload.error) && (
+            <a href={`/w/${workspace.slug}/billing`} className="font-semibold underline">
+              View plans
+            </a>
+          )}
+        </p>
+      )}
       {files.isLoading && <p className="text-xs text-slate-400">Loading files…</p>}
       {(files.data ?? []).length === 0 && !files.isLoading && (
         <p className="py-4 text-center text-xs text-slate-400">No files attached.</p>

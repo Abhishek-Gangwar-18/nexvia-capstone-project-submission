@@ -14,7 +14,7 @@ import {
 } from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { ROLES } from "@/lib/constants";
-import { cn, formatDate, getErrorMessage, timeAgo } from "@/lib/utils";
+import { cn, formatDate, getErrorMessage, isPlanLimit, timeAgo } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 import type { Invitation, Member, Role } from "@/types";
 
@@ -225,7 +225,16 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    create.mutate({ email, role }, { onSuccess: setCreated });
+    create.mutate(
+      { email, role },
+      {
+        onSuccess: setCreated,
+        // Close the dialog so the toast's "View plans" button can be clicked.
+        onError: (error) => {
+          if (isPlanLimit(error)) close();
+        },
+      },
+    );
   };
 
   return (
