@@ -38,7 +38,7 @@ works too, because Vite proxies it.
 
 **Using Docker instead?** `docker compose up -d --build` runs everything (migrations and demo data included).
 Then the base URL is **`http://localhost:8080/api`** (nginx → gunicorn) and every example below works with
-that prefix. Run management commands with `docker compose exec backend python manage.py …`, and see emails in
+that prefix. (`http://localhost:8080/` itself is the web app's public home page, not the API.) Run management commands with `docker compose exec backend python manage.py …`, and see emails in
 `docker compose logs -f worker`.
 
 ### Demo accounts (password `Demo@1234` for all)

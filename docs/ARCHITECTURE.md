@@ -135,7 +135,7 @@ flowchart LR
         │   ├── board/          KanbanColumn, BoardFilters
         │   ├── sprints/        sprint create/start/complete modals
         │   └── settings/       webhook management
-        └── pages/              auth/, project/ (Board, Backlog, Workflow), Dashboard, Issues, Reports, AuditLog, Billing, Members…
+        └── pages/              Landing (public home), auth/, project/ (Board, Backlog, Workflow), Dashboard, Issues, Reports, AuditLog, Billing, Members…
 ```
 
 ### Backend apps
@@ -491,9 +491,9 @@ with an **Upgrade** link.
 ### 9.1 Routing
 
 ```
+/                        HomeEntry: logged out → LandingPage (lazy chunk) · logged in → last workspace's dashboard (or /onboarding)
 /login · /register · /invite/:token                     public
 RequireAuth
-├── /                    → last workspace's dashboard (or /onboarding)
 ├── /onboarding          create the first workspace
 └── /w/:slug             WorkspaceLayout: sidebar, topbar, drawer, modals, palette
     ├── dashboard
@@ -509,6 +509,14 @@ RequireAuth
     ├── billing          plan, usage, upgrade / manage billing (owner)
     ├── members · settings · profile
 ```
+
+**Public home page.** `pages/LandingPage.tsx` is the product page visitors see first: a hero with a
+board preview built in HTML/CSS (no screenshots, so it follows the theme), feature cards, the multi-tenancy
+and roles section (reusing `ROLES` from `lib/constants.ts`), how-it-works steps, pricing, the tech stack and
+an FAQ. It uses no API calls; its plan numbers mirror `backend/apps/billing/plans.py`, so change both together.
+It's loaded with `React.lazy`, so it adds nothing to the app bundle that signed-in users download, and
+animations respect `prefers-reduced-motion` (`motion-safe:`). It has its own light/dark toggle wired to the
+same `useUI` theme store as the app.
 
 The **workspace slug lives in the URL**, so links are shareable, and the browser back button switches
 workspaces correctly. The open issue lives in the query string (`?issue=WEB-12`), so the drawer is
@@ -687,7 +695,7 @@ Image pushes use the workflow's own `GITHUB_TOKEN` (`packages: write`); no perso
 | Backend (270 tests) | pytest-django on **real PostgreSQL**, DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input. Tasks run in-process and never reach the real Redis; Stripe calls are mocked |
 | Types | `tsc -b` (strict, `noUnused*`) | the whole frontend |
 | Stack smoke test | `scripts/smoke_test.py` (stdlib only), run in CI against the Docker stack | 26 checks through nginx: login, projects/issues/boards/sprints/dashboard, tenant isolation, role blocks, comments, upload + download, worker-built report + CSV, notifications, webhooks, billing, unsigned Stripe webhook rejected, OpenAPI schema |
-| Browser checks | headless Chromium during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode, billing, a real Stripe test payment |
+| Browser checks | headless Chromium during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode, billing, a real Stripe test payment, the home page (desktop + mobile, light + dark, no horizontal overflow, signed-in redirect) |
 
 The tests use Postgres rather than SQLite because partial unique indexes, check constraints and
 row-locking behaviour are part of what's being tested.
@@ -705,6 +713,7 @@ row-locking behaviour are part of what's being tested.
 | 5 | Webhooks, notifications, email, reports, Celery beat | ✅ |
 | 6 | Stripe Billing: plans, Checkout, Portal, webhooks, 402 limits ([8a](#8a-billing-stripe)) | ✅ |
 | 7 | Docker images, full-stack compose, GitHub Actions CI/CD ([10a](#10a-containers-and-deployment)) | ✅ |
+| + | Public home page at `/` with features, pricing and FAQ ([9.1](#91-routing)) | ✅ |
 
 Possible next steps: frontend unit tests and a linter in CI, splitting the main JS bundle, browser E2E
 tests in CI, and an HTTPS reverse proxy (e.g. Caddy) in the production compose file.

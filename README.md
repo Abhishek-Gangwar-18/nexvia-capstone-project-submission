@@ -28,6 +28,12 @@ Stripe Billing · Docker · GitHub Actions
 
 ## Features
 
+**Public home page**
+- Visitors land on a product page at `/`: hero with a live-looking board preview, features, how multi-tenancy
+  works, roles, a 4-step "how it works", pricing for the three plans, the tech stack and an FAQ.
+- Responsive, light/dark aware, with **Start for free** (sign-up) and **Try the live demo** (login with demo
+  accounts). Signed-in users skip it and go straight to their last workspace.
+
 **Multi-tenancy & security**
 - Every company is an isolated **workspace**. Data is separated with a `workspace_id` on every row,
   enforced at the request, query and write layers ([details](docs/ARCHITECTURE.md#4-multi-tenancy)).
@@ -92,7 +98,8 @@ cp .env.example .env                 # optional: add Stripe test keys / SMTP her
 docker compose up -d --build         # db, redis, backend, worker, beat, frontend
 ```
 
-Open **http://localhost:8080**. On first start the backend runs migrations and loads the demo data (it skips
+Open **http://localhost:8080** to see the home page, then **Log in** (or **Try the live demo**) and pick a
+one-click demo account. On first start the backend runs migrations and loads the demo data (it skips
 companies that already exist). Swagger is at http://localhost:8080/api/docs/ and the Django admin at
 http://localhost:8080/admin/.
 
@@ -148,11 +155,12 @@ portal settings. For webhooks, run `stripe listen --forward-to localhost:8000/ap
 `4242 4242 4242 4242`, any future date, any CVC. Without keys the app runs normally and the Billing page
 says billing isn't configured.
 
-Open **http://localhost:5173** and click one of the **one-click demo accounts** on the login page.
+Open **http://localhost:5173** for the home page, click **Log in**, then one of the **one-click demo accounts**.
 
 | URL | What |
 |---|---|
-| http://localhost:5173 | The app |
+| http://localhost:5173 | Home page (logged out) and the app |
+| http://localhost:5173/login | Login with one-click demo accounts |
 | http://127.0.0.1:8000/api/docs/ | Swagger UI (interactive API docs) |
 | http://127.0.0.1:8000/api/schema/ | OpenAPI 3 schema (import into Postman/Insomnia) |
 | http://127.0.0.1:8000/admin/ | Django admin (`admin@flowboard.test` / `Demo@1234`) |
@@ -167,7 +175,7 @@ Open **http://localhost:5173** and click one of the **one-click demo accounts** 
 | Initech Labs (`initech`) | Enterprise | `owner@initech.test`, `admin@initech.test`, `viewer@initech.test` | PAY, OPS |
 | Acme + Globex | n/a | `alex@flowboard.test`, a member of two workspaces (try the workspace switcher) | n/a |
 
-Things to try: drag a card to **Done** on the board, drag issues from the backlog into the planned
+Things to try: scroll the home page (and toggle dark mode in its top bar), drag a card to **Done** on the board, drag issues from the backlog into the planned
 sprint, press `Ctrl+K` and search, log in as a **viewer** to see the read-only UI, and invite someone
 from **Members** (then open the invite link in a private window). With the worker running, generate a
 **burndown** under Reports, mention a teammate in a comment and watch the email appear in the worker's
@@ -191,7 +199,7 @@ The demo workspaces are set to these plans directly and aren't billed through St
 ```
 backend/                  Django project (config/) + apps: core, accounts, tenants, projects, issues,
                           automation, billing · Dockerfile · docker-entrypoint.sh
-frontend/                 React + TypeScript SPA (Vite, pnpm) · Dockerfile · nginx.conf.template
+frontend/                 React + TypeScript SPA (Vite, pnpm): public home page + the app · Dockerfile · nginx.conf.template
 docs/                     ARCHITECTURE.md, API_TEST.md
 scripts/smoke_test.py     end-to-end checks against a running stack
 .github/workflows/ci.yml  CI/CD pipeline
