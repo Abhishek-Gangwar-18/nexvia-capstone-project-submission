@@ -10,10 +10,55 @@ dotenv.config({ path: path.join(SERVER_ROOT, '.env') });
 const bool = (value, fallback = false) =>
   value === undefined || value === '' ? fallback : ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 
+const nodeEnv = process.env.NODE_ENV || 'development';
+const deployed = Boolean(
+  process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.VERCEL || process.env.FLY_APP_NAME ||
+  process.env.DYNO || process.env.K_SERVICE || process.env.AWS_EXECUTION_ENV || process.env.DEPLOYMENT_ENV,
+);
+if (deployed && nodeEnv !== 'production') {
+  throw new Error('NODE_ENV=production is required in deployed environments');
+}
+
+const jwtSecret = process.env.JWT_SECRET || (nodeEnv === 'development' ? 'vendora-dev-secret-change-me' : '');
+if (nodeEnv === 'production') {
+  const knownDevelopmentSecrets = new Set(['vendora-dev-secret-change-me', 'secret', 'development', 'changeme']);
+  const frequencies = [...jwtSecret].reduce((counts, char) => counts.set(char, (counts.get(char) || 0) + 1), new Map());
+  const entropy = [...frequencies.values()].reduce((sum, count) => {
+    const probability = count / jwtSecret.length;
+    return sum - probability * Math.log2(probability);
+  }, 0);
+  const placeholder = /(?:replace-with|change[-_ ]?me|your[-_ ]|example|sample)/i.test(jwtSecret);
+  if (Buffer.byteLength(jwtSecret, 'utf8') < 32 || knownDevelopmentSecrets.has(jwtSecret.toLowerCase()) || frequencies.size < 16 || entropy < 3.5 || placeholder) {
+    throw new Error('Production requires a high-entropy JWT_SECRET of at least 32 bytes; the development fallback is not allowed');
+  }
+}
+
+const elasticNode = process.env.ELASTICSEARCH_NODE || '';
+const elasticApiKey = process.env.ELASTICSEARCH_API_KEY || '';
+const elasticUsername = process.env.ELASTICSEARCH_USERNAME || '';
+const elasticPassword = process.env.ELASTICSEARCH_PASSWORD || '';
+if (nodeEnv === 'production' && elasticNode) {
+  let protocol;
+  try {
+    protocol = new URL(elasticNode).protocol;
+  } catch {
+    throw new Error('ELASTICSEARCH_NODE must be a valid HTTPS URL in production');
+  }
+  if (protocol !== 'https:') throw new Error('ELASTICSEARCH_NODE must use HTTPS in production');
+  if (!elasticApiKey && !(elasticUsername && elasticPassword)) {
+    throw new Error('Production Elasticsearch requires ELASTICSEARCH_API_KEY or both ELASTICSEARCH_USERNAME and ELASTICSEARCH_PASSWORD');
+  }
+}
+
+const autoSeed = bool(process.env.AUTO_SEED, nodeEnv !== 'production');
+if (nodeEnv === 'production' && autoSeed) {
+  throw new Error('AUTO_SEED=true is not allowed in production; demo accounts and destructive seeding are development-only');
+}
+
 const port = Number(process.env.PORT) || 5050;
 
 export const env = {
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv,
   port,
   serverUrl: (process.env.SERVER_URL || `http://localhost:${port}`).replace(/\/$/, ''),
   clientUrls: (process.env.CLIENT_URL || 'http://localhost:5180')
@@ -22,9 +67,9 @@ export const env = {
     .filter(Boolean),
 
   mongoUri: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/vendora',
-  autoSeed: bool(process.env.AUTO_SEED, true),
+  autoSeed,
 
-  jwtSecret: process.env.JWT_SECRET || 'vendora-dev-secret-change-me',
+  jwtSecret,
   /** Short-lived access token (JWT, sent as a Bearer header, kept in memory by the client). */
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL || '15m',
   /** Refresh token (httpOnly cookie): a session stays alive while used at least every N days, up to the max. */
@@ -38,10 +83,10 @@ export const env = {
   allowMemoryCache: bool(process.env.ALLOW_MEMORY_CACHE, false),
 
   elastic: {
-    node: process.env.ELASTICSEARCH_NODE || '',
-    apiKey: process.env.ELASTICSEARCH_API_KEY || '',
-    username: process.env.ELASTICSEARCH_USERNAME || '',
-    password: process.env.ELASTICSEARCH_PASSWORD || '',
+    node: elasticNode,
+    apiKey: elasticApiKey,
+    username: elasticUsername,
+    password: elasticPassword,
     index: process.env.ELASTICSEARCH_INDEX || 'vendora-products',
   },
 

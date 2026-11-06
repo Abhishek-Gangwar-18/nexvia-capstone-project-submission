@@ -29,6 +29,7 @@ import { Settings } from '../models/Settings.js';
 import { Session } from '../models/Session.js';
 import { round2 } from '../utils/http.js';
 import { RETURN_WINDOW_DAYS } from '../services/payouts.js';
+import { isProd } from '../config/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const SNAPSHOT = path.join(path.dirname(__filename), 'data', 'dummyjson-products.json');
@@ -199,6 +200,7 @@ async function loadCatalog(live) {
 /* ------------------------------------------------------------------- seed */
 
 export async function seedDatabase({ live = false, log = console.log } = {}) {
+  if (isProd) throw new Error('Demo seeding is development-only; refusing to seed in production');
   const rand = createRandom();
   const now = Date.now();
   const models = [User, Vendor, Category, Product, Review, Rating, ReviewVote, Order, Coupon, CouponRedemption, Cart, Settings, Session];
@@ -518,6 +520,7 @@ if (runDirectly) {
   const { initCache, cache } = await import('../services/cache.js');
   const { initSearch, reindexAll, searchEngine } = await import('../services/search.js');
   try {
+    if (isProd) throw new Error('NODE_ENV is production: refusing to seed demo accounts or clear application data');
     await connectDB({ retries: 30 });
     await initCache();
     await initSearch();

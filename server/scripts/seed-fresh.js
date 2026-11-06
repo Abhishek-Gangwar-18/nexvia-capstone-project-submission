@@ -226,8 +226,8 @@ async function relink(urlMap) {
 async function main() {
   const live = process.argv.includes('--live');
   // Never wipe a production database by accident (a production server/.env on a laptop, a wrong shell).
-  if (isProd && !process.argv.includes('--production')) {
-    throw new Error('NODE_ENV is production: refusing to wipe it. Add --production as well if you really mean to - nothing was changed');
+  if (isProd) {
+    throw new Error('NODE_ENV is production: fresh demo seeding and destructive resets are development-only - nothing was changed');
   }
   if (!process.argv.includes('--yes')) {
     console.log(`This permanently deletes ALL data in the database, every app image in the S3 bucket "${aws.bucket || '(not set)'}"`);

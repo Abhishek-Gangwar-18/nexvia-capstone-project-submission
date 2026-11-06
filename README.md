@@ -46,7 +46,8 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Elem
 ## Run it locally
 
 **Requirements:** Node.js 18.18 or newer (tested on Node 24) and a MongoDB database (a free MongoDB Atlas cluster,
-or `docker compose up -d`). Redis, Elasticsearch, S3 and Stripe all fall back to local equivalents automatically.
+or `docker compose up -d`). Redis, Elasticsearch and S3 can use local fallbacks. To simulate payments locally,
+explicitly set `ALLOW_TEST_GATEWAY=true` in `server/.env`.
 
 ```bash
 pnpm --dir server install; pnpm --dir client install   # install dependencies
@@ -62,7 +63,7 @@ Open **http://localhost:5180**.
 - **Empty database:** the API seeds demo data automatically: 20 customers, 5 stores, 184 products from DummyJSON,
   about 1,180 ratings and reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
   `pnpm --dir server seed:fresh --yes` wipes the database, the app's S3 images and Redis and reseeds with every image
-  uploaded to S3 (stop the API first). It refuses to run with `NODE_ENV=production` unless `--production` is added too.
+  uploaded to S3 (stop the API first). Demo seeding and resets are development-only.
 - **Tests:** `pnpm --dir server test` runs the API unit tests (no database or services needed).
 - **Live service checks:** `pnpm --dir server redis:check`, `s3:check` and `es:check` test the real Redis, S3 bucket and
   Elasticsearch from `server/.env`. Each touches only its own service (temporary keys, one test image, a temporary
@@ -154,8 +155,10 @@ error and shows in Admin → Payments.
   `SERVER_URL=https://<your-api>`, plus Redis (Upstash), Elasticsearch (Elastic Cloud), S3 and Stripe keys.
   In production the refresh cookie defaults to `SameSite=None; Secure`, which an API on a separate domain needs (HTTPS only).
   Use S3 in production, because the host's local disk is wiped on every deploy.
-  With `NODE_ENV=production` the API refuses to start without Stripe keys, because the test gateway marks orders
-  paid without money. For a demo deployment without real payments, set `ALLOW_TEST_GATEWAY=true`.
+  Deployed environments must set `NODE_ENV=production` and a random `JWT_SECRET` of at least 32 bytes. The API
+  refuses to start without Stripe keys, because the test gateway marks orders paid without money. For an
+  intentional demo without real payments, set `ALLOW_TEST_GATEWAY=true`. If Elasticsearch is configured, use an
+  HTTPS endpoint and API key or username/password, and keep the cluster on a private network.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
 - Root directory: `client`, build `pnpm build`, output `dist`
