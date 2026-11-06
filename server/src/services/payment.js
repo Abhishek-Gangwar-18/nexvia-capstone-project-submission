@@ -16,13 +16,13 @@ const stripe = secretKey ? new Stripe(secretKey, { maxNetworkRetries: 2 }) : nul
 export const CURRENCY = currency;
 export const paymentProvider = () => (stripe ? 'stripe' : 'mock');
 
-/** True when the test gateway may be used: always in development, in production only with ALLOW_TEST_GATEWAY=true. */
-export const testGatewayAllowed = () => !isProd || env.stripe.allowTestGateway;
+/** The no-money gateway requires a deliberate ALLOW_TEST_GATEWAY=true opt-in in every environment. */
+export const testGatewayAllowed = () => env.stripe.allowTestGateway;
 
 /** Called at startup: production without Stripe keys would let anyone "pay" through the test gateway. */
 export function assertPaymentConfig() {
   if (!stripe && !testGatewayAllowed()) {
-    throw new Error('STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY are required in production (or set ALLOW_TEST_GATEWAY=true for a demo deployment without real payments)');
+    throw new Error('STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY are required unless ALLOW_TEST_GATEWAY=true is explicitly set');
   }
   if (!stripe) return;
   if (!publishableKey) throw new Error('STRIPE_PUBLISHABLE_KEY is required when STRIPE_SECRET_KEY is set');
