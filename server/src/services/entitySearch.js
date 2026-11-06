@@ -13,7 +13,8 @@ import { logger } from '../utils/logger.js';
  * find the right record. Search returns ids best-first; callers apply their own filters in MongoDB.
  * MongoDB stays the source of truth: change streams re-index every write, startup and recovery rebuild.
  */
-const VERSION = 1;
+// Bumped when phone and GSTIN fields were removed from indexed entity documents.
+const VERSION = 2;
 
 const ANALYSIS = {
   analysis: {
@@ -27,13 +28,11 @@ const exact = { type: 'keyword', normalizer: 'lower' };
 const ENTITIES = {
   vendors: {
     model: Vendor,
-    load: (filter) => Vendor.find(filter).populate('user', 'name email').select('storeName tagline email phone gstin address user').lean(),
+    load: (filter) => Vendor.find(filter).populate('user', 'name email').select('storeName tagline email address user').lean(),
     toDoc: (v) => ({
       storeName: v.storeName,
       tagline: v.tagline || '',
       email: v.email || '',
-      phone: v.phone || '',
-      gstin: v.gstin || '',
       place: [v.address?.city, v.address?.state].filter(Boolean).join(' '),
       ownerName: v.user?.name || '',
       ownerEmail: v.user?.email || '',
@@ -43,8 +42,6 @@ const ENTITIES = {
         storeName: { ...text, fields: { keyword: exact } },
         tagline: text,
         email: { ...exact, fields: { text } },
-        phone: exact,
-        gstin: exact,
         place: text,
         ownerName: text,
         ownerEmail: { ...exact, fields: { text } },
@@ -52,24 +49,23 @@ const ENTITIES = {
     },
     fuzzyFields: ['storeName^4', 'ownerName^2', 'tagline', 'place', 'email.text', 'ownerEmail.text'],
     prefixField: 'storeName',
-    exactFields: ['email', 'ownerEmail', 'phone', 'gstin', 'storeName.keyword'],
+    exactFields: ['email', 'ownerEmail', 'storeName.keyword'],
     /** Shoppers' store search: only what a store page shows, so an owner's email or phone can't be probed. */
     public: { fuzzyFields: ['storeName^4', 'tagline', 'place'], exactFields: ['storeName.keyword'] },
   },
   users: {
     model: User,
-    load: (filter) => User.find(filter).select('name email phone').lean(),
-    toDoc: (u) => ({ name: u.name, email: u.email, phone: u.phone || '' }),
+    load: (filter) => User.find(filter).select('name email').lean(),
+    toDoc: (u) => ({ name: u.name, email: u.email }),
     mappings: {
       properties: {
         name: text,
         email: { ...exact, fields: { text } },
-        phone: exact,
       },
     },
     fuzzyFields: ['name^3', 'email.text'],
     prefixField: 'name',
-    exactFields: ['email', 'phone'],
+    exactFields: ['email'],
   },
 };
 
