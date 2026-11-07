@@ -6,7 +6,9 @@ import AuditLogPage from "@/pages/AuditLogPage";
 import BillingPage from "@/pages/BillingPage";
 import { HomeRedirect, RequireAuth, WorkspaceLayout } from "@/components/layout/WorkspaceLayout";
 import AcceptInvitePage from "@/pages/auth/AcceptInvitePage";
+import ForgotPasswordPage from "@/pages/auth/ForgotPasswordPage";
 import LoginPage from "@/pages/auth/LoginPage";
+import ResetPasswordPage from "@/pages/auth/ResetPasswordPage";
 import RegisterPage from "@/pages/auth/RegisterPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ErrorPage from "@/pages/ErrorPage";
@@ -44,6 +46,8 @@ export const router = createBrowserRouter([
       { path: "/", element: <HomeEntry /> },
       { path: "/login", element: <LoginPage /> },
       { path: "/register", element: <RegisterPage /> },
+      { path: "/forgot-password", element: <ForgotPasswordPage /> },
+      { path: "/reset-password/:uid/:token", element: <ResetPasswordPage /> },
       { path: "/invite/:token", element: <AcceptInvitePage /> },
       {
         element: <RequireAuth />,

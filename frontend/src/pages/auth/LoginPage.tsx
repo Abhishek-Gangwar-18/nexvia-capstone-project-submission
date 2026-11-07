@@ -10,7 +10,10 @@ import { useAuth } from "@/store/auth";
 import { AuthLayout } from "./AuthLayout";
 
 export function safeNext(next: string | null) {
-  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  // Never bounce back to an auth page after logging in: that would leave a signed-in user on the form.
+  const path = next.split(/[?#]/)[0];
+  return ["/login", "/register"].includes(path) ? "/" : next;
 }
 
 export default function LoginPage() {
@@ -36,7 +39,11 @@ export default function LoginPage() {
         <Field label="Email" htmlFor="email">
           <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
         </Field>
-        <Field label="Password" htmlFor="password">
+        <Field
+          label="Password"
+          htmlFor="password"
+          hint={<Link to="/forgot-password" className="font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400">Forgot password?</Link>}
+        >
           <Input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
         </Field>
         {login.isError && (
