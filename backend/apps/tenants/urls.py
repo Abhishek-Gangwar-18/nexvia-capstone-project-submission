@@ -10,6 +10,7 @@ router.register("invitations", views.InvitationViewSet, basename="invitation")
 
 urlpatterns = [
     path("workspace/", views.CurrentWorkspaceView.as_view(), name="current-workspace"),
+    path("workspace/transfer-ownership/", views.TransferOwnershipView.as_view(), name="transfer-ownership"),
     path("invitations/accept/", views.InvitationAcceptView.as_view(), name="invitation-accept"),
     path("invitations/preview/<str:token>/", views.InvitationPreviewView.as_view(), name="invitation-preview"),
     *router.urls,

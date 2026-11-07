@@ -3,6 +3,8 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -95,9 +97,26 @@ class Invitation(TimeStampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            # One open invitation per email per workspace; expired rows are deleted before re-inviting.
+            models.UniqueConstraint(
+                "workspace", Lower("email"), condition=Q(accepted_at__isnull=True), name="unique_open_invitation"
+            ),
+        ]
 
     def __str__(self):
         return f"{self.email} → {self.workspace}"
+
+    @property
+    def is_authorized(self):
+        """An admin invitation stays valid only while its sender still owns the workspace."""
+        return self.role != Membership.Role.ADMIN or (
+            self.invited_by_id is not None and self.invited_by_id == self.workspace.owner_id
+        )
+
+    @property
+    def is_usable(self):
+        return self.is_pending and self.is_authorized
 
     @property
     def is_pending(self):
