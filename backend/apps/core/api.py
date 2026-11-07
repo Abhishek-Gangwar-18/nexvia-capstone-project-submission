@@ -14,6 +14,7 @@ from apps.tenants.models import Membership
 
 from .context import set_current_workspace
 from .permissions import HasWorkspaceRole
+from .request_logging import bind_log_context
 
 
 class WorkspaceScopedMixin:
@@ -42,6 +43,8 @@ class WorkspaceScopedMixin:
             target.workspace = membership.workspace
             target.membership = membership
         set_current_workspace(membership.workspace)  # TenantMiddleware resets it after the response
+        # From here on, every log line of this request names the tenant and the user.
+        bind_log_context(tenant=membership.workspace.slug, user_id=str(request.user.pk))
 
     @property
     def workspace(self):

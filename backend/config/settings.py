@@ -51,6 +51,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, so the request id and timing cover everything below it.
+    "apps.core.request_logging.RequestLogMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -118,7 +120,8 @@ STORAGES = {
 }
 if STORAGES["staticfiles"]["BACKEND"].startswith("whitenoise."):
     # Serve the collected admin/Swagger static files from gunicorn, right after SecurityMiddleware.
-    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+    MIDDLEWARE.insert(MIDDLEWARE.index("django.middleware.security.SecurityMiddleware") + 1,
+                      "whitenoise.middleware.WhiteNoiseMiddleware")
 
 # --- Production / reverse proxy ---------------------------------------------------------------
 # nginx terminates the client connection and forwards X-Forwarded-Proto, so Django knows when the
@@ -135,27 +138,70 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 
+# Every line carries the request id, tenant and user (apps/core/request_logging.py), e.g.
+#   2026-11-05 19:20:25,312 INFO    [req=3f9c1a2b7d4e tenant=acme user=12] flowboard.request: POST /api/issues/WEB-4/move/ 200 18ms role=owner
+LOG_CONTEXT_FORMAT = "[req=%(request_id)s tenant=%(tenant)s user=%(user_id)s]"
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "formatters": {"simple": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "simple"}},
+    "filters": {
+        "context": {"()": "apps.core.request_logging.ContextFilter"},
+        "skip_client_errors": {"()": "apps.core.request_logging.SkipClientErrorResponses"},
+    },
+    "formatters": {"context": {"format": f"%(asctime)s %(levelname)-7s {LOG_CONTEXT_FORMAT} %(name)s: %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "context", "filters": ["context"]}},
     "root": {"handlers": ["console"], "level": os.getenv("DJANGO_LOG_LEVEL", "INFO")},
-    "loggers": {"django.db.backends": {"level": "WARNING"}},
+    "loggers": {
+        # Drops Django's default plain console handler, so django.* lines print once, with context, via root.
+        "django": {"level": "INFO"},
+        "django.request": {"filters": ["skip_client_errors"]},
+        "django.db.backends": {"level": "WARNING"},
+        # flowboard.request replaces runserver's own access line, which has no request id or tenant.
+        "django.server": {"handlers": [], "level": "ERROR", "propagate": False},
+    },
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
+
+
+def _redis_db(url, db):
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path=f"/{db}"))
+
+
+# Shared cache: every API process (and worker) sees the same throttle and lockout counters. Without it each
+# gunicorn worker counts on its own, multiplying every limit. Database 1, so it never touches the broker (0).
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.getenv("CACHE_URL", _redis_db(REDIS_URL, 1)),
+        "KEY_PREFIX": "flowboard",
+        "TIMEOUT": 300,
+    }
+}
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+PASSWORD_RESET_TIMEOUT = 60 * 60  # reset links expire after one hour
+# Absolute per-file ceiling, whatever the plan allows (plans cap at 100 MB; nginx allows 110 MB bodies).
+FILE_UPLOAD_HARD_LIMIT = 100 * 1024 * 1024
+MAX_WEBHOOKS_PER_WORKSPACE = int(os.getenv("MAX_WEBHOOKS_PER_WORKSPACE", "10"))
+WEBHOOK_AUTO_DISABLE_AFTER = 20  # consecutive failed deliveries
+RETENTION_DAYS = {
+    "webhook_deliveries": 30, "read_notifications": 90, "unread_notifications": 180, "reports": 90,
+    "stripe_events": 90,  # well past Stripe's 3-day retry window, so duplicates are still recognised
+}
+MAX_OWNED_WORKSPACES = int(os.getenv("MAX_OWNED_WORKSPACES", "10"))
+INVITATION_RESEND_COOLDOWN = 60  # seconds
+INVITATION_RETENTION_DAYS = 30  # expired, unaccepted invitations are purged after this
 
 # --- REST API -------------------------------------------------------------------------------
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
-    ],
+    # JWT only. Django admin keeps its own session login; the DRF browsable API's login no longer applies.
+    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework_simplejwt.authentication.JWTAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",
@@ -165,7 +211,23 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.OptionalPageNumberPagination",
     "DEFAULT_SCHEMA_CLASS": "apps.core.schema.TenantAutoSchema",
     "EXCEPTION_HANDLER": "apps.core.exceptions.exception_handler",
-    "DEFAULT_THROTTLE_RATES": {"auth": "20/min"},
+    # Per IP for anonymous calls, per user once authenticated (change-password).
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_login": "5/min",
+        "auth_register": "10/hour",
+        "auth_refresh": "30/min",
+        "auth_change_password": "5/hour",
+        "auth_password_reset": "5/hour",
+        "auth_password_reset_confirm": "10/hour",
+        "workspace_create": "10/hour",
+        "invitation_public": "30/min",
+        "webhook_test": "5/min",  # per endpoint
+        "webhook_test_user": "10/min",  # per user, so extra endpoints don't multiply the limit
+        "webhook_redeliver": "5/min",  # per user
+        "report_create": "10/hour",  # per user
+        "billing_session": "10/min",  # per user: checkout and portal
+        "billing_sync": "6/min",  # per workspace
+    },
 }
 
 SIMPLE_JWT = {
@@ -218,4 +280,7 @@ CELERY_TASK_SOFT_TIME_LIMIT = 240
 CELERY_BEAT_SCHEDULE = {
     "daily-overdue-reminders": {"task": "apps.automation.tasks.create_overdue_reminders", "schedule": crontab(hour=8, minute=0)},
     "daily-workspace-digests": {"task": "apps.automation.tasks.create_daily_digests", "schedule": crontab(hour=8, minute=5)},
+    "daily-purge-expired-invitations": {"task": "apps.automation.tasks.purge_expired_invitations", "schedule": crontab(hour=3, minute=0)},
+    "nightly-retention-purge": {"task": "apps.automation.tasks.purge_old_records", "schedule": crontab(hour=3, minute=15)},
+    "recover-stalled-webhooks": {"task": "apps.automation.tasks.recover_stalled_deliveries", "schedule": crontab(minute="*/5")},
 }

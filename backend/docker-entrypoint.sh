@@ -40,8 +40,8 @@ case "$1" in
             --bind 0.0.0.0:8000 \
             --workers "${GUNICORN_WORKERS:-3}" \
             --timeout "${GUNICORN_TIMEOUT:-60}" \
-            --access-logfile - \
             --error-logfile -
+        # No gunicorn access log: Django's flowboard.request line has the request id, tenant and user.
         ;;
     worker)
         wait_for_db
