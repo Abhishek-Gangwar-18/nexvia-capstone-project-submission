@@ -29,6 +29,9 @@ class Project(TenantModel):
         ordering = ["name"]
         constraints = [
             models.UniqueConstraint(fields=["workspace", "key"], name="unique_project_key_per_workspace"),
+            # Keys are canonical uppercase, so the unique constraint above is effectively case-insensitive:
+            # "web" can never be stored next to "WEB".
+            models.CheckConstraint(condition=Q(key__regex=r"^[A-Z][A-Z0-9]{1,9}$"), name="project_key_canonical"),
         ]
 
     def __str__(self):
