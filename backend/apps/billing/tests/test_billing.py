@@ -65,7 +65,8 @@ def event(event_type, obj, event_id="evt_1"):
 @pytest.fixture
 def fake_client(monkeypatch):
     fake = MagicMock()
-    fake.v1.subscriptions.retrieve.return_value = stripe_subscription()
+    # Webhooks and sync read all of the customer's subscriptions (to catch duplicates), not just one.
+    fake.v1.subscriptions.list.return_value = SimpleNamespace(data=[stripe_subscription()])
     monkeypatch.setattr(services, "client", lambda: fake)
     return fake
 
@@ -218,11 +219,11 @@ class TestWebhook:
 
     def test_plan_change_and_cancel_follow_stripe(self, api, team, fake_client):
         link(team)
-        fake_client.v1.subscriptions.retrieve.return_value = stripe_subscription(lookup_key="flowboard_enterprise_monthly")
+        fake_client.v1.subscriptions.list.return_value = SimpleNamespace(data=[stripe_subscription(lookup_key="flowboard_enterprise_monthly")])
         webhook(api, event("customer.subscription.updated", {"id": "sub_1", "customer": "cus_1"}, "evt_a"))
         team["workspace"].refresh_from_db()
         assert team["workspace"].plan == "enterprise"
-        fake_client.v1.subscriptions.retrieve.return_value = stripe_subscription("canceled")
+        fake_client.v1.subscriptions.list.return_value = SimpleNamespace(data=[stripe_subscription("canceled")])
         webhook(api, event("customer.subscription.deleted", {"id": "sub_1", "customer": "cus_1"}, "evt_b"))
         team["workspace"].refresh_from_db()
         assert team["workspace"].plan == "free"
@@ -230,7 +231,7 @@ class TestWebhook:
     def test_past_due_keeps_the_plan_during_grace(self, api, team, fake_client):
         link(team)
         Workspace.objects.filter(pk=team["workspace"].pk).update(plan="pro")
-        fake_client.v1.subscriptions.retrieve.return_value = stripe_subscription("past_due")
+        fake_client.v1.subscriptions.list.return_value = SimpleNamespace(data=[stripe_subscription("past_due")])
         webhook(api, event("customer.subscription.updated", {"id": "sub_1", "customer": "cus_1"}))
         team["workspace"].refresh_from_db()
         assert team["workspace"].plan == "pro"
@@ -241,16 +242,16 @@ class TestWebhook:
         assert webhook(api, payload).status_code == 200
         res = webhook(api, payload)
         assert res.status_code == 200 and res.data["duplicate"] is True
-        assert fake_client.v1.subscriptions.retrieve.call_count == 1
+        assert fake_client.v1.subscriptions.list.call_count == 1
 
     def test_stripe_outage_asks_for_a_retry_and_the_retry_works(self, api, team, fake_client):
         link(team)
         payload = event("customer.subscription.updated", {"id": "sub_1", "customer": "cus_1"})
-        fake_client.v1.subscriptions.retrieve.side_effect = stripe.APIConnectionError("down")
+        fake_client.v1.subscriptions.list.side_effect = stripe.APIConnectionError("down")
         assert webhook(api, payload).status_code == 503
         assert not StripeEvent.objects.exists()
-        fake_client.v1.subscriptions.retrieve.side_effect = None
-        fake_client.v1.subscriptions.retrieve.return_value = stripe_subscription()
+        fake_client.v1.subscriptions.list.side_effect = None
+        fake_client.v1.subscriptions.list.return_value = SimpleNamespace(data=[stripe_subscription()])
         assert webhook(api, payload).status_code == 200
         team["workspace"].refresh_from_db()
         assert team["workspace"].plan == "pro"
@@ -272,12 +273,14 @@ class TestWebhook:
 class TestWorkspaceDeletion:
     def test_active_subscription_is_cancelled_first(self, api, team, fake_client):
         link(team, stripe_subscription_id="sub_1", status="active")
-        assert api(team["owner"], team["workspace"]).delete("/api/workspace/").status_code == 204
-        fake_client.v1.subscriptions.cancel.assert_called_once_with("sub_1")
+        assert api(team["owner"], team["workspace"]).delete("/api/workspace/", {"confirm": team["workspace"].slug, "password": "pass12345"}, format="json").status_code == 204
+        fake_client.v1.subscriptions.cancel.assert_called_once_with(
+            "sub_1", options={"idempotency_key": f"cancel-deleted-ws-{team['workspace'].pk}"}
+        )
         assert not Workspace.objects.filter(pk=team["workspace"].pk).exists()
 
     def test_stripe_failure_keeps_the_workspace(self, api, team, fake_client):
         link(team, stripe_subscription_id="sub_1", status="active")
         fake_client.v1.subscriptions.cancel.side_effect = stripe.APIConnectionError("down")
-        assert api(team["owner"], team["workspace"]).delete("/api/workspace/").status_code == 503
+        assert api(team["owner"], team["workspace"]).delete("/api/workspace/", {"confirm": team["workspace"].slug, "password": "pass12345"}, format="json").status_code == 503
         assert Workspace.objects.filter(pk=team["workspace"].pk).exists()

@@ -94,13 +94,17 @@ def test_comment_author_or_admin_can_edit_and_delete(api, team):
         f"/api/issues/{issue.key}/comments/", {"body": "Original"}, format="json"
     )
     comment_id = response.data["id"]
-    assert api(team["users"][Membership.Role.ADMIN], team["workspace"]).patch(
+    admin = api(team["users"][Membership.Role.ADMIN], team["workspace"])
+    # Editing someone else's words would be impersonation: only the author edits.
+    assert admin.patch(
         f"/api/issues/{issue.key}/comments/{comment_id}/", {"body": "Edited"}, format="json"
-    ).status_code == 200
-    assert api(member, team["workspace"]).patch(
+    ).status_code == 403
+    edited = api(member, team["workspace"]).patch(
         f"/api/issues/{issue.key}/comments/{comment_id}/", {"body": "Edited"}, format="json"
-    ).data["body"] == "Edited"
-    assert api(member, team["workspace"]).delete(f"/api/issues/{issue.key}/comments/{comment_id}/").status_code == 204
+    ).data
+    assert edited["body"] == "Edited" and edited["author"]["id"] == member.pk
+    # Admins can still moderate by deleting.
+    assert admin.delete(f"/api/issues/{issue.key}/comments/{comment_id}/").status_code == 204
 
 
 def test_attachment_upload_download_delete_and_validation(api, team, tenant_b, settings, tmp_path):

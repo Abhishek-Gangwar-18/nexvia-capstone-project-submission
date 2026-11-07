@@ -109,10 +109,8 @@ class TestRemovedMember:
         issue = Issue.objects.create(project=team["project"], title="a")
         comment = IssueComment.objects.create(issue=issue, author=member, body="hi")
         remove_member(api, team, member)
-        res = api(team["owner"], team["workspace"]).patch(
-            f"/api/issues/{issue.key}/comments/{comment.pk}/", {"body": "edited"}, format="json"
-        )
-        assert res.status_code == 200
+        res = api(team["owner"], team["workspace"]).delete(f"/api/issues/{issue.key}/comments/{comment.pk}/")
+        assert res.status_code == 204  # moderation is by deletion; only the author may edit
 
     def test_notification_from_them_can_be_marked_read(self, api, team):
         member = team["users"][Role.MEMBER]

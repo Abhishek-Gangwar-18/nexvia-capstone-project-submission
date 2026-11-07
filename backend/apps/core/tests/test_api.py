@@ -48,8 +48,103 @@ class TestAuth:
         tokens = client.post("/api/auth/login/", {"email": "r@a.test", "password": "pass12345"}).data
         refreshed = client.post("/api/auth/refresh/", {"refresh": tokens["refresh"]})
         assert refreshed.status_code == 200 and "refresh" in refreshed.data
-        assert client.post("/api/auth/logout/", {"refresh": refreshed.data["refresh"]}).status_code == 205
+        assert client.post("/api/auth/logout/", {"refresh": refreshed.data["refresh"]}).status_code == 204
         assert client.post("/api/auth/refresh/", {"refresh": refreshed.data["refresh"]}).status_code == 401
+        # Logging out twice is idempotent; missing or garbage tokens are a 400.
+        assert client.post("/api/auth/logout/", {"refresh": refreshed.data["refresh"]}).status_code == 204
+        assert client.post("/api/auth/logout/", {}).status_code == 400
+        assert client.post("/api/auth/logout/", {"refresh": "not-a-jwt"}).status_code == 400
+
+    def test_logout_all_revokes_every_session(self, api, make_user):
+        user = make_user("all@a.test")
+        anon = api()
+        first = anon.post("/api/auth/login/", {"email": "all@a.test", "password": "pass12345"}).data["refresh"]
+        second = anon.post("/api/auth/login/", {"email": "all@a.test", "password": "pass12345"}).data["refresh"]
+        assert api(user).post("/api/auth/logout-all/").status_code == 204
+        for token in (first, second):
+            assert anon.post("/api/auth/refresh/", {"refresh": token}).status_code == 401
+
+    def test_login_is_throttled(self, api, make_user):
+        make_user("t@a.test")
+        client = api()
+        codes = [client.post("/api/auth/login/", {"email": "t@a.test", "password": "wrong"}).status_code for _ in range(6)]
+        assert codes[:5] == [401] * 5 and codes[5] == 429
+
+    def test_login_locks_the_email_across_ips(self, api, make_user):
+        make_user("lock@a.test")
+        bad = {"email": "lock@a.test", "password": "wrong"}
+        # Ten failures from ten different IPs stay under the per-IP limit but trip the per-email one.
+        for i in range(10):
+            assert api().post("/api/auth/login/", bad, REMOTE_ADDR=f"10.0.0.{i}").status_code == 401
+        good = {"email": "LOCK@a.test", "password": "pass12345"}
+        assert api().post("/api/auth/login/", good, REMOTE_ADDR="10.0.1.1").status_code == 429
+
+    def test_successful_login_resets_failure_count(self, api, make_user):
+        make_user("reset@a.test")
+        for i in range(9):
+            api().post("/api/auth/login/", {"email": "reset@a.test", "password": "x"}, REMOTE_ADDR=f"10.0.2.{i}")
+        assert api().post("/api/auth/login/", {"email": "reset@a.test", "password": "pass12345"},
+                          REMOTE_ADDR="10.0.3.1").status_code == 200
+        assert api().post("/api/auth/login/", {"email": "reset@a.test", "password": "x"},
+                          REMOTE_ADDR="10.0.3.2").status_code == 401
+
+    def test_me_hides_is_staff(self, api, make_user):
+        assert "is_staff" not in api(make_user()).get("/api/auth/me/").data
+
+    def test_password_reset_flow(self, api, make_user, mailoutbox):
+        import re
+
+        user = make_user("forgot@a.test")
+        old_refresh = api().post("/api/auth/login/", {"email": "forgot@a.test", "password": "pass12345"}).data["refresh"]
+        # Unknown emails get the same 204 and no mail: no account probing.
+        assert api().post("/api/auth/password-reset/", {"email": "nobody@a.test"}).status_code == 204
+        assert len(mailoutbox) == 0
+        assert api().post("/api/auth/password-reset/", {"email": " Forgot@A.test"}).status_code == 204
+        assert len(mailoutbox) == 1 and mailoutbox[0].to == ["forgot@a.test"]
+        uid, token = re.search(r"/reset-password/([^/\s]+)/([^/\s]+)", mailoutbox[0].body).groups()
+
+        bad = api().post("/api/auth/password-reset/confirm/", {"uid": uid, "token": "nope", "new_password": "N3w-pass-123"})
+        assert bad.status_code == 400 and "token" in bad.data
+        weak = api().post("/api/auth/password-reset/confirm/", {"uid": uid, "token": token, "new_password": "123"})
+        assert weak.status_code == 400 and "new_password" in weak.data
+
+        body = {"uid": uid, "token": token, "new_password": "N3w-pass-123"}
+        assert api().post("/api/auth/password-reset/confirm/", body).status_code == 204
+        user.refresh_from_db()
+        assert user.check_password("N3w-pass-123")
+        # Old sessions are revoked and the link is single-use.
+        assert api().post("/api/auth/refresh/", {"refresh": old_refresh}).status_code == 401
+        assert api().post("/api/auth/password-reset/confirm/", body).status_code == 400
+
+    def test_password_reset_confirm_rejects_garbage_uid(self, api):
+        res = api().post("/api/auth/password-reset/confirm/", {"uid": "!!", "token": "x", "new_password": "N3w-pass-123"})
+        assert res.status_code == 400 and "token" in res.data
+
+    def test_register_trims_and_rejects_blank_names(self, api):
+        base = {"email": "Trim@A.test ", "password": "S3cure-pass!", "first_name": "  Ann  "}
+        assert api().post("/api/auth/register/", {**base, "first_name": "   "}).status_code == 400
+        assert api().post("/api/auth/register/", {**base, "workspace_name": "   "}).status_code == 400
+        res = api().post("/api/auth/register/", {**base, "workspace_name": "  Acme  "})
+        assert res.status_code == 201, res.data
+        assert res.data["user"]["email"] == "trim@a.test" and res.data["user"]["first_name"] == "Ann"
+
+    def test_register_race_on_unique_email_is_400(self, api, monkeypatch):
+        from apps.accounts.serializers import RegisterSerializer
+        # Simulate the other request winning between the existence check and the insert.
+        monkeypatch.setattr(RegisterSerializer, "validate_email", lambda self, value: value.strip().lower())
+        body = {"email": "race@a.test", "password": "S3cure-pass!", "first_name": "R"}
+        assert api().post("/api/auth/register/", body).status_code == 201
+        res = api().post("/api/auth/register/", body)
+        assert res.status_code == 400 and "email" in res.data, res.data
+
+    def test_refresh_for_deleted_user_is_401_not_500(self, api, make_user):
+        user = make_user("gone@a.test")
+        client = api()
+        refresh = client.post("/api/auth/login/", {"email": "gone@a.test", "password": "pass12345"}).data["refresh"]
+        user.delete()  # e.g. the demo data was reset while the browser still held a token
+        res = client.post("/api/auth/refresh/", {"refresh": refresh})
+        assert res.status_code == 401, res.data
+        assert "no longer exists" in str(res.data["detail"]), res.data
 
     def test_anonymous_is_rejected(self, api, tenant_a):
         assert api(workspace=tenant_a["workspace"]).get("/api/projects/").status_code == 401
@@ -59,10 +154,14 @@ class TestAuth:
         client = api(user)
         bad = client.post("/api/auth/change-password/", {"current_password": "nope", "new_password": "N3w-pass-123"})
         assert bad.status_code == 400
+        old_refresh = api().post("/api/auth/login/", {"email": "pw@a.test", "password": "pass12345"}).data["refresh"]
         ok = client.post("/api/auth/change-password/", {"current_password": "pass12345", "new_password": "N3w-pass-123"})
-        assert ok.status_code == 204
+        assert ok.status_code == 200 and {"access", "refresh"} <= ok.data.keys()
         user.refresh_from_db()
         assert user.check_password("N3w-pass-123")
+        # Old sessions are revoked; the freshly issued one still works.
+        assert api().post("/api/auth/refresh/", {"refresh": old_refresh}).status_code == 401
+        assert api().post("/api/auth/refresh/", {"refresh": ok.data["refresh"]}).status_code == 200
 
 
 # ---------------------------------------------------------------------- isolation
@@ -79,7 +178,7 @@ class TestTenantIsolation:
     def test_lists_only_contain_own_rows(self, api, tenant_a, tenant_b):
         Issue.objects.create(project=tenant_a["project"], title="mine")
         Issue.objects.create(project=tenant_b["project"], title="theirs")
-        res = api(tenant_a["owner"], tenant_a["workspace"]).get("/api/issues/")
+        res = api(tenant_a["owner"], tenant_a["workspace"]).get("/api/issues/?project=WEB")
         assert [i["title"] for i in res.data] == ["mine"]
 
     def test_same_issue_key_resolves_per_tenant(self, api, tenant_a, tenant_b):
@@ -128,7 +227,7 @@ class TestRolePermissions:
         assert res.status_code == expected
 
     def test_viewer_can_read(self, api, team):
-        assert api(team["users"][Role.VIEWER], team["workspace"]).get("/api/issues/").status_code == 200
+        assert api(team["users"][Role.VIEWER], team["workspace"]).get("/api/issues/?page=1").status_code == 200
 
     def test_issue_delete_reporter_or_admin(self, api, team):
         member, other = team["users"][Role.MEMBER], team["users"][Role.ADMIN]
@@ -154,7 +253,7 @@ class TestRolePermissions:
         ws = team["workspace"]
         assert api(team["users"][Role.ADMIN], ws).delete("/api/workspace/").status_code == 403
         Issue.objects.create(project=team["project"], title="cascade me")
-        assert api(team["owner"], ws).delete("/api/workspace/").status_code == 204
+        assert api(team["owner"], ws).delete("/api/workspace/", {"confirm": ws.slug, "password": "pass12345"}, format="json").status_code == 204
         assert not Workspace.objects.filter(pk=ws.pk).exists()
 
 
@@ -182,7 +281,7 @@ class TestProjectsAndIssues:
 
     def test_delete_project_with_issues(self, api, team):
         Issue.objects.create(project=team["project"], title="x")
-        assert api(team["owner"], team["workspace"]).delete("/api/projects/WEB/").status_code == 204
+        assert api(team["owner"], team["workspace"]).delete("/api/projects/WEB/", {"confirm": "WEB"}, format="json").status_code == 204
         assert not Project.objects.filter(pk=team["project"].pk).exists()
 
     def test_issue_crud_and_filters(self, api, team):

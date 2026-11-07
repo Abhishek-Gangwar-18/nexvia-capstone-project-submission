@@ -132,7 +132,8 @@ class TestReports:
 
 class TestAuditLog:
     def events(self, api, team, query=""):
-        return api(team["owner"], team["workspace"]).get(f"/api/audit-log/{query}").data
+        data = api(team["owner"], team["workspace"]).get(f"/api/audit-log/{query}").data
+        return data if "page=" in query else data["results"]  # the audit log is always paginated
 
     def test_only_admins_can_read_and_nobody_can_write(self, api, team):
         for role, expected in ((Role.VIEWER, 403), (Role.MEMBER, 403), (Role.ADMIN, 200)):
@@ -152,7 +153,7 @@ class TestAuditLog:
         client.patch("/api/projects/OPS/", {"description": "x"}, format="json")
         client.patch("/api/projects/OPS/", {"is_archived": True}, format="json")
         client.patch("/api/projects/OPS/", {"is_archived": False}, format="json")
-        assert client.delete("/api/projects/OPS/").status_code == 204
+        assert client.delete("/api/projects/OPS/", {"confirm": "OPS"}, format="json").status_code == 204
         events = self.events(api, team, "?entity_type=project&project=OPS")
         assert [e["action"] for e in events] == ["deleted", "restored", "archived", "updated", "created"]
 
