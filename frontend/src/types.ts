@@ -19,7 +19,6 @@ export interface Me extends UserMini {
   first_name: string;
   last_name: string;
   email_notifications: boolean;
-  is_staff: boolean;
   date_joined: string;
 }
 
@@ -231,19 +230,26 @@ export interface WebhookEndpoint {
   id: number;
   name: string;
   url: string;
-  secret: string;
+  /** Masked, e.g. "••••a1b2". The full secret is only returned once, by create and rotate. */
+  secret_hint: string;
   events: string[];
   is_active: boolean;
+  consecutive_failures: number;
+  disabled_at: string | null;
+  disabled_reason: string;
   created_by: UserMini | null;
   created_at: string;
   updated_at: string;
 }
 
+export type WebhookEndpointCreated = WebhookEndpoint & { secret: string };
+
 export interface WebhookDelivery {
   id: number;
   event_id: string;
   event: string;
-  state: "pending" | "delivered" | "failed";
+  state: "pending" | "processing" | "delivered" | "failed";
+  redelivery_of: number | null;
   attempts: number;
   response_status: number | null;
   response_body: string;
@@ -371,6 +377,8 @@ export interface BillingState {
   plan: Plan;
   plans: BillingPlan[];
   usage: { projects: number; members: number; pending_invitations: number };
+  /** Set per resource only while the workspace is above its plan (e.g. after a downgrade); otherwise null. */
+  over_limit: Record<"projects" | "members", { used: number; limit: number } | null>;
   can_manage: boolean;
   stripe_configured: boolean;
   has_billing_account: boolean;

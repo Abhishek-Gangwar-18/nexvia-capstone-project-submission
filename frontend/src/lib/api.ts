@@ -4,7 +4,7 @@ import { useAuth } from "@/store/auth";
 /** All requests go to /api; Vite (dev) and nginx (prod) proxy it to Django. */
 export const api = axios.create({ baseURL: "/api" });
 
-const NO_REFRESH = ["/auth/login/", "/auth/register/", "/auth/refresh/", "/auth/logout/"];
+const NO_REFRESH = ["/auth/login/", "/auth/register/", "/auth/refresh/", "/auth/logout/", "/auth/password-reset/", "/auth/password-reset/confirm/"];
 
 api.interceptors.request.use((config) => {
   const token = useAuth.getState().access;

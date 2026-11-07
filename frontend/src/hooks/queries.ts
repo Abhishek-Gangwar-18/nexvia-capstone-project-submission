@@ -6,7 +6,8 @@ import type {
   AuthResponse, Board, DashboardData, Invitation, InvitationPreview, Issue, IssueDetail, Label, Me, Member,
   IssueActivity, IssueAttachment, IssueComment, Paginated, Project, Role, Sprint, StatusCategory, WorkflowConfig,
   WorkflowConfigDraft, Workspace,
-  AuditEntry, BillingState, NotificationItem, Plan, ReportType, WebhookDelivery, WebhookEndpoint, WorkspaceReport,
+  AuditEntry, BillingState, NotificationItem, Plan, ReportType, WebhookDelivery, WebhookEndpoint, WebhookEndpointCreated,
+  WorkspaceReport,
 } from "@/types";
 import { useWorkspaceSlug } from "./useWorkspace";
 
@@ -23,7 +24,7 @@ export function useWsApi() {
       post: <T>(url: string, body?: unknown) => api.post<T>(url, body, { headers }).then((r) => r.data),
       put: <T>(url: string, body?: unknown) => api.put<T>(url, body, { headers }).then((r) => r.data),
       patch: <T>(url: string, body?: unknown) => api.patch<T>(url, body, { headers }).then((r) => r.data),
-      del: (url: string) => api.delete(url, { headers }).then(() => undefined),
+      del: (url: string, body?: unknown) => api.delete(url, { headers, data: body }).then(() => undefined),
     };
   }, [slug]);
 }
@@ -72,6 +73,21 @@ export function useLogin() {
   });
 }
 
+export function useRequestPasswordReset() {
+  return useMutation({
+    meta: { silent: true },
+    mutationFn: (body: { email: string }) => api.post("/auth/password-reset/", body),
+  });
+}
+
+export function useConfirmPasswordReset() {
+  return useMutation({
+    meta: { silent: true },
+    mutationFn: (body: { uid: string; token: string; new_password: string }) =>
+      api.post("/auth/password-reset/confirm/", body),
+  });
+}
+
 export interface RegisterBody {
   email: string;
   password: string;
@@ -108,7 +124,9 @@ export function useChangePassword() {
   return useMutation({
     meta: { silent: true },
     mutationFn: (body: { current_password: string; new_password: string }) =>
-      api.post("/auth/change-password/", body),
+      api.post<{ access: string; refresh: string }>("/auth/change-password/", body).then((r) => r.data),
+    // The server revokes every old session, so keep this tab signed in with the fresh pair.
+    onSuccess: (tokens) => useAuth.getState().setTokens(tokens.access, tokens.refresh),
   });
 }
 
@@ -141,7 +159,22 @@ export function useUpdateWorkspace() {
 
 export function useDeleteWorkspace() {
   const w = useWsApi();
-  return useMutation({ mutationFn: () => w.del("/workspace/") });
+  return useMutation({
+    meta: { silent: true },
+    mutationFn: (body: { confirm: string; password: string }) => w.del("/workspace/", body),
+  });
+}
+
+export function useTransferOwnership() {
+  const w = useWsApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (memberId: number) => w.post<Workspace>("/workspace/transfer-ownership/", { member_id: memberId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "members"] });
+    },
+  });
 }
 
 export function useInvitationPreview(token: string) {
@@ -269,7 +302,7 @@ export function useDeleteProject() {
   const w = useWsApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (key: string) => w.del(`/projects/${key}/`),
+    mutationFn: ({ key, confirm }: { key: string; confirm: string }) => w.del(`/projects/${key}/`, { confirm }),
     onSuccess: () => {
       refreshWorkData(qc, w.slug);
       qc.invalidateQueries({ queryKey: ["workspaces"] });
@@ -434,7 +467,7 @@ export function useWebhooks(enabled = true) {
 export function useCreateWebhook() {
   const w = useWsApi(); const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Pick<WebhookEndpoint, "name" | "url" | "events">) => w.post<WebhookEndpoint>("/webhooks/", body),
+    mutationFn: (body: Pick<WebhookEndpoint, "name" | "url" | "events">) => w.post<WebhookEndpointCreated>("/webhooks/", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhooks"] }),
   });
 }
