@@ -330,13 +330,18 @@ query is a single indexed `WHERE workspace_id = ?` with no joins.
 | Constraint | Rule |
 |---|---|
 | `unique_membership` | one membership per (workspace, user) |
-| `unique_project_key_per_workspace` | `WEB` can exist in many workspaces, once per workspace |
+| `unique_project_key_per_workspace` + `project_key_canonical` | `WEB` can exist in many workspaces, once per workspace; the check constraint keeps keys uppercase, so uniqueness is effectively case-insensitive |
 | `unique_issue_number_per_project`, `unique_issue_key_per_workspace` | issue keys never collide |
 | `one_active_sprint_per_project` | **partial** unique index on `project` where `state = 'active'` |
 | `sprint_end_after_start` | check constraint |
 | `unique_status_name_per_workflow`, `unique_transition`, `transition_not_self` | workflow integrity |
-| `unique_label_per_workspace` | label names per tenant |
+| `unique_label_per_workspace` + `label_name_lowercase` | label names per tenant, stored lowercase so `Bug` and `bug` collide |
+| `unique_open_invitation` | one open invitation per (workspace, `lower(email)`) where `accepted_at IS NULL` |
+| `unique_webhook_event_delivery` | one *original* delivery per (endpoint, event id); redeliveries reuse the event id |
+| `one_pending_identical_report` | one pending report per (workspace, type, project, sprint), `NULLS NOT DISTINCT` |
 | indexes `(workspace, status)`, `(workspace, sprint)`, `(workspace, assignee)`, `rank` | board, backlog and "my issues" queries |
+| GIN trigram indexes on `UPPER(key/title/description)` (`pg_trgm`) | `?search=`, which runs `icontains` as `UPPER(col) LIKE UPPER('%term%')`; created as raw SQL in `issues/0009` |
+| `(state, lease_expires_at)` on webhook deliveries | the stalled-delivery sweeper |
 
 ---
 
@@ -348,13 +353,17 @@ query is a single indexed `WHERE workspace_id = ?` with no joins.
 | **Ordering / drag-and-drop** | `Issue.rank` is a float. A move sends `prev_id` / `next_id` and the server sets `rank = (prev + next) / 2` (or ±1024 at either end). When two neighbours get closer than 1e-6 apart, `rebalance_ranks()` re-spaces the whole project in one `bulk_update`. Moving a card writes 1 row, not N. |
 | **Resolution** | `resolved_at` is set when an issue enters a `done`-category status and cleared when it leaves one. Dashboards and sprint stats rely on it. |
 | **Workflows** | Each project owns one `Workflow` with ordered `WorkflowStatus` rows (category todo/in_progress/done). With `enforce_transitions = False` (the default) any move is allowed; when it's True, only explicit `WorkflowTransition` rows are. This is checked in both the serializer (PATCH) and `move_issue`, and the board dims blocked columns during a drag. A status in use can't be removed or change category. |
-| **Archived projects** | Their issues are read-only: PATCH, move and create return 400. |
-| **Removed members** | Their assignments and project lead roles are cleared. History such as reporter, comment author and audit actor is kept, and membership is only validated when those rows are created, so old records stay editable. |
+| **Archived projects** | Read-only. One guard, `projects/services.assert_project_writable()`, is called by every project-scoped write (issues, comments, attachments, sprints, board, workflow, project PATCH) and returns 400 `Restore the project first.` Reads, deleting the project and the restore itself still work. |
+| **Removed members** | `tenants/services.remove_member()` unassigns all their issues in that workspace (closed ones too, since every save checks the assignee is a member) in the same transaction as the removal and records the count in the audit entry. Project lead roles are cleared by a signal. Reporter, comment author and audit actor are kept. |
+| **Concurrency** | The **project row** is the lock point inside a project: workflow replacement and sprint start/complete take `FOR UPDATE`; issue create/update/move take `FOR NO KEY UPDATE`, which conflicts with it. Validation that a racing write could break (status still exists, parent hierarchy, cycles) runs after the lock. Workspace-wide limits (projects, invitations, webhooks, reports) lock the **workspace row**; billing uses an advisory lock (see 8a). The database constraints above stay the last line of defence, and their `IntegrityError` is turned into a field-level 400. |
 | **Audit log** | `AuditLog` stores labels as text and uses `SET_NULL` on project, so entries outlive what they describe. Reordering inside a column is not logged. Only issue events trigger webhooks and notifications. |
-| **Sprints** | `planned → active → closed`. Only one is active per project (DB-enforced). Completing a sprint moves unfinished issues to a planned sprint or the backlog in one transaction. Closed sprints are read-only and can't receive issues. |
-| **Hierarchy** | Story/task/bug → epic parent. Only `subtask` may have a non-epic parent. A parent must be in the same project and can't be the issue itself. |
+| **Sprints** | `planned → active → closed`. Only one is active per project (DB-enforced). Completing a sprint moves unfinished issues to a planned sprint or the backlog in one transaction. Closed sprints are read-only, can't receive issues and can't be deleted (they're velocity history); only planned sprints can be deleted. Default names use the highest existing number + 1. |
+| **Hierarchy** | epic → story/task/bug → subtask; a subtask has no children. Same project, no self-parenting, and a cycle walk up the chain. An issue can't change to a type that can't hold its existing children. Checked under the project lock, and only when the parent or type changes, so older issues stay editable. |
 | **Deletion** | `Issue.status` uses `on_delete=RESTRICT`: a status in use can't be deleted on its own, but deleting a project or workspace cascades cleanly. (`PROTECT` would block those cascades.) |
 | **Project scaffolding** | `create_project()` creates the project, a 4-status workflow (To Do, In Progress, In Review, Done) and a board in one transaction. |
+| **Destructive deletes** | Deleting a project (owner only) needs `{"confirm": "<KEY>"}`; deleting a workspace needs the slug and the owner's password. Attachment files are deleted with `transaction.on_commit`, so a rolled-back delete never loses a file. |
+| **Ownership** | `transfer_ownership()` locks the workspace and memberships, demotes the old owner to admin before promoting the new one (never two owners), updates `Workspace.owner`, audits it, and queues the Stripe billing-email update after commit. An admin invitation is only valid while its sender still owns the workspace. |
+| **Uploads** | The bytes decide: magic-number checks for images, PDF and ZIP; UTF-8 without NUL bytes for text; SVG/HTML and anything else rejected; the verified type is stored. The file is written first and the row and audit entry in one transaction; if that fails, the stored file is deleted again. |
 
 ---
 
@@ -366,9 +375,11 @@ query is a single indexed `WHERE workspace_id = ?` with no joins.
 |---|---|---|
 | Access token | 30 min | `Authorization: Bearer …` |
 | Refresh token | 7 days | rotated on every refresh; the old one is blacklisted (`token_blacklist` app) |
-| Logout | blacklists the refresh token | the access token expires naturally |
-| Brute-force protection | `ScopedRateThrottle` 20/min | on login and register |
-| Passwords | Django validators | length, common, numeric, similarity |
+| Logout | blacklists that refresh token (204, idempotent) | `logout-all` blacklists every outstanding one; the access token expires naturally |
+| Password change / reset | revokes every refresh token | change returns a fresh pair; reset uses Django's single-use `PasswordResetTokenGenerator` (1 hour) and always answers 204 |
+| Brute-force protection | per-endpoint scopes (login 5/min, register 10/h, refresh 30/min, change-password 5/h, reset 5/h) | plus a per-email lockout: 10 failures in 15 min. Counters are in the shared Redis cache |
+| Passwords | Django validators | length, common, numeric, similarity; errors are reported on the password field |
+| Session auth | not used by the API | JWT only; Django admin keeps its own session login |
 
 ### Roles
 
@@ -376,22 +387,27 @@ query is a single indexed `WHERE workspace_id = ?` with no joins.
 
 ```python
 class ProjectViewSet(TenantModelViewSet):
-    required_roles = {"create": Role.ADMIN, "update": Role.ADMIN, "partial_update": Role.ADMIN, "destroy": Role.ADMIN}
+    required_roles = {"create": Role.ADMIN, "update": Role.ADMIN, "partial_update": Role.ADMIN, "destroy": Role.OWNER}
     # everything else: reads → VIEWER, writes → MEMBER (the default in core/permissions.py)
 ```
 
-Object-level rules live in the view's `perform_*`: an issue can be deleted by its reporter or an admin;
-the owner can't be removed or demoted; you can't change your own role; anyone may leave.
+Object-level rules live in services (`tenants/services.py`, `issues/services.py`), not only in views: only the
+owner manages admins; nobody changes their own role or anyone's to owner (that's `transfer-ownership`); anyone but
+the owner may leave; an issue can be deleted by its reporter or an admin; a comment can be edited only by its
+author and deleted by its author or an admin.
 
 | Capability | Viewer | Member | Admin | Owner |
 |---|:-:|:-:|:-:|:-:|
 | Read the workspace | ✅ | ✅ | ✅ | ✅ |
 | Issues, sprints, labels: create/edit/move | | ✅ | ✅ | ✅ |
 | Delete an issue | | own | ✅ | ✅ |
-| Projects, workflows, boards (WIP), webhooks, audit log, delete sprints/labels | | | ✅ | ✅ |
-| Invitations, roles, removing members, renaming the workspace | | | ✅ | ✅ |
-| See the plan and usage (`GET /billing/`) | ✅ | ✅ | ✅ | ✅ |
-| Checkout, Customer Portal, sync; delete the workspace | | | | ✅ |
+| Edit a comment | | own | own | own |
+| Delete a comment | | own | ✅ | ✅ |
+| Projects (create/edit/archive), workflows, boards (WIP), webhooks, audit log, delete planned sprints/labels | | | ✅ | ✅ |
+| Invite and manage members and viewers, rename the workspace | | | ✅ | ✅ |
+| Invite, promote, demote or remove **admins** | | | | ✅ |
+| See the plan, usage and `over_limit` (`GET /billing/`) | ✅ | ✅ | ✅ | ✅ |
+| Checkout, Customer Portal, sync; delete a project or the workspace; transfer ownership | | | | ✅ |
 
 The frontend mirrors this ladder in `usePermissions()` and hides what the API would refuse. The API
 stays the authority either way.
@@ -404,16 +420,33 @@ stays the authority either way.
 
 | Job | Trigger | Behaviour |
 |---|---|---|
-| `process_issue_event` | after commit of an issue event | creates webhook deliveries and notifications |
-| `deliver_webhook` | per delivery | HMAC-SHA256 signature; 5 retries with backoff; blocked targets fail without retrying |
-| `generate_workspace_report` | `POST /reports/` | stores JSON on the report, or `failed` with the reason |
-| `send_notification_email`, `send_invitation_email` | on creation or resend | 3 retries on SMTP/network errors; never sends twice for a notification; honours the opt-out |
-| `create_overdue_reminders`, `create_daily_digests` | beat, 08:00 and 08:05 UTC | one per person per day, enforced by a unique constraint |
+| `process_issue_event` | after commit of an issue event | creates webhook deliveries (actor id + display name, no email) and notifications |
+| `deliver_webhook` | per delivery | claim → send → record (below) |
+| `recover_stalled_deliveries` | beat, every 5 min | re-queues deliveries whose worker lease expired |
+| `generate_workspace_report` | `POST /reports/` | stores JSON on the report; writes only while it's still `pending`, so a run declared lost can't overwrite anything |
+| `send_notification_email`, `send_invitation_email`, `send_password_reset_email` | on creation, resend or reset request | 3 retries on SMTP/network errors; never sends twice for a notification; honours the opt-out |
+| `update_billing_email` (billing) | after an ownership transfer commits | points the Stripe customer at the current owner; up to 8 retries |
+| `create_overdue_reminders`, `create_daily_digests` | beat, 08:00 and 08:05 UTC | one per person per day, enforced by a unique constraint; digests use one grouped count for all workspaces and skip zero-activity ones |
+| `purge_expired_invitations` | beat, 03:00 | unaccepted invitations expired over 30 days ago |
+| `purge_old_records` | beat, 03:15 | retention (below), in batches of 1,000, idempotent, logs its counts |
+
+**Webhook delivery:**
+
+| Step | Detail |
+|---|---|
+| Claim | `select_for_update(skip_locked=True)` on a `pending` row (or a `processing` one whose lease expired), set `processing` with a 60 s lease and a claim token, commit. A second worker gets nothing instead of sending twice |
+| Send | outside any transaction. Signature `sha256=HMAC(secret, "<timestamp>.<raw body>")` with `X-FlowBoard-Timestamp`, fresh per attempt; `X-FlowBoard-Delivery` (event id) is stable. Each socket operation has an 8 s timeout and the whole attempt a hard 20 s deadline (well under the lease); at most 4 KB of the response is read |
+| Record | 2xx → delivered and the endpoint's `consecutive_failures` reset. Network error, 5xx, 429 → retry with backoff (honouring `Retry-After`, capped at 1 h), up to 5 times. Other 4xx and redirects → failed at once. After 20 final failures in a row the endpoint is disabled, with one audit entry |
+| Redeliver | a new row pointing at the failed one (`redelivery_of`), same event id and payload; history is never overwritten |
 
 **Webhook target safety:** outside `DEBUG`, targets must be HTTPS and every resolved address must be public. The
 validated IP is pinned for the connection, so a DNS answer that changes afterwards (DNS rebinding) can't reach
-internal services. TLS still verifies the original hostname. Redirects and proxy variables are ignored. With
-`DEBUG=True`, HTTP and local targets are allowed for development.
+internal services. TLS still verifies the original hostname. Redirects and proxy variables are ignored. The same
+rules apply to test sends, real events and redeliveries. With `DEBUG=True`, HTTP and local targets are allowed for
+development. The signing secret is returned only by create and rotate; reads show `secret_hint`.
+
+**Retention:** webhook deliveries 30 days, read notifications 90, unread notifications 180, reports 90, Stripe
+events 90 (`RETENTION_DAYS`). Pending/processing deliveries and pending reports are never purged.
 
 **Email policy:** mentions, new assignments, overdue issues and digests are emailed. Routine updates stay in-app.
 
@@ -426,10 +459,12 @@ sprint membership history isn't stored. Issues moved out earlier don't appear in
 |---|---|
 | Settings | `config/settings.py` reads everything from env / `.env` (secret, debug, hosts, `DATABASE_URL`, `REDIS_URL`, `FRONTEND_URL`, CORS) |
 | Base classes | `TenantModelViewSet` = workspace resolution + scoped queryset + `perform_create` stamping the workspace. Most viewsets only add a serializer and filters. |
-| Services | Business operations with multiple writes live in `services.py` (`create_workspace`, `create_project`, `accept_invitation`, `move_issue`) inside transactions, so the API, admin, seed and future jobs share them |
-| Lookups | Projects by `key`, issues by `key` (case-insensitive), everything else by id |
-| Pagination | `OptionalPageNumberPagination`: a plain list unless `?page=` is sent, so small collections stay simple and big ones can page (max 500) |
-| Errors | `core/exceptions.py` maps Django `ValidationError` (model/tenant guards) → 400 and `IntegrityError` → 409, so the API never 500s on bad input |
+| Services | Business operations with multiple writes live in `services.py` (`create_workspace`, `transfer_ownership`, `remove_member`, `create_project`, `accept_invitation`, `move_issue`, `add_comment`, `add_attachment`, …) inside transactions, so the API, admin, seed and future jobs share them and the rules can't be skipped by another view |
+| Lookups | Projects and issues by `key` (case-insensitive), everything else by id |
+| Pagination | `OptionalPageNumberPagination`: a plain list unless `?page=` is sent (max 500). Big lists are bounded: `CappedListMixin` caps unpaged issue lists at 1,000 (`X-Truncated`) and requires a filter; `AlwaysPageNumberPagination` for the audit log; `paginate_or_cap()` for nested lists. Orderings always end with the pk, so pages are stable |
+| Updates | `PATCH` only for projects, issues and webhooks (`PUT` → 405); the workflow keeps `PUT` because it is a full replace |
+| Rate limits | DRF throttles per scope in `settings.REST_FRAMEWORK`, plus custom keys in `core/throttling.py` (per user, per endpoint, per workspace). Counters live in the shared Redis cache (`CACHES`, Redis database 1), so limits hold across processes |
+| Errors | `core/exceptions.py` maps Django `ValidationError` (model/tenant guards) → 400 and `IntegrityError` → 409, so the API never 500s on bad input. Known races catch their `IntegrityError` and return a field-level 400 instead |
 | Query efficiency | `select_related`/`prefetch_related` on every list; counts and story points are aggregated in SQL (`annotate`), and the dashboard is built from grouped queries |
 | OpenAPI | drf-spectacular with a custom `TenantAutoSchema` that adds the `X-Workspace` header to every scoped endpoint; the schema builds with 0 warnings |
 | Seed data | `seed_demo` (Faker, deterministic seed 42): 3 workspaces, 7 projects, ~336 issues, epics, labels, closed/active/planned sprints, believable created/resolved timelines. Idempotent, so the Docker image runs it on every start |
@@ -459,26 +494,32 @@ sequenceDiagram
     participant API as Django
     participant S as Stripe
     O->>API: POST /billing/checkout/ {plan: "pro"}
-    API->>S: create customer (once) + Checkout Session (subscription mode)
+    API->>API: advisory lock for this workspace's billing
+    API->>S: customer (once, idempotency key) · reuse our open session, else create one (idempotency key)
     API-->>O: {url}
     O->>S: pay on Stripe's hosted page (card never reaches FlowBoard)
     S-->>O: redirect /w/<slug>/billing?checkout=success
     O->>API: POST /billing/sync/ (re-reads the subscription from Stripe)
     S->>API: POST /api/billing/webhook/ (signed) checkout.session.completed, customer.subscription.*
-    API->>S: retrieve subscription (events may arrive out of order)
-    API->>API: apply_subscription → Workspace.plan, audit log
+    API->>S: list ALL the customer's subscriptions, no DB transaction open (events may arrive out of order)
+    API->>S: cancel duplicates beyond the oldest live one (idempotency keys)
+    API->>API: one short transaction: StripeEvent row + apply_subscription → Workspace.plan, audit log
 ```
 
 | Concern | Approach |
 |---|---|
-| **Limits** | `billing/limits.py`: `check_can_add_project` (create and un-archive), `check_can_add_member` (invitations; pending invites count), `check_file_size` (attachments). They raise **402** `{"code": "plan_limit_reached", "limit": …, "current_plan": …}`. Limits only block adding more; a downgraded workspace keeps everything it has |
+| **Limits** | `billing/limits.py`: `check_can_add_project` (create and un-archive), `check_can_add_member` (invitations; pending invites count), `check_file_size` (attachments). They raise **402** `{"code": "plan_limit_reached", "limit": …, "current_plan": …}` and run under the workspace row lock. Limits only block adding more; a downgraded workspace keeps everything, and `GET /billing/` reports it in `over_limit` |
+| **Checkout** | Runs under `pg_advisory_xact_lock(7301, workspace_id)` for its whole duration, Stripe calls included. It's transaction-scoped and blocks only another checkout or customer creation for the same workspace, not the workspace row. Customer creation uses the key `customer-ws-{id}`; the session uses `checkout-ws-{id}-{plan}-{10-minute window}`. The last session is reused only if **Stripe** reports it `open` with more than 2 minutes left. The plan is validated by name; the price is always chosen server-side |
+| **Duplicate subscriptions** | Every subscription event and every sync lists all of the customer's subscriptions. With more than one live, the oldest is kept and the rest are cancelled (idempotent keys). They are **not refunded**: each gets an audit entry (workspace, retained and cancelled ids, detected at, result, `refund_issued: false`, `manual_refund_review_required: true`) |
 | **Webhook security** | `StripeWebhookView` has no user auth; it verifies the `Stripe-Signature` with `STRIPE_WEBHOOK_SECRET` (400 when invalid, 503 when not configured) |
-| **Idempotency** | The event id is stored in `StripeEvent` (unique) in the same transaction as the work, so a repeated event is skipped and a failed one is retried by Stripe |
-| **Event handling** | `checkout.session.completed` and `customer.subscription.*` re-read the subscription from Stripe and apply it; `invoice.payment_failed` notifies the owner (in-app + email). Paid statuses: `active`, `trialing`, `past_due`; ended (`canceled`, `unpaid`, `incomplete_expired`) → Free |
+| **Transaction boundary** | Stripe is called before any DB transaction opens; then one short transaction records the `StripeEvent` (unique) and applies the change. A known duplicate is answered before calling Stripe. Stripe outage → 503, any other error → 500 with event id and type logged; either way no event row remains, so Stripe's retry runs it again |
+| **Ordering** | `apply_subscription()` locks the workspace row, then the subscription row (one order everywhere). Each snapshot carries the time its Stripe fetch **started**; a snapshot that started before the one already applied (`Subscription.synced_at`) is discarded, so an earlier request finishing later can't overwrite newer state. It isn't a Stripe event version, so `sync` stays available to reconcile |
+| **Event handling** | `checkout.session.completed` and `customer.subscription.*` apply the canonical subscription; `invoice.payment_failed` notifies the owner (in-app + email). Paid statuses: `active`, `trialing`, `past_due`; ended (`canceled`, `unpaid`, `incomplete_expired`) → Free. An unknown price is logged with its id and lookup key and the plan is left unchanged |
 | **No webhooks locally** | `POST /billing/sync/` reads the latest subscription directly, so billing works on a laptop without `stripe listen` |
-| **Workspace deletion** | The live subscription is cancelled first; a Stripe error blocks the delete instead of leaving a running charge |
+| **Owner changes** | After an ownership transfer, `update_billing_email` sets the Stripe customer's email from the owner at the time it runs |
+| **Workspace deletion** | The live subscription is cancelled first (idempotency key) and its local status saved right away, so if the delete then fails the retry doesn't cancel again; a Stripe error blocks the delete instead of leaving a running charge |
 | **Error hygiene** | Stripe errors are logged in full but returned as a generic 503, since Stripe messages can expose account details |
-| **Roles** | Everyone can read `GET /billing/` (plan, usage, `can_manage`); Checkout, Portal and Sync are owner-only |
+| **Roles and limits** | Everyone can read `GET /billing/` (plan, usage, `over_limit`, `can_manage`); Checkout, Portal and Sync are owner-only. Checkout + Portal: 10/min per user; Sync: 6/min per workspace |
 
 The frontend `BillingPage` shows the plan, usage bars and plan cards; it syncs after returning from
 Checkout and shows a toast. A global 402 handler (`lib/queryClient.ts`) turns any limit error into a toast
@@ -604,7 +645,7 @@ board operable without a mouse.
 | React (Vite) | `pnpm dev` | 5173 |
 | Django | `python manage.py runserver` | 8000 |
 | PostgreSQL 16 | `docker compose up -d db` | 5432 (`POSTGRES_HOST_PORT`) |
-| Redis 7 | `docker compose up -d redis` | **6380** on the host (`REDIS_HOST_PORT`), so it doesn't clash with another Redis on 6379 |
+| Redis 7 | `docker compose up -d redis` | **6380** on the host (`REDIS_HOST_PORT`), so it doesn't clash with another Redis on 6379. Needed by the API (rate limits) and the tests, not only by Celery |
 | Celery worker | `python -m celery -A config worker --pool=solo -l info` | n/a |
 | Celery beat | `python -m celery -A config beat -l info` | n/a |
 
@@ -615,6 +656,8 @@ board operable without a mouse.
 | `DATABASE_URL` | `postgres://flowboard:flowboard@localhost:5432/flowboard` | dj-database-url |
 | `POSTGRES_DB/USER/PASSWORD/HOST_PORT` | `flowboard` ×3 / 5432 | docker compose |
 | `REDIS_URL` / `REDIS_HOST_PORT` | `redis://localhost:6380/0` / 6380 | Celery broker |
+| `CACHE_URL` | `REDIS_URL` with database `/1` | shared cache for throttle and lockout counters |
+| `MAX_OWNED_WORKSPACES` / `MAX_WEBHOOKS_PER_WORKSPACE` | 10 / 10 | per-user and per-workspace caps |
 | `EMAIL_BACKEND` | console backend | SMTP backend for real delivery |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` | unset / 587 / TLS on | SMTP settings |
 | `DEFAULT_FROM_EMAIL` | `FlowBoard <no-reply@flowboard.test>` | sender |
@@ -665,7 +708,7 @@ flowchart LR
 - **Attachments** stay private: nginx doesn't serve `/media`; downloads go through the authenticated
   `/api/attachments/{id}/download/` view, reading from the shared `media` volume.
 - **Settings stay identical to dev**: the image only changes env vars (`DJANGO_DEBUG=False`, whitenoise
-  storage, media root), so local dev and the 270 tests run on unchanged defaults.
+  storage, media root), so local dev and the 501 tests run on unchanged defaults.
 - **Production** (`docker-compose.prod.yml`) uses the GHCR images, requires `DJANGO_SECRET_KEY`,
   `POSTGRES_PASSWORD`, `APP_DOMAIN` and `IMAGE_PREFIX`, doesn't publish the database or Redis ports, defaults
   `SEED_DEMO_DATA` to false and turns on secure cookies. TLS is terminated by a proxy in front; nginx keeps
@@ -692,7 +735,7 @@ Image pushes use the workflow's own `GITHUB_TOKEN` (`packages: write`); no perso
 
 | Level | Tooling | Scope |
 |---|---|---|
-| Backend (270 tests) | pytest-django on **real PostgreSQL**, DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input. Tasks run in-process and never reach the real Redis; Stripe calls are mocked |
+| Backend (501 tests) | pytest-django on **real PostgreSQL** and **Redis** (the shared throttle cache), DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input, plus the review hardening: race tests with real threads and connections (checkout, webhook cap, report dedupe, `skip_locked` claims), lock-order and query-count checks, `EXPLAIN` on the trigram index, a trickling socket for the webhook deadline. Celery tasks run eagerly and never touch the broker; Stripe calls are mocked |
 | Types | `tsc -b` (strict, `noUnused*`) | the whole frontend |
 | Stack smoke test | `scripts/smoke_test.py` (stdlib only), run in CI against the Docker stack | 26 checks through nginx: login, projects/issues/boards/sprints/dashboard, tenant isolation, role blocks, comments, upload + download, worker-built report + CSV, notifications, webhooks, billing, unsigned Stripe webhook rejected, OpenAPI schema |
 | Browser checks | headless Chromium during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode, billing, a real Stripe test payment, the home page (desktop + mobile, light + dark, no horizontal overflow, signed-in redirect) |
@@ -714,6 +757,7 @@ row-locking behaviour are part of what's being tested.
 | 6 | Stripe Billing: plans, Checkout, Portal, webhooks, 402 limits ([8a](#8a-billing-stripe)) | ✅ |
 | 7 | Docker images, full-stack compose, GitHub Actions CI/CD ([10a](#10a-containers-and-deployment)) | ✅ |
 | + | Public home page at `/` with features, pricing and FAQ ([9.1](#91-routing)) | ✅ |
+| + | API hardening review of all 88 endpoints, group by group: auth, tenants, projects, issues, automation, billing (sections [6](#6-domain-rules)–[8a](#8a-billing-stripe)) | ✅ |
 
 Possible next steps: frontend unit tests and a linter in CI, splitting the main JS bundle, browser E2E
 tests in CI, and an HTTPS reverse proxy (e.g. Caddy) in the production compose file.

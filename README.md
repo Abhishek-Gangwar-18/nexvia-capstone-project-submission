@@ -39,9 +39,16 @@ Stripe Billing · Docker · GitHub Actions
   enforced at the request, query and write layers ([details](docs/ARCHITECTURE.md#4-multi-tenancy)).
 - Other tenants' data is invisible: their workspaces and records return **404**, and foreign ids in
   payloads are rejected.
-- **JWT** auth with rotating refresh tokens, logout blacklisting and login throttling.
-- **Roles**: owner › admin › member › viewer. The UI mirrors what each role can do.
-- Invitations by email or link (7-day expiry), and one user can belong to several workspaces.
+- **JWT** auth with rotating refresh tokens, logout (one session or all), forgot/reset password, and a password
+  change that signs out every other session.
+- **Rate limits** on every sensitive endpoint, plus a per-account login lockout. Counters live in Redis, so they
+  hold across all API processes.
+- **Roles**: owner › admin › member › viewer. Only the owner manages admins; ownership moves through an explicit
+  transfer. The UI mirrors what each role can do, and the API enforces it in services, not just views.
+- Invitations by email or link (7-day expiry, one open invite per email), and one user can belong to several
+  workspaces.
+- Destructive deletes need confirmation (project key; workspace slug + password), and concurrent requests are
+  serialised with row and advisory locks backed by database constraints, so races return a clean 400, not a 500.
 
 **Project management**
 - Projects with keys (`WEB`), per-project workflows (To Do → In Progress → In Review → Done) and boards.
@@ -59,16 +66,21 @@ Stripe Billing · Docker · GitHub Actions
 **Collaboration & workflows**
 - **Workflow editor**: custom statuses and allowed transitions per project. The board dims columns a card can't
   move to, and the API enforces the rules.
-- **Comments** with `@email` mentions, **file attachments** (up to 25 MB, private downloads), and an activity
-  history on every issue.
+- **Comments** with `@email` mentions (only the author edits a comment), **file attachments** (checked by their
+  actual bytes, plan-sized up to 100 MB, private downloads), and an activity history on every issue.
+- Archived projects are read-only everywhere until restored.
 - **Audit log** (admins): filterable, workspace-wide history of issue, project, sprint, workflow, member,
   invitation, label, webhook and workspace changes.
 
 **Automation**
-- **Webhooks**: HMAC-signed events, automatic retries, delivery history and a test button.
+- **Webhooks**: timestamped HMAC signatures (replay-safe), a signing secret shown only once, smart retries
+  (5xx/429/network only), auto-disable after 20 failures, redelivery, delivery history and a test button. Outbound
+  requests are SSRF-safe: public HTTPS targets only, pinned IPs, no redirects, hard time limits.
 - **Notifications**: in-app bell, plus email for mentions, new assignments, overdue issues and a daily digest
   (users can opt out).
 - **Reports**: sprint burndown, velocity and workspace summary, generated in the background and exported as CSV.
+  Identical pending requests are merged.
+- A nightly retention job trims old deliveries, notifications, reports and Stripe events.
 
 **Billing (Stripe, test mode)**
 - Three plans: **Free**, **Pro** ($29/mo) and **Enterprise** ($99/mo), each with its own project, member and
@@ -77,8 +89,11 @@ Stripe Billing · Docker · GitHub Actions
   Portal**. Card details never touch FlowBoard.
 - Signed **Stripe webhooks** (processed once each) keep the plan in sync; a **Sync** call reads the state
   straight from Stripe when webhooks can't reach the machine.
+- Double-charge protection: one open checkout per workspace (advisory lock + Stripe idempotency keys), and a
+  second live subscription is cancelled automatically and flagged for a manual refund review.
 - Hitting a limit returns **HTTP 402** and the UI offers an upgrade. Limits only block adding more: a
-  downgraded workspace keeps its data. Deleting a workspace cancels its subscription first.
+  downgraded workspace keeps its data, and the Billing page explains what's over the limit. Deleting a workspace
+  cancels its subscription first.
 
 **Delivery (Docker + CI/CD)**
 - Production images: Django on **gunicorn** (the same image runs the Celery worker and beat) and the SPA on
@@ -128,7 +143,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate                     # Windows  (source .venv/bin/activate on macOS/Linux)
 pip install -r requirements.txt
-python manage.py migrate
+python manage.py migrate                   # also enables the pg_trgm extension used by search
 python manage.py seed_demo --reset         # demo data: 3 companies, 7 projects, ~336 issues
 python manage.py runserver                 # http://127.0.0.1:8000
 
@@ -143,7 +158,8 @@ python -m celery -A config beat -l info                 # daily reminders + dige
 ```
 
 The app runs without the worker, but reports stay queued and webhooks, notifications and email won't go out
-until it starts. `--pool=solo` is the setup tested on Windows.
+until it starts. `--pool=solo` is the setup tested on Windows. **Redis is required** even without the worker:
+the API keeps its rate-limit counters there (database 1; Celery uses database 0).
 
 **Email** prints to the worker's terminal by default. For real delivery, set the SMTP values shown in
 `.env.example`.
@@ -217,13 +233,15 @@ The architecture doc has the full tree and what each app and module owns.
 | See everything in the workspace | ✅ | ✅ | ✅ | ✅ |
 | Create / edit / move issues, sprints, labels | | ✅ | ✅ | ✅ |
 | Delete an issue | | own | ✅ | ✅ |
-| Create / edit / archive / delete projects, WIP limits | | | ✅ | ✅ |
+| Create / edit / archive projects, WIP limits | | | ✅ | ✅ |
 | Comment, upload files, generate reports | | ✅ | ✅ | ✅ |
+| Edit a comment | | own | own | own |
 | See reports | ✅ | ✅ | ✅ | ✅ |
 | Edit workflows; manage webhooks; read the audit log | | | ✅ | ✅ |
-| Invite, change roles, remove members | | | ✅ | ✅ |
+| Invite, change roles of, and remove members and viewers | | | ✅ | ✅ |
+| Invite, promote, demote or remove admins | | | | ✅ |
 | See the plan and usage | ✅ | ✅ | ✅ | ✅ |
-| Upgrade, manage billing, delete the workspace | | | | ✅ |
+| Upgrade, manage billing, delete a project or the workspace, transfer ownership | | | | ✅ |
 
 ## API in one minute
 
@@ -241,7 +259,7 @@ The full walkthrough, endpoint table and security scenarios are in [docs/API_TES
 ## Tests
 
 ```bash
-cd backend && pytest                 # 270 tests on PostgreSQL: tenancy, permissions, API, workflows, jobs, reports, audit, email, billing
+cd backend && pytest                 # 501 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing
 cd frontend && pnpm build            # strict TypeScript check + production build
 python scripts/smoke_test.py         # 26 end-to-end checks against the running Docker stack (http://localhost:8080)
 ```
@@ -272,7 +290,9 @@ images are private by default), and create a `.env` next to the compose file wit
 | `pnpm install` complains about ignored build scripts | Already handled in `frontend/pnpm-workspace.yaml` (`allowBuilds: esbuild`); for a new package run `pnpm approve-builds <pkg>` |
 | UI says "Can't reach the server" | Django isn't running on :8000 (Vite proxies `/api` there) |
 | Report stuck on "pending", no emails | The Celery worker isn't running |
-| Issue edits take about 4 seconds | Redis is down, so queuing times out: `docker compose up -d redis` |
+| Issue edits take about 4 seconds, or requests fail with a Redis `ConnectionError` | Redis is down (queuing and rate limits both use it): `docker compose up -d redis` |
+| `429 Too Many Requests` while testing | Rate limits (see `docs/API_TEST.md` §3); clear the counters with `python manage.py shell -c "from django.core.cache import cache; cache.clear()"` |
+| Webhook receiver rejects every signature | Since the API review, sign `"<X-FlowBoard-Timestamp>.<raw body>"`, not the body alone |
 | Demo login stopped working | Re-run `python manage.py seed_demo --reset` |
 | Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again |
 | Billing page says billing isn't configured | Add `STRIPE_SECRET_KEY` (test key) to `.env` and restart Django / `docker compose up -d` |
