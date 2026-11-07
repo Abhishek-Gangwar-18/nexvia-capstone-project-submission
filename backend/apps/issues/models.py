@@ -1,7 +1,8 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Max
+from django.db.models import Max, Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from apps.core.models import TenantModel
@@ -19,6 +20,8 @@ class Label(TenantModel):
         ordering = ["name"]
         constraints = [
             models.UniqueConstraint(fields=["workspace", "name"], name="unique_label_per_workspace"),
+            # Names are stored lowercase, so "Bug" and "bug" collide in the unique constraint above.
+            models.CheckConstraint(condition=Q(name=Lower("name")), name="label_name_lowercase"),
         ]
 
     def __str__(self):
@@ -78,6 +81,8 @@ class Issue(TenantModel):
             models.Index(fields=["workspace", "status"]),
             models.Index(fields=["workspace", "sprint"]),
             models.Index(fields=["workspace", "assignee"]),
+            # Trigram GIN indexes for ?search= live in migration 0009 as raw SQL: Django renders
+            # OpClass(Upper(...)) with parentheses PostgreSQL rejects.
         ]
 
     def __str__(self):
@@ -185,6 +190,7 @@ class AuditLog(TenantModel):
         ROLE_CHANGED = "role_changed", "Role changed"
         SECRET_ROTATED = "secret_rotated", "Secret rotated"
         PLAN_CHANGED = "plan_changed", "Plan changed"
+        OWNERSHIP_TRANSFERRED = "ownership_transferred", "Ownership transferred"
 
     class Entity(models.TextChoices):
         ISSUE = "issue", "Issue"
@@ -206,7 +212,7 @@ class AuditLog(TenantModel):
     project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_events")
     project_key = models.CharField(max_length=10, blank=True)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="audit_events")
-    action = models.CharField(max_length=16, choices=Action.choices)
+    action = models.CharField(max_length=32, choices=Action.choices)
     changes = models.JSONField(default=dict, blank=True)
 
     class Meta:

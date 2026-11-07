@@ -1,8 +1,9 @@
+from django.db import IntegrityError, transaction
 from django.http import FileResponse
 from django.contrib.auth import get_user_model
 from django.utils.http import content_disposition_header
 from drf_spectacular.openapi import OpenApiTypes
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import exceptions, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -10,18 +11,23 @@ from rest_framework.response import Response
 
 from apps.billing.limits import check_file_size
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
+from apps.core.pagination import AlwaysPageNumberPagination, CappedListMixin, paginate_or_cap
 from apps.tenants.models import Membership
 
 from .activity import mentioned_members, record_event, record_issue_event
 from .filters import AuditLogFilter, IssueFilter
 from .models import Issue, IssueAttachment, AuditLog, IssueComment, Label
 from apps.projects.models import Sprint, WorkflowStatus
+from apps.projects.services import ARCHIVED_MESSAGE, lock_project
 from .serializers import (
     IssueAttachmentSerializer, IssueAttachmentUploadSerializer, AuditLogSerializer,
     IssueCommentCreateSerializer, IssueCommentSerializer, IssueDetailSerializer, IssueListSerializer,
     IssueMoveSerializer, IssueSerializer, LabelSerializer,
 )
-from .services import UNSET, move_issue
+from .services import (
+    UNSET, add_attachment, add_comment, can_delete_comment, can_edit_comment, delete_attachment, delete_comment,
+    delete_issue, edit_comment, move_issue, validate_hierarchy,
+)
 
 Role = Membership.Role
 
@@ -45,7 +51,8 @@ def display_issue_value(field, value, workspace):
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-class IssueViewSet(TenantModelViewSet):
+@extend_schema_view(update=extend_schema(exclude=True))  # PUT /issues/{key}/ is gone; use PATCH
+class IssueViewSet(CappedListMixin, TenantModelViewSet):
     queryset = Issue.objects.all()
     lookup_field = "key"
     lookup_value_regex = r"[A-Za-z][A-Za-z0-9]*-\d+"
@@ -72,8 +79,44 @@ class IssueViewSet(TenantModelViewSet):
         self.kwargs[self.lookup_field] = self.kwargs[self.lookup_field].upper()
         return super().get_object()
 
+    def update(self, request, *args, **kwargs):
+        if not kwargs.get("partial"):
+            raise exceptions.MethodNotAllowed("PUT", detail="Use PATCH to update an issue.")
+        return super().update(request, *args, **kwargs)
+
+    def list(self, request, *args, **kwargs):
+        # Unpaged lists (board, backlog, pickers, command palette) must be narrowed; ?page= is unrestricted.
+        params = request.query_params
+        if "page" not in params and not (params.get("project", "").strip() or params.get("search", "").strip()):
+            raise exceptions.ValidationError({"detail": "Filter by project or search, or request a page with ?page=."})
+        return super().list(request, *args, **kwargs)
+
+    def _locked_status_check(self, serializer, project, instance=None):
+        """Take the shared project lock, then re-check what concurrent edits could invalidate:
+        the chosen status still exists, and the parent/type hierarchy (including cycles) still holds."""
+        project = lock_project(project.pk)
+        if project.is_archived:
+            raise exceptions.ValidationError({"project": [ARCHIVED_MESSAGE]})
+        data = serializer.validated_data
+        status = data.get("status")
+        if status is not None and not WorkflowStatus.objects.filter(pk=status.pk).exists():
+            raise exceptions.ValidationError({"status": ["This status no longer exists. Reload and try again."]})
+        parent = data["parent"] if "parent" in data else getattr(instance, "parent", None)
+        if parent is not None:
+            parent = Issue.objects.filter(pk=parent.pk).first()  # fresh row: its own parent may have changed
+            if parent is None:
+                raise exceptions.ValidationError({"parent": ["The parent issue no longer exists."]})
+        issue_type = data.get("issue_type", getattr(instance, "issue_type", Issue.IssueType.TASK))
+        validate_hierarchy(
+            project=project, instance=instance, issue_type=issue_type, parent=parent,
+            parent_changed=instance is None or ("parent" in data and data["parent"] != instance.parent),
+            type_changed=instance is not None and issue_type != instance.issue_type,
+        )
+
     def perform_create(self, serializer):
-        issue = serializer.save(workspace=self.workspace, reporter=self.request.user)
+        with transaction.atomic():
+            self._locked_status_check(serializer, serializer.validated_data["project"])
+            issue = serializer.save(workspace=self.workspace, reporter=self.request.user)
         record_issue_event(issue, self.request.user, AuditLog.Action.CREATED, {"title": {"to": issue.title}})
 
     def perform_update(self, serializer):
@@ -82,7 +125,9 @@ class IssueViewSet(TenantModelViewSet):
                    "assignee_id", "story_points", "due_date")
         before = {name: getattr(issue, name) for name in tracked}
         before_labels = set(issue.labels.values_list("name", flat=True))
-        serializer.save()
+        with transaction.atomic():
+            self._locked_status_check(serializer, issue.project, instance=issue)
+            serializer.save()
         changes = {}
         for name in tracked:
             old, new = before[name], getattr(issue, name)
@@ -101,8 +146,9 @@ class IssueViewSet(TenantModelViewSet):
     def perform_destroy(self, instance):
         if instance.reporter_id != self.request.user.id and not self.membership.has_role(Role.ADMIN):
             raise exceptions.PermissionDenied("Only the reporter or a workspace admin can delete this issue.")
-        record_issue_event(instance, self.request.user, AuditLog.Action.DELETED, {"title": {"from": instance.title}})
-        instance.delete()
+        with transaction.atomic():
+            record_issue_event(instance, self.request.user, AuditLog.Action.DELETED, {"title": {"from": instance.title}})
+            delete_issue(instance)
 
     @extend_schema(request=IssueMoveSerializer, responses=IssueSerializer)
     @action(detail=True, methods=["post"])
@@ -136,15 +182,15 @@ class IssueViewSet(TenantModelViewSet):
     def comments(self, request, key=None):
         issue = self.get_object()
         if request.method == "GET":
-            comments = issue.comments.select_related("author").prefetch_related("mentions")
-            return Response(IssueCommentSerializer(comments, many=True).data)
+            # Conversation order (oldest first). Unpaged: the latest 200; ?page= pages 50 at a time.
+            comments = issue.comments.select_related("author").prefetch_related("mentions").order_by("created_at", "id")
+            return paginate_or_cap(self, request, comments, IssueCommentSerializer, newest_first=False)
         payload = IssueCommentCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        comment = IssueComment.objects.create(
-            workspace=self.workspace, issue=issue, author=request.user, body=payload.validated_data["body"]
-        )
-        comment.mentions.set(mentioned_members(self.workspace, comment.body))
-        record_issue_event(issue, request.user, AuditLog.Action.COMMENTED, {"comment_id": comment.pk})
+        body = payload.validated_data["body"]
+        with transaction.atomic():
+            comment = add_comment(issue, request.user, body, mentioned_members(self.workspace, body))
+            record_issue_event(issue, request.user, AuditLog.Action.COMMENTED, {"comment_id": comment.pk})
         return Response(IssueCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(parameters=[OpenApiParameter("comment_id", int, OpenApiParameter.PATH)])
@@ -154,22 +200,24 @@ class IssueViewSet(TenantModelViewSet):
         comment = issue.comments.select_related("author").filter(pk=comment_id).first()
         if comment is None:
             raise exceptions.NotFound("Comment not found.")
-        if comment.author_id != request.user.id and not self.membership.has_role(Role.ADMIN):
-            raise exceptions.PermissionDenied("Only the comment author or a workspace admin can change this comment.")
         if request.method == "DELETE":
-            record_issue_event(issue, request.user, AuditLog.Action.COMMENTED,
-                               {"comment_id": comment.pk, "deleted": True})
-            comment.delete()
+            if not can_delete_comment(comment, self.membership):
+                raise exceptions.PermissionDenied("Only the comment author or a workspace admin can delete this comment.")
+            with transaction.atomic():
+                record_issue_event(issue, request.user, AuditLog.Action.COMMENTED,
+                                   {"comment_id": comment.pk, "deleted": True})
+                delete_comment(comment)
             return Response(status=status.HTTP_204_NO_CONTENT)
+        if not can_edit_comment(comment, request.user):
+            raise exceptions.PermissionDenied("Only the comment's author can edit it.")
         payload = IssueCommentCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        comment.body = payload.validated_data["body"]
-        comment.save(update_fields=["body", "updated_at"])
-        before = set(comment.mentions.values_list("pk", flat=True))
-        comment.mentions.set(mentioned_members(self.workspace, comment.body))
-        added = set(comment.mentions.values_list("pk", flat=True)) - before
-        record_issue_event(issue, request.user, AuditLog.Action.COMMENTED,
-                           {"comment_id": comment.pk, "edited": True, "new_mentions": sorted(added)})
+        body = payload.validated_data["body"]
+        with transaction.atomic():
+            added = edit_comment(comment, body, mentioned_members(self.workspace, body))
+            # Only newly added mentions are notified; the event is dispatched on commit.
+            record_issue_event(issue, request.user, AuditLog.Action.COMMENTED,
+                               {"comment_id": comment.pk, "edited": True, "new_mentions": added})
         return Response(IssueCommentSerializer(comment).data)
 
     @extend_schema(responses=IssueAttachmentSerializer(many=True), request=IssueAttachmentUploadSerializer)
@@ -182,17 +230,11 @@ class IssueViewSet(TenantModelViewSet):
         payload.is_valid(raise_exception=True)
         uploaded = payload.validated_data["file"]
         check_file_size(self.workspace, uploaded.size)
-        attachment = IssueAttachment.objects.create(
-            workspace=self.workspace,
-            issue=issue,
-            uploaded_by=request.user,
-            file=uploaded,
-            original_name=uploaded.name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:255],
-            content_type=uploaded.content_type or "application/octet-stream",
-            size=uploaded.size,
+        attachment = add_attachment(
+            issue, request.user, uploaded,
+            record=lambda a: record_issue_event(issue, request.user, AuditLog.Action.ATTACHED,
+                                                {"attachment_id": a.pk, "name": a.original_name}),
         )
-        record_issue_event(issue, request.user, AuditLog.Action.ATTACHED,
-                           {"attachment_id": attachment.pk, "name": attachment.original_name})
         return Response(IssueAttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(responses=AuditLogSerializer(many=True))
@@ -201,8 +243,8 @@ class IssueViewSet(TenantModelViewSet):
         issue = self.get_object()
         events = AuditLog.objects.for_workspace(self.workspace).filter(
             project_id=issue.project_id, issue_key=issue.key
-        ).select_related("actor")
-        return Response(AuditLogSerializer(events, many=True).data)
+        ).select_related("actor").order_by("-created_at", "-id")
+        return paginate_or_cap(self, request, events, AuditLogSerializer, newest_first=True)
 
 
 class IssueAttachmentViewSet(WorkspaceScopedMixin, viewsets.GenericViewSet):
@@ -233,9 +275,10 @@ class IssueAttachmentViewSet(WorkspaceScopedMixin, viewsets.GenericViewSet):
             raise exceptions.PermissionDenied("Only the uploader or a workspace admin can remove this attachment.")
         issue = attachment.issue
         name = attachment.original_name
-        attachment.delete()  # the post_delete signal removes the file
-        record_issue_event(issue, request.user, AuditLog.Action.DETACHED,
-                           {"attachment_id": kwargs["pk"], "name": name})
+        with transaction.atomic():
+            delete_attachment(attachment)  # the file itself is removed after commit
+            record_issue_event(issue, request.user, AuditLog.Action.DETACHED,
+                               {"attachment_id": kwargs["pk"], "name": name})
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -246,8 +289,19 @@ class LabelViewSet(TenantModelViewSet):
     search_fields = ["name"]
 
     def perform_create(self, serializer):
-        label = serializer.save(workspace=self.workspace)
+        try:
+            with transaction.atomic():
+                label = serializer.save(workspace=self.workspace)
+        except IntegrityError:  # unique (workspace, name) is the final safeguard
+            raise exceptions.ValidationError({"name": ["A label with this name already exists."]})
         record_event(self.workspace, self.request.user, AuditLog.Action.CREATED, AuditLog.Entity.LABEL, label.name)
+
+    def perform_update(self, serializer):
+        try:
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            raise exceptions.ValidationError({"name": ["A label with this name already exists."]})
 
     def perform_destroy(self, instance):
         record_event(self.workspace, self.request.user, AuditLog.Action.DELETED, AuditLog.Entity.LABEL, instance.name)
@@ -258,6 +312,7 @@ class AuditLogViewSet(WorkspaceScopedMixin, mixins.ListModelMixin, viewsets.Gene
     """Workspace-wide history for admins. Read-only: the API offers no way to edit or delete it."""
 
     serializer_class = AuditLogSerializer
+    pagination_class = AlwaysPageNumberPagination  # never an unbounded history, even without ?page=
     required_roles = {"list": Role.ADMIN}
     filterset_class = AuditLogFilter
     search_fields = ["entity_label"]

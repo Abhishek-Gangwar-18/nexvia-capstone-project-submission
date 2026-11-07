@@ -1,9 +1,15 @@
-import mimetypes
+import calendar
+import codecs
+import re
+from datetime import date
 from pathlib import PurePath
 
 from django.conf import settings
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
+
+from apps.projects.services import ARCHIVED_MESSAGE
 
 from apps.accounts.serializers import UserMiniSerializer
 from apps.core.fields import TenantPrimaryKeyRelatedField, WorkspaceMemberField
@@ -12,10 +18,35 @@ from apps.projects.models import Project, Sprint, WorkflowStatus
 from .models import Issue, IssueAttachment, AuditLog, IssueComment, Label
 
 
+HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+DUE_DATE_YEARS = 10
+STORY_POINTS_MAX = 100
+
+
+def shift_years(day, years):
+    """Same calendar day `years` away; Feb 29 falls back to Feb 28 in non-leap years."""
+    year = day.year + years
+    return date(year, day.month, min(day.day, calendar.monthrange(year, day.month)[1]))
+
+
+class StrictIntegerField(serializers.IntegerField):
+    """A JSON integer only: true/false, 2.5 and "3" are rejected instead of coerced."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, bool) or not isinstance(data, int):
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
 class LabelSerializer(serializers.ModelSerializer):
     class Meta:
         model = Label
         fields = ["id", "name", "color"]
+
+    def validate_color(self, value):
+        if not HEX_COLOR.fullmatch(value):
+            raise serializers.ValidationError("Color must be a hex color such as #64748b.")
+        return value
 
     def validate_name(self, value):
         value = value.strip().lower()
@@ -55,6 +86,7 @@ class IssueSerializer(serializers.ModelSerializer):
     assignee_detail = UserMiniSerializer(source="assignee", read_only=True)
     reporter_detail = UserMiniSerializer(source="reporter", read_only=True)
     labels = TenantPrimaryKeyRelatedField(queryset=Label.objects.all(), many=True, required=False)
+    story_points = StrictIntegerField(min_value=0, max_value=STORY_POINTS_MAX, required=False, allow_null=True)
 
     class Meta:
         model = Issue
@@ -64,6 +96,15 @@ class IssueSerializer(serializers.ModelSerializer):
             "reporter_detail", "story_points", "due_date", "rank", "labels", "resolved_at", "created_at", "updated_at",
         ]
         read_only_fields = ["key", "number", "rank", "resolved_at", "created_at", "updated_at"]
+
+    def validate_due_date(self, value):
+        if value is None:
+            return value
+        today = timezone.localdate()
+        earliest, latest = shift_years(today, -DUE_DATE_YEARS), shift_years(today, DUE_DATE_YEARS)
+        if not earliest <= value <= latest:
+            raise serializers.ValidationError(f"Due date must be between {earliest} and {latest}.")
+        return value
 
     def validate_title(self, value):
         value = value.strip()
@@ -76,7 +117,7 @@ class IssueSerializer(serializers.ModelSerializer):
         project = attrs.get("project") or getattr(instance, "project", None)
         errors = {}
         if project is not None and project.is_archived:
-            raise serializers.ValidationError({"project": "This project is archived. Restore it to make changes."})
+            raise serializers.ValidationError({"project": ARCHIVED_MESSAGE})
         if instance and "project" in attrs and attrs["project"].pk != instance.project_id:
             errors["project"] = "Issues can't be moved between projects."
 
@@ -96,16 +137,7 @@ class IssueSerializer(serializers.ModelSerializer):
             elif sprint.state == Sprint.State.CLOSED and (not instance or instance.sprint_id != sprint.pk):
                 errors["sprint"] = "Issues can't be added to a closed sprint."
 
-        parent = attrs.get("parent")
-        if parent is not None:
-            if parent.project_id != project.pk:
-                errors["parent"] = "The parent issue belongs to a different project."
-            elif instance and parent.pk == instance.pk:
-                errors["parent"] = "An issue can't be its own parent."
-            elif parent.issue_type != Issue.IssueType.EPIC and attrs.get(
-                "issue_type", getattr(instance, "issue_type", None)
-            ) != Issue.IssueType.SUBTASK:
-                errors["parent"] = "Only sub-tasks can have a non-epic parent."
+        # Parent/type rules (hierarchy and cycles) run under the project lock: see services.validate_hierarchy.
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -184,15 +216,52 @@ class IssueAttachmentUploadSerializer(serializers.Serializer):
         ".zip": {"application/zip", "application/x-zip-compressed"},
     }
 
+    # SVG, HTML and every other type are not allowed: they can carry active content.
+    SIGNATURES = {
+        ".png": (b"\x89PNG\r\n\x1a\n",),
+        ".jpg": (b"\xff\xd8\xff",),
+        ".jpeg": (b"\xff\xd8\xff",),
+        ".gif": (b"GIF87a", b"GIF89a"),
+        ".pdf": (b"%PDF-",),
+        ".zip": (b"PK\x03\x04", b"PK\x05\x06"),  # normal and empty archives
+    }
+    TEXT_TYPES = {".csv", ".md", ".txt"}
+
     def validate_file(self, value):
         extension = PurePath(value.name).suffix.lower()
-        allowed = self.ALLOWED_TYPES.get(extension)
-        if not allowed:
+        if extension not in self.ALLOWED_TYPES:
             raise serializers.ValidationError("Unsupported file type. Allowed: CSV, GIF, JPEG, Markdown, PDF, PNG, TXT, WebP, ZIP.")
-        content_type = (value.content_type or mimetypes.guess_type(value.name)[0] or "").lower()
-        if content_type not in allowed and content_type != "application/octet-stream":
-            raise serializers.ValidationError("File extension and content type do not match.")
+        if value.size > settings.FILE_UPLOAD_HARD_LIMIT:
+            raise serializers.ValidationError(f"Files can be at most {settings.FILE_UPLOAD_HARD_LIMIT // (1024 * 1024)} MB.")
+        # The extension and Content-Type both come from the client, so the bytes decide.
+        value.seek(0)
+        head = value.read(16)
+        if extension == ".webp":
+            matches = head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+        elif extension in self.TEXT_TYPES:
+            matches = self._is_utf8_text(value)
+        else:
+            matches = head.startswith(self.SIGNATURES[extension])
+        value.seek(0)
+        if not matches:
+            raise serializers.ValidationError("The file's contents don't match its extension.")
+        # Store the type we verified, never the client's header (octet-stream used to bypass the check).
+        value.content_type = sorted(self.ALLOWED_TYPES[extension])[0]
         return value
+
+    @staticmethod
+    def _is_utf8_text(value):
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        value.seek(0)
+        try:
+            for chunk in value.chunks():
+                if b"\x00" in chunk:
+                    return False
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return False
+        return True
 
 
 class AuditLogSerializer(serializers.ModelSerializer):

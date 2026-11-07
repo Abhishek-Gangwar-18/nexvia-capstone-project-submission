@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.db.models.signals import m2m_changed, post_delete
 from django.dispatch import receiver
@@ -31,5 +32,9 @@ def release_work_of_removed_member(sender, instance, **kwargs):
 
 @receiver(post_delete, sender=IssueAttachment)
 def remove_attachment_file(sender, instance, **kwargs):
-    if instance.file:
-        instance.file.delete(save=False)
+    """Delete the stored file only after the DB transaction commits: a rollback can restore rows, but
+    never a file already removed from disk or S3. Cascades (issue/project/workspace delete) go through here too."""
+    if not instance.file:
+        return
+    storage, name = instance.file.storage, instance.file.name
+    transaction.on_commit(lambda: storage.delete(name))
