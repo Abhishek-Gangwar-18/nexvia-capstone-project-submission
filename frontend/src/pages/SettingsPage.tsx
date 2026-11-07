@@ -1,4 +1,4 @@
-import { Building, Check, CreditCard, Globe, Plus, Tag, Trash, TriangleAlert } from "lucide-react";
+import { Building, Check, Crown, CreditCard, Globe, Plus, Tag, Trash, TriangleAlert } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -9,10 +9,13 @@ import { WebhooksSection } from "@/components/settings/AutomationSections";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Field, Input } from "@/components/ui/Input";
 import { ConfirmDialog } from "@/components/ui/Modal";
-import { useCreateLabel, useDeleteLabel, useDeleteWorkspace, useLabels, useUpdateWorkspace } from "@/hooks/queries";
+import { Select } from "@/components/ui/Select";
+import {
+  useCreateLabel, useDeleteLabel, useDeleteWorkspace, useLabels, useMembers, useTransferOwnership, useUpdateWorkspace,
+} from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { PLANS, PROJECT_COLORS } from "@/lib/constants";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, formatDate, getErrorMessage, getFieldErrors } from "@/lib/utils";
 import { useUI } from "@/store/ui";
 
 function Section({ icon, title, description, children, danger }: { icon: ReactNode; title: string; description: string; children: ReactNode; danger?: boolean }) {
@@ -46,6 +49,14 @@ export default function SettingsPage() {
   const [labelColor, setLabelColor] = useState(PROJECT_COLORS[0]);
   const [confirming, setConfirming] = useState(false);
   const [confirmText, setConfirmText] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const deleteErrors = remove.isError ? getFieldErrors(remove.error) : {};
+  const members = useMembers().data ?? [];
+  const transfer = useTransferOwnership();
+  const [newOwner, setNewOwner] = useState<number | null>(null);
+  const [transferring, setTransferring] = useState(false);
+  const candidates = members.filter((m) => m.role !== "owner");
+  const newOwnerName = candidates.find((m) => m.id === newOwner)?.user.display_name;
 
   useEffect(() => setName(workspace.name), [workspace.name]);
 
@@ -141,6 +152,27 @@ export default function SettingsPage() {
 
 
         {isOwner && (
+          <Section icon={<Crown className="size-4" />} title="Transfer ownership" description="Hand the workspace to another member. You'll stay on as an admin.">
+            {candidates.length === 0 ? (
+              <p className="text-sm text-slate-500">Invite someone first: ownership can only go to a member who has joined.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                <Select
+                  className="w-64"
+                  value={newOwner}
+                  onChange={setNewOwner}
+                  options={[
+                    { value: null, label: "Choose a member" },
+                    ...candidates.map((m) => ({ value: m.id as number | null, label: `${m.user.display_name} (${m.role})` })),
+                  ]}
+                />
+                <Button disabled={newOwner === null} onClick={() => setTransferring(true)}>Transfer</Button>
+              </div>
+            )}
+          </Section>
+        )}
+
+        {isOwner && (
           <Section danger icon={<TriangleAlert className="size-4" />} title="Danger zone" description="Deleting a workspace removes all of its data. This can't be undone.">
             <Button variant="danger" icon={<Trash className="size-4" />} onClick={() => setConfirming(true)}>
               Delete workspace
@@ -150,8 +182,27 @@ export default function SettingsPage() {
       </PageBody>
 
       <ConfirmDialog
+        open={transferring}
+        onClose={() => setTransferring(false)}
+        title={`Make ${newOwnerName ?? "this member"} the owner?`}
+        description="They get full control, including billing and deleting the workspace. You become an admin."
+        confirmLabel="Transfer ownership"
+        loading={transfer.isPending}
+        onConfirm={() => {
+          if (newOwner === null) return;
+          transfer.mutate(newOwner, {
+            onSuccess: () => {
+              setTransferring(false);
+              setNewOwner(null);
+              toast.success(`${newOwnerName} now owns ${workspace.name}`);
+            },
+          });
+        }}
+      />
+
+      <ConfirmDialog
         open={confirming}
-        onClose={() => { setConfirming(false); setConfirmText(""); }}
+        onClose={() => { setConfirming(false); setConfirmText(""); setConfirmPassword(""); remove.reset(); }}
         title={`Delete ${workspace.name}?`}
         description="Every project, issue, sprint, label and membership will be permanently deleted."
         confirmLabel="Delete forever"
@@ -161,7 +212,7 @@ export default function SettingsPage() {
             toast.error(`Type ${workspace.slug} to confirm`);
             return;
           }
-          remove.mutate(undefined, {
+          remove.mutate({ confirm: confirmText, password: confirmPassword }, {
             onSuccess: async () => {
               setLastWorkspace(null);
               await qc.invalidateQueries({ queryKey: ["workspaces"] });
@@ -175,6 +226,12 @@ export default function SettingsPage() {
           Type <strong className="font-mono">{workspace.slug}</strong> to confirm.
           <Input className="mt-2 font-mono" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} />
         </label>
+        <Field label="Your password" error={deleteErrors.password || deleteErrors.confirm} className="mt-3">
+          <Input type="password" autoComplete="current-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} invalid={!!deleteErrors.password} />
+        </Field>
+        {remove.isError && !deleteErrors.password && !deleteErrors.confirm && (
+          <p className="mt-2 text-sm text-rose-600">{getErrorMessage(remove.error)}</p>
+        )}
       </ConfirmDialog>
     </>
   );

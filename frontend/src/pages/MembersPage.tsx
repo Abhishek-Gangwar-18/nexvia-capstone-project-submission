@@ -18,10 +18,13 @@ import { cn, formatDate, getErrorMessage, isPlanLimit, timeAgo } from "@/lib/uti
 import { useAuth } from "@/store/auth";
 import type { Invitation, Member, Role } from "@/types";
 
-const assignableRoles: Option<Role>[] = (["admin", "member", "viewer"] as Role[]).map((role) => {
-  const Icon = ROLES[role].icon;
-  return { value: role, label: ROLES[role].label, icon: <Icon className="size-4 text-slate-400" /> };
-});
+/** Only the owner may grant the admin role (mirrors the backend rule). */
+function assignableRoles(isOwner: boolean): Option<Role>[] {
+  return ((isOwner ? ["admin", "member", "viewer"] : ["member", "viewer"]) as Role[]).map((role) => {
+    const Icon = ROLES[role].icon;
+    return { value: role, label: ROLES[role].label, icon: <Icon className="size-4 text-slate-400" /> };
+  });
+}
 
 function RoleBadge({ role }: { role: Role }) {
   const Icon = ROLES[role].icon;
@@ -39,7 +42,7 @@ function copy(text: string) {
 
 export default function MembersPage() {
   const workspace = useWorkspace();
-  const { isAdmin } = usePermissions();
+  const { isAdmin, isOwner } = usePermissions();
   const me = useAuth((s) => s.user);
   const navigate = useNavigate();
   const { data: members = [], isLoading } = useMembers();
@@ -87,7 +90,8 @@ export default function MembersPage() {
             <ul className="divide-y divide-slate-100 dark:divide-slate-800">
               {members.map((member) => {
                 const isMe = member.user.id === me?.id;
-                const editable = isAdmin && !isMe && member.role !== "owner";
+                // Admins manage members and viewers; only the owner manages admins.
+                const editable = isAdmin && !isMe && member.role !== "owner" && (isOwner || member.role !== "admin");
                 return (
                   <li key={member.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
                     <Avatar user={member.user} size="lg" />
@@ -113,7 +117,7 @@ export default function MembersPage() {
                             { onSuccess: () => toast.success(`${member.user.display_name} is now ${ROLES[role].label.toLowerCase()}`) },
                           )
                         }
-                        options={assignableRoles}
+                        options={assignableRoles(isOwner)}
                       />
                     ) : (
                       <RoleBadge role={member.role} />
@@ -208,6 +212,7 @@ function InviteRow({ invite, onRevoke }: { invite: Invitation; onRevoke: () => v
 }
 
 function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { isOwner } = usePermissions();
   const create = useCreateInvitation();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
@@ -259,7 +264,7 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
             <Input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="teammate@company.com" />
           </Field>
           <Field label="Role" hint={ROLES[role].description}>
-            <Select value={role} onChange={setRole} options={assignableRoles} />
+            <Select value={role} onChange={setRole} options={assignableRoles(isOwner)} />
           </Field>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={close}>Cancel</Button>

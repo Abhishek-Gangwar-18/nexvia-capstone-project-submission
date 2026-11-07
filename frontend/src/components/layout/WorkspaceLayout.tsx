@@ -18,6 +18,8 @@ export function RequireAuth() {
   const access = useAuth((s) => s.access);
   useMe();
   if (!access) {
+    // Logging out already navigates to /login; this tree can render once more before it unmounts.
+    if (window.location.pathname === "/login") return null;
     const next = window.location.pathname + window.location.search;
     return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
   }

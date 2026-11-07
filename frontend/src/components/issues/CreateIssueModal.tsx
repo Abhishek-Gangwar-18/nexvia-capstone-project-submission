@@ -86,7 +86,8 @@ export function CreateIssueModal() {
         status: statusId ?? undefined,
         assignee: form.assignee,
         sprint: form.sprintId,
-        parent: showEpic ? form.parentId : null,
+        // Epic picker for story/task/bug; a sub-task keeps the parent it was opened from ("Add sub-task").
+        parent: showEpic || form.issueType === "subtask" ? form.parentId : null,
         story_points: form.storyPoints === "" ? null : Number(form.storyPoints),
         due_date: form.dueDate || null,
         labels: form.labels,

@@ -15,7 +15,7 @@ import { useUI } from "@/store/ui";
 export default function ProjectLayout() {
   const { key = "" } = useParams();
   const workspace = useWorkspace();
-  const { canEdit, isAdmin } = usePermissions();
+  const { canEdit, isAdmin, isOwner } = usePermissions();
   const { data: project, isLoading, isError } = useProject(key);
   const update = useUpdateProject(key);
   const remove = useDeleteProject();
@@ -86,8 +86,13 @@ export default function ProjectLayout() {
                       { onSuccess: () => toast.success(project.is_archived ? "Project restored" : "Project archived") },
                     ),
                 },
-                { separator: true, label: "" },
-                { label: "Delete project", icon: <Trash className="size-4" />, danger: true, onClick: () => setDeleting(true) },
+                // Deleting destroys every issue, file and sprint, so it's owner-only (enforced by the API too).
+                ...(isOwner
+                  ? [
+                      { separator: true, label: "" },
+                      { label: "Delete project", icon: <Trash className="size-4" />, danger: true, onClick: () => setDeleting(true) },
+                    ]
+                  : []),
               ]}
             />
           )}
@@ -131,7 +136,7 @@ export default function ProjectLayout() {
             toast.error(`Type ${project.key} to confirm`);
             return;
           }
-          remove.mutate(project.key, {
+          remove.mutate({ key: project.key, confirm: confirmText }, {
             onSuccess: () => {
               toast.success("Project deleted");
               navigate(`/w/${workspace.slug}/projects`);

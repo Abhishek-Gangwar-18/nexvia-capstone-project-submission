@@ -133,7 +133,9 @@ function Comments({ issueKey, members }: { issueKey: string; members: UserMini[]
           <CommentRow
             key={comment.id}
             comment={comment}
-            canEdit={canEdit && (isAdmin || comment.author?.id === user?.id)}
+            // Only the author edits (no impersonation); the author or an admin may delete.
+            canEdit={canEdit && comment.author?.id === user?.id}
+            canDelete={canEdit && (isAdmin || comment.author?.id === user?.id)}
             onSave={(body) => edit.mutate({ id: comment.id, body })}
             onDelete={() => remove.mutate(comment.id)}
           />
@@ -146,11 +148,13 @@ function Comments({ issueKey, members }: { issueKey: string; members: UserMini[]
 function CommentRow({
   comment,
   canEdit,
+  canDelete,
   onSave,
   onDelete,
 }: {
   comment: IssueComment;
   canEdit: boolean;
+  canDelete: boolean;
   onSave: (body: string) => void;
   onDelete: () => void;
 }) {
@@ -176,14 +180,18 @@ function CommentRow({
           <span className="text-[10px] text-slate-400" title={formatDate(comment.created_at)}>
             {timeAgo(comment.created_at)}
           </span>
-          {canEdit && (
+          {(canEdit || canDelete) && (
             <span className="ml-auto flex gap-1">
-              <button className="text-[10px] text-slate-400 hover:text-brand-600" onClick={() => setEditing((v) => !v)}>
-                {editing ? "Cancel" : "Edit"}
-              </button>
-              <button className="text-[10px] text-slate-400 hover:text-rose-600" onClick={() => setConfirming(true)}>
-                Delete
-              </button>
+              {canEdit && (
+                <button className="text-[10px] text-slate-400 hover:text-brand-600" onClick={() => setEditing((v) => !v)}>
+                  {editing ? "Cancel" : "Edit"}
+                </button>
+              )}
+              {canDelete && (
+                <button className="text-[10px] text-slate-400 hover:text-rose-600" onClick={() => setConfirming(true)}>
+                  Delete
+                </button>
+              )}
             </span>
           )}
         </div>

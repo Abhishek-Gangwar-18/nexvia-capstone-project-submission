@@ -17,6 +17,7 @@ const ACTIONS: Record<string, string> = {
   detached: "removed a file from", deleted: "deleted", archived: "archived", restored: "restored", started: "started",
   completed: "completed", invited: "invited", revoked: "revoked the invitation for", joined: "joined as",
   left: "left as", removed: "removed", role_changed: "changed the role of", secret_rotated: "rotated the secret of", plan_changed: "changed the plan of",
+  ownership_transferred: "transferred ownership of",
 };
 
 const ENTITIES = ["issue", "project", "sprint", "workflow", "board", "member", "invitation", "workspace", "label", "webhook", "billing"];

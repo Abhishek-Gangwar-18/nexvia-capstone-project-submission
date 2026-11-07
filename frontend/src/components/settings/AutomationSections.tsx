@@ -19,7 +19,24 @@ const DELIVERY_BADGE: Record<WebhookDelivery["state"], string> = {
   delivered: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300",
   failed: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300",
   pending: "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
+  processing: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300",
 };
+
+/** Shows a signing secret exactly once. It lives only in component state and is dropped on "Done". */
+function OneTimeSecret({ secret, onDone }: { secret: string; onDone: () => void }) {
+  return (
+    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+      <p className="font-semibold">Copy this signing secret now. It won't be shown again.</p>
+      <div className="mt-2 flex gap-2">
+        <Input readOnly value={secret} onFocus={(e) => e.target.select()} className="font-mono text-xs" />
+        <Button size="sm" icon={<Copy className="size-4" />} onClick={() => { navigator.clipboard.writeText(secret); toast.success("Signing secret copied"); }}>
+          Copy
+        </Button>
+        <Button size="sm" variant="primary" onClick={onDone}>Done</Button>
+      </div>
+    </div>
+  );
+}
 
 export function WebhooksSection() {
   const { isAdmin } = usePermissions();
@@ -29,6 +46,7 @@ export function WebhooksSection() {
   const [url, setUrl] = useState("");
   const [events, setEvents] = useState<string[]>(["issue.created", "issue.updated"]);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [revealed, setRevealed] = useState<string | null>(null);
 
   if (!isAdmin) return <p className="text-xs text-slate-400">Webhook settings are managed by workspace admins.</p>;
 
@@ -41,6 +59,8 @@ export function WebhooksSection() {
           setName("");
           setUrl("");
           setOpenId(endpoint.id);
+          setRevealed(endpoint.secret);
+          create.reset(); // don't keep the secret in the mutation cache
           toast.success("Webhook added");
         },
       },
@@ -50,6 +70,7 @@ export function WebhooksSection() {
   const endpoints = webhooks.data ?? [];
   return (
     <>
+      {revealed && <OneTimeSecret secret={revealed} onDone={() => setRevealed(null)} />}
       <form onSubmit={submit} className="mb-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Webhook name" maxLength={100} />
         <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/hooks" type="url" />
@@ -83,6 +104,7 @@ export function WebhooksSection() {
             endpoint={endpoint}
             open={openId === endpoint.id}
             onToggle={() => setOpenId((current) => (current === endpoint.id ? null : endpoint.id))}
+            onSecret={setRevealed}
           />
         ))}
       </div>
@@ -90,7 +112,9 @@ export function WebhooksSection() {
   );
 }
 
-function WebhookRow({ endpoint, open, onToggle }: { endpoint: WebhookEndpoint; open: boolean; onToggle: () => void }) {
+function WebhookRow({ endpoint, open, onToggle, onSecret }: {
+  endpoint: WebhookEndpoint; open: boolean; onToggle: () => void; onSecret: (secret: string) => void;
+}) {
   const remove = useDeleteWebhook();
   const test = useTestWebhook();
   const rotate = useRotateWebhookSecret();
@@ -112,24 +136,21 @@ function WebhookRow({ endpoint, open, onToggle }: { endpoint: WebhookEndpoint; o
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">{endpoint.name}</p>
           <p className="truncate font-mono text-[11px] text-slate-500">{endpoint.url}</p>
-          <p className="mt-1 text-[10px] text-slate-400">Events: {endpoint.events.join(", ") || "none"}</p>
+          <p className="mt-1 text-[10px] text-slate-400">
+            Events: {endpoint.events.join(", ") || "none"} · Secret <span className="font-mono">{endpoint.secret_hint}</span>
+          </p>
+          {!endpoint.is_active && (
+            <p className="mt-1 text-[10px] font-medium text-rose-600">Disabled{endpoint.disabled_reason ? `: ${endpoint.disabled_reason}` : ""}</p>
+          )}
         </div>
-        <IconButton
-          label="Copy signing secret"
-          onClick={() => {
-            navigator.clipboard.writeText(endpoint.secret);
-            toast.success("Signing secret copied");
-          }}
-        >
-          <Copy className="size-4" />
-        </IconButton>
         <IconButton
           label="Rotate signing secret"
           onClick={() =>
             rotate.mutate(endpoint.id, {
               onSuccess: ({ secret }) => {
-                navigator.clipboard.writeText(secret);
-                toast.success("Secret rotated and copied");
+                onSecret(secret);
+                rotate.reset(); // the new secret lives only in the one-time panel
+                toast.success("Secret rotated");
               },
             })
           }

@@ -120,6 +120,18 @@ export default function BillingPage() {
             <TriangleAlert className="size-4 shrink-0" /> Your subscription ends on {formatDate(subscription.current_period_end)}, then this workspace moves to Free.
           </p>
         )}
+        {(data.over_limit.projects || data.over_limit.members) && (
+          <p className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+            <span>
+              This workspace is over the {current.name} plan
+              {data.over_limit.projects && ` (${data.over_limit.projects.used}/${data.over_limit.projects.limit} active projects)`}
+              {data.over_limit.members && ` (${data.over_limit.members.used}/${data.over_limit.members.limit} members incl. invitations)`}.
+              Everything you have keeps working: you can view, edit and delete it. Adding more is blocked until you
+              upgrade, or archive projects and remove members.
+            </span>
+          </p>
+        )}
         {!data.stripe_configured && (
           <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
             Billing isn't configured on this server. Limits still apply.

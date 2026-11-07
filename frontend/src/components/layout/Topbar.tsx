@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleUser, LogOut, Menu, Monitor, Moon, Plus, Search, Sun } from "lucide-react";
+import { CircleUser, CreditCard, LogOut, Menu, Monitor, Moon, Plus, Search, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Button, IconButton } from "@/components/ui/Button";
@@ -7,6 +7,7 @@ import { Dropdown } from "@/components/ui/Dropdown";
 import { Avatar, Kbd } from "@/components/ui/Misc";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { api } from "@/lib/api";
+import { PLANS } from "@/lib/constants";
 import { useAuth } from "@/store/auth";
 import { useUI, type Theme } from "@/store/ui";
 import { NotificationBell } from "./NotificationBell";
@@ -27,9 +28,10 @@ export function useLogout() {
     } catch {
       /* token may already be invalid */
     }
+    // Leave the protected page first; clearing auth while still on it makes RequireAuth add a stale ?next=.
+    await navigate("/login", { replace: true });
     useAuth.getState().clear();
     qc.clear();
-    navigate("/login");
   };
 }
 
@@ -99,9 +101,8 @@ export function Topbar() {
         items={[
           { separator: true, label: "" },
           { label: "Profile & security", icon: <CircleUser className="size-4" />, onClick: () => navigate(`/w/${workspace.slug}/profile`) },
-          { label: "Light theme", icon: <Sun className="size-4" />, onClick: () => setTheme("light"), hint: theme === "light" ? "✓" : undefined },
-          { label: "Dark theme", icon: <Moon className="size-4" />, onClick: () => setTheme("dark"), hint: theme === "dark" ? "✓" : undefined },
-          { label: "System theme", icon: <Monitor className="size-4" />, onClick: () => setTheme("system"), hint: theme === "system" ? "✓" : undefined },
+          { label: "Plan & billing", icon: <CreditCard className="size-4" />, onClick: () => navigate(`/w/${workspace.slug}/billing`), hint: PLANS[workspace.plan].label },
+          { label: "Search & commands", icon: <Search className="size-4" />, onClick: () => setPalette(true), hint: "Ctrl K" },
           { separator: true, label: "" },
           { label: "Log out", icon: <LogOut className="size-4" />, onClick: logout, danger: true },
         ]}
