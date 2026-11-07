@@ -3,6 +3,7 @@ import secrets
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 
 from apps.core.models import TenantModel
 from apps.tenants.models import Membership
@@ -19,6 +20,14 @@ class WebhookEndpoint(TenantModel):
     events = models.JSONField(default=list)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="webhook_endpoints")
+    # Final (non-retried) delivery failures in a row; a success resets it. Total history is in deliveries.
+    consecutive_failures = models.PositiveIntegerField(default=0)
+    disabled_at = models.DateTimeField(null=True, blank=True)
+    disabled_reason = models.CharField(max_length=200, blank=True)
+
+    @property
+    def secret_hint(self):
+        return f"\u2022\u2022\u2022\u2022{self.secret[-4:]}" if self.secret else ""
 
     class Meta:
         ordering = ["name", "id"]
@@ -32,10 +41,13 @@ class WebhookEndpoint(TenantModel):
 class WebhookDelivery(TenantModel):
     class State(models.TextChoices):
         PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
         DELIVERED = "delivered", "Delivered"
         FAILED = "failed", "Failed"
 
     endpoint = models.ForeignKey(WebhookEndpoint, on_delete=models.CASCADE, related_name="deliveries")
+    # Manual redeliveries are new rows pointing at the original, so history is never overwritten.
+    redelivery_of = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="redeliveries")
     event_id = models.UUIDField()
     event = models.CharField(max_length=80)
     payload = models.JSONField()
@@ -46,10 +58,20 @@ class WebhookDelivery(TenantModel):
     last_error = models.TextField(blank=True)
     next_attempt_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+    # Worker lease: a claimed row is PROCESSING until lease_expires_at; after that another worker may reclaim it.
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    claim_token = models.CharField(max_length=64, blank=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]
-        constraints = [models.UniqueConstraint(fields=["endpoint", "event_id"], name="unique_webhook_event_delivery")]
+        constraints = [
+            # One original delivery per event and endpoint; redeliveries reuse the event_id on purpose.
+            models.UniqueConstraint(
+                fields=["endpoint", "event_id"], condition=Q(redelivery_of__isnull=True), name="unique_webhook_event_delivery"
+            ),
+        ]
+        indexes = [models.Index(fields=["state", "lease_expires_at"], name="delivery_state_lease")]
 
 
 class Notification(TenantModel):
@@ -99,7 +121,14 @@ class WorkspaceReport(TenantModel):
     error = models.CharField(max_length=500, blank=True)
 
     class Meta:
-        ordering = ["-created_at"]
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            # At most one pending build per identical request; NULL project/sprint count as equal.
+            models.UniqueConstraint(
+                fields=["workspace", "report_type", "project", "sprint"], condition=Q(state="pending"),
+                nulls_distinct=False, name="one_pending_identical_report",
+            ),
+        ]
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()

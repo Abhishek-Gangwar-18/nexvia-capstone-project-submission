@@ -12,6 +12,11 @@ DONE = WorkflowStatus.Category.DONE
 VELOCITY_SPRINTS = 10
 
 
+
+class ReportError(ValueError):
+    """An expected, user-safe reason a report can't be built. Its message is shown to users;
+    any other exception is logged and replaced by a generic message."""
+
 def build_summary(report):
     issues = Issue.objects.for_workspace(report.workspace)
     return {
@@ -29,9 +34,9 @@ def build_burndown(report):
     """Remaining work per day, worked out from when each issue currently in the sprint was resolved."""
     sprint = report.sprint
     if sprint is None:
-        raise ValueError("The sprint for this report was deleted.")
+        raise ReportError("The sprint for this report was deleted.")
     if not sprint.start_date:
-        raise ValueError("This sprint has no start date.")
+        raise ReportError("This sprint has no start date.")
     today = timezone.localdate()
     start = sprint.start_date
     end = sprint.end_date or (sprint.completed_at.date() if sprint.completed_at else max(today, start))
@@ -68,7 +73,7 @@ def build_velocity(report):
     """Points delivered per closed sprint, oldest first."""
     project = report.project
     if project is None:
-        raise ValueError("The project for this report was deleted.")
+        raise ReportError("The project for this report was deleted.")
     done = Q(issues__status__category=DONE)
     latest = (
         Sprint.objects.filter(project=project, state=Sprint.State.CLOSED)

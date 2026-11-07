@@ -14,12 +14,17 @@ EVENT_CHOICES = [(f"issue.{event}", f"Issue {event}") for event in
 
 
 class WebhookEndpointSerializer(serializers.ModelSerializer):
+    """The full secret is never part of this serializer: it is returned once, by create and rotate-secret."""
+
     created_by = UserMiniSerializer(read_only=True)
+    secret_hint = serializers.CharField(read_only=True)
 
     class Meta:
         model = WebhookEndpoint
-        fields = ["id", "name", "url", "secret", "events", "is_active", "created_by", "created_at", "updated_at"]
-        read_only_fields = ["id", "secret", "created_by", "created_at", "updated_at"]
+        fields = ["id", "name", "url", "secret_hint", "events", "is_active", "consecutive_failures", "disabled_at",
+                  "disabled_reason", "created_by", "created_at", "updated_at"]
+        read_only_fields = ["id", "secret_hint", "consecutive_failures", "disabled_at", "disabled_reason",
+                            "created_by", "created_at", "updated_at"]
 
     def validate_events(self, values):
         if not isinstance(values, list) or len(values) > 8 or any(not isinstance(event, str) for event in values):
@@ -58,7 +63,7 @@ class WebhookDeliverySerializer(serializers.ModelSerializer):
     class Meta:
         model = WebhookDelivery
         fields = ["id", "event_id", "event", "state", "attempts", "response_status", "response_body",
-                  "last_error", "next_attempt_at", "delivered_at", "created_at"]
+                  "last_error", "next_attempt_at", "delivered_at", "redelivery_of", "created_at"]
 
 
 class NotificationSerializer(serializers.ModelSerializer):
