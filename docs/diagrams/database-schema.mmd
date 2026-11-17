@@ -1,0 +1,199 @@
+erDiagram
+  USER ||--o| VENDOR : "owns store"
+  USER ||--o{ ORDER : places
+  USER ||--o| CART : has
+  USER ||--o{ SESSION : "signed-in devices"
+  USER ||--o{ RATING : gives
+  USER ||--o{ REVIEW : writes
+  USER ||--o{ COUPON_REDEMPTION : redeems
+  VENDOR ||--o{ PRODUCT : lists
+  VENDOR ||--o{ COUPON : "store coupons"
+  CATEGORY ||--o{ PRODUCT : groups
+  PRODUCT ||--o{ RATING : receives
+  PRODUCT ||--o{ REVIEW : receives
+  REVIEW ||--o{ REVIEW_VOTE : "helpful votes"
+  COUPON ||--o{ COUPON_REDEMPTION : "used by"
+  ORDER ||--|{ PACKAGE : "split per vendor"
+  ORDER ||--o| COUPON_REDEMPTION : "holds / uses"
+  ORDER ||--|{ PAYMENT : "attempts"
+  ORDER ||--o{ REFUND : "refunds"
+  ORDER ||--o{ RETURN : "returns"
+  PACKAGE }o--|| VENDOR : "fulfilled by"
+
+  USER {
+    string name
+    string email UK
+    string password "bcrypt(12), select:false"
+    date passwordChangedAt "older access tokens rejected"
+    string phone UK "partial: only when set"
+    enum role "customer | vendor | admin"
+    Address[] addresses
+    ObjectId[] wishlist "max 200"
+    enum status "active | blocked"
+    string blockedReason
+  }
+  SESSION {
+    ObjectId user
+    string refreshTokenHash "SHA-256 of the current secret, select:false"
+    string previousTokenHash "detects a replayed refresh token"
+    string userAgent
+    string ip
+    date lastUsedAt
+    date expiresAt "idle limit, TTL index"
+    date maxExpiresAt "absolute limit"
+    date revokedAt
+    enum revokedReason "logout | logout_all | revoked | password_change | blocked | reuse_detected"
+  }
+  VENDOR {
+    ObjectId user UK
+    string storeName UK "case-insensitive"
+    string phone UK "partial: only when set"
+    string gstin "validated format"
+    object address "shared address schema"
+    object bank "masked account no. (manual settlement)"
+    object stripe "Express accountId, detailsSubmitted, payoutsEnabled"
+    object payoutHold "active, reason, since: payouts frozen until an admin confirms"
+    enum status "pending | approved | rejected | suspended"
+    StatusChange[] statusHistory "status, reason, by, at"
+    number commissionRate "override, null = platform default"
+    number rating "ratingSum / numRatings"
+  }
+  CATEGORY {
+    string name UK "case-insensitive"
+    string image "home tiles, banner, search suggestions"
+    enum group "Electronics | Fashion | Beauty | Home | Grocery | Sports | General"
+    number order
+    bool isActive "hidden categories hide their products"
+  }
+  PRODUCT {
+    ObjectId vendor
+    ObjectId category "checked on every write"
+    string title "max 100"
+    string description "max 500"
+    number price "2 decimals"
+    number mrp
+    number stock "never below 0"
+    string sku UK "per vendor, partial"
+    Image[] images "max 8"
+    number rating "ratingSum / numRatings"
+    number numRatings
+    number sold
+    bool isActive "seller's switch"
+    bool categoryHidden "category hidden or deleted"
+    int editVersion "bumped by every seller edit, not by sales"
+    date deletedAt "soft delete"
+    object moderation "approved | removed, reason, by, at"
+  }
+  RATING {
+    ObjectId product
+    ObjectId user "unique with product"
+    number value "1-5"
+  }
+  REVIEW {
+    ObjectId product
+    ObjectId user "name shown from the live profile"
+    number authorRating "copy of the author's rating"
+    string title "max 100"
+    string comment "10-2000"
+    Photo[] photos "max 5"
+    bool verified
+    number helpfulCount
+    object reply "seller's answer: text, by, at"
+    object moderation "visible | hidden, reason, by, at"
+  }
+  REVIEW_VOTE {
+    ObjectId review
+    ObjectId user "unique with review"
+  }
+  COUPON {
+    string code UK
+    enum type "percent (max 90) | flat"
+    number value "locked after first use"
+    number minOrder
+    number maxDiscount "percent only, null = no cap"
+    date startsAt
+    date expiresAt
+    number usageLimit "null = unlimited"
+    number usedCount "held + used"
+    number perUserLimit
+    ObjectId vendor "null = platform-wide"
+  }
+  COUPON_REDEMPTION {
+    ObjectId coupon
+    ObjectId user
+    ObjectId order
+    number slot "1..perUserLimit, unique per coupon+user while live"
+    enum status "held | used | released"
+  }
+  CART {
+    ObjectId user UK
+    Line[] items "max 50 lines"
+  }
+  ORDER {
+    string orderNumber UK
+    ObjectId customer
+    Package[] packages
+    object shippingAddress "snapshot, required fields"
+    object pricing "subtotal, discount, shipping, total"
+    object coupon "id, code, discount, vendor"
+    object payment "provider stripe|mock, status, intentId, method, currency"
+    object reservation "held | committed | released, expiresAt"
+    enum status "pending_payment | placed | processing | shipped | delivered | cancelled"
+  }
+  PACKAGE {
+    ObjectId vendor
+    Item[] items "snapshot: title, price, qty, image, category id"
+    number total
+    number commissionRate
+    number commission "platform share"
+    number vendorEarning "seller share"
+    enum status "pending | placed | packed | shipped | delivered | cancelled"
+    Event[] timeline
+    object cancellation "by, actorId, reasonCode, note, at"
+    object payout "mode stripe|manual, status pending|on_hold|releasing|released|reversed|reversal_failed, releaseAfter, transferId, amount"
+    object refund "summary of its Refund documents"
+    object returned "amount, vendorShare of refunded returns"
+  }
+  PAYMENT {
+    ObjectId order
+    enum provider "stripe | mock"
+    string intentId UK "pi_..."
+    string chargeId "funds vendor transfers"
+    number amount
+    string currency
+    enum status "created | processing | succeeded | failed | canceled"
+    Event[] events
+  }
+  REFUND {
+    ObjectId order
+    ObjectId package
+    string providerRefundId UK "re_..., partial"
+    number amount
+    enum status "pending | succeeded | failed"
+    enum reason "cancellation | return | unfulfillable"
+    object initiatedBy "by, actorId"
+    number attempts
+    string lastError
+  }
+  RETURN {
+    ObjectId order
+    ObjectId package
+    Item[] items "product, quantity, amount paid"
+    number amount "refund incl. shipping when it completes the order"
+    number vendorShare "deducted from the payout"
+    enum reasonCode "damaged | wrong_item | not_as_described | size_fit | changed_mind | other"
+    enum status "requested | approved | rejected | received | refunded | cancelled"
+    bool restocked
+    Event[] timeline
+  }
+  WEBHOOK_EVENT {
+    string eventId UK
+    string type
+    date processedAt "TTL 30 days"
+  }
+  SETTINGS {
+    number commissionRate "0-50%"
+    number shippingFee "0-1000"
+    number freeShippingThreshold "0 or above the fee"
+    Change[] history "field, from, to, by, at (last 200)"
+  }

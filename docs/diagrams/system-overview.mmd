@@ -1,0 +1,17 @@
+flowchart LR
+  subgraph Client [React SPA - Vite, TypeScript]
+    UI[Pages + components] --> RQ[TanStack Query]
+    UI --> ZS[Zustand: auth profile, theme]
+  end
+  RQ -->|REST, Bearer access token| API
+  RQ -->|refresh cookie, /auth only| API
+
+  subgraph Server [Node.js + Express API, TypeScript]
+    API[Routes -> controllers] --> SVC[Services]
+    SVC --> M[(MongoDB)]
+    SVC --> R[(Redis)]
+    SVC --> ES[(Elasticsearch)]
+    SVC --> S3[(AWS S3)]
+    SVC --> STR[Stripe: PaymentIntents, refunds, Connect]
+  end
+  STR -. webhook .-> API

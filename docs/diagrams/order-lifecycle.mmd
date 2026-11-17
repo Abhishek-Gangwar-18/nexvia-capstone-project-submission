@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> pending: checkout (stock + coupon held, 15 min)
+  pending --> placed: payment verified / webhook (stock sold, coupon used)
+  pending --> cancelled: customer cancels or window expires (stock + coupon released)
+  placed --> packed: seller
+  packed --> shipped: seller (tracking id)
+  shipped --> delivered: seller -> payout after the return window
+  placed --> cancelled: customer / seller / admin (reason code)
+  packed --> cancelled: customer / seller / admin (reason code)
+  cancelled --> [*]: restock + refund + payout reversed
+  delivered --> [*]: returns possible for 7 days

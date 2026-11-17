@@ -1,0 +1,17 @@
+sequenceDiagram
+  participant C as Customer (React)
+  participant A as Vendora API
+  participant S as Stripe
+  participant V as Vendor Express account
+  C->>A: POST /orders/checkout (Idempotency-Key)
+  A->>A: hold stock + coupon, build packages, commission
+  A->>S: paymentIntents.create(amount, currency, metadata.orderId)
+  A-->>C: publishableKey + clientSecret
+  C->>S: Payment Element: confirmPayment (card / UPI / ...)
+  C->>A: POST /orders/:id/verify { paymentIntentId }
+  A->>S: retrieve intent: succeeded, this order, exact amount
+  A->>A: finalizePayment (sale, coupon used, cart cleared)
+  S-->>A: webhook payment_intent.succeeded (backup path, same finalizePayment)
+  Note over A: package delivered -> payout.releaseAfter = delivered + 7 days
+  A->>S: transfers.create(vendor share, source_transaction) once the window passed, no open return
+  S->>V: vendor share
