@@ -3,12 +3,13 @@
 An Amazon-style marketplace where many sellers list products, customers buy from several stores in one checkout, and
 the platform splits each payment between the sellers and its own commission.
 
-**Stack:** React 19 (Vite, Tailwind CSS v4, Framer Motion, TanStack Query, Zustand, Recharts) · Node.js + Express ·
-MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Element + Connect)
+**Stack:** TypeScript throughout · React 19 (Vite, Tailwind CSS v4, Framer Motion, TanStack Query, Zustand, Recharts) ·
+Node.js + Express · MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Element + Connect)
 
 > The architecture, database schema, concurrency rules, auth flow, order lifecycle, payment split and full API list are in
 > **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. A step-by-step Postman/curl test plan for every endpoint is in
-> **[docs/API_TESTS.md](docs/API_TESTS.md)**.
+> **[docs/API_TESTS.md](docs/API_TESTS.md)**. Test results and performance numbers:
+> **[docs/TEST_RESULTS.md](docs/TEST_RESULTS.md)**; why the main choices were made: **[docs/DECISIONS.md](docs/DECISIONS.md)**.
 
 ---
 
@@ -43,10 +44,47 @@ MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Elem
 
 ---
 
+## Screenshots
+
+All screenshots are in [docs/screenshots/](docs/screenshots/) (taken from the Docker stack with demo data).
+
+**Customer**
+
+| | |
+|---|---|
+| <img src="docs/screenshots/01-home.png" width="420" alt="Home"><br>Home | <img src="docs/screenshots/02-search-typo-tolerant.png" width="420" alt="Typo-tolerant search ("iphnoe")"><br>Typo-tolerant search ("iphnoe") |
+| <img src="docs/screenshots/03-search-filters.png" width="420" alt="Category, filters and sort"><br>Category, filters and sort | <img src="docs/screenshots/04-product-page.png" width="420" alt="Product page"><br>Product page |
+| <img src="docs/screenshots/05-store-page.png" width="420" alt="Store page"><br>Store page | <img src="docs/screenshots/06-cart.png" width="420" alt="Cart: 2 sellers, 2 packages"><br>Cart: 2 sellers, 2 packages |
+| <img src="docs/screenshots/07-checkout.png" width="420" alt="Checkout"><br>Checkout | <img src="docs/screenshots/08-orders.png" width="420" alt="My orders"><br>My orders |
+| <img src="docs/screenshots/09-order-tracking.png" width="420" alt="Order tracking per package"><br>Order tracking per package | <img src="docs/screenshots/10-account.png" width="420" alt="Account"><br>Account |
+
+**Seller**
+
+| | |
+|---|---|
+| <img src="docs/screenshots/11-seller-dashboard.png" width="420" alt="Dashboard"><br>Dashboard | <img src="docs/screenshots/12-seller-products.png" width="420" alt="Products"><br>Products |
+| <img src="docs/screenshots/13-seller-product-editor.png" width="420" alt="Product editor with live preview"><br>Product editor with live preview | <img src="docs/screenshots/14-seller-orders.png" width="420" alt="Orders to fulfil"><br>Orders to fulfil |
+| <img src="docs/screenshots/15-seller-payouts.png" width="420" alt="Payouts and ledger"><br>Payouts and ledger | |
+
+**Admin**
+
+| | |
+|---|---|
+| <img src="docs/screenshots/16-admin-analytics.png" width="420" alt="Analytics"><br>Analytics | <img src="docs/screenshots/17-admin-orders.png" width="420" alt="Order management"><br>Order management |
+| <img src="docs/screenshots/18-admin-sellers.png" width="420" alt="Seller management"><br>Seller management | <img src="docs/screenshots/19-admin-settings-system.png" width="420" alt="Settings and live system status"><br>Settings and live system status |
+
+**Responsive and dark mode**
+
+| | |
+|---|---|
+| <img src="docs/screenshots/20-mobile-product.png" width="420" alt="Mobile product page"><br>Mobile product page | <img src="docs/screenshots/21-dark-mode.png" width="420" alt="Dark mode"><br>Dark mode |
+
+---
+
 ## Run it locally
 
-**Requirements:** Node.js 18.18 or newer (tested on Node 24) and a MongoDB database (a free MongoDB Atlas cluster,
-or `docker compose up -d`). Redis, Elasticsearch and S3 can use local fallbacks. To simulate payments locally,
+**Requirements:** Node.js 22.18 or newer (tested on Node 24; the API runs its TypeScript directly) and a MongoDB database (a free MongoDB Atlas cluster,
+or `docker compose --profile local-db up -d mongo`). Redis, Elasticsearch and S3 can use local fallbacks. To simulate payments locally,
 explicitly set `ALLOW_TEST_GATEWAY=true` in `server/.env`.
 
 ```bash
@@ -65,6 +103,7 @@ Open **http://localhost:5180**.
   `pnpm --dir server seed:fresh --yes` wipes the database, the app's S3 images and Redis and reseeds with every image
   uploaded to S3 (stop the API first). Demo seeding and resets are development-only.
 - **Tests:** `pnpm --dir server test` runs the API unit tests (no database or services needed).
+- **Type checks:** `pnpm --dir server typecheck` and `pnpm --dir client typecheck` (see *TypeScript* below).
 - **Live service checks:** `pnpm --dir server redis:check`, `s3:check` and `es:check` test the real Redis, S3 bucket and
   Elasticsearch from `server/.env`. Each touches only its own service (temporary keys, one test image, a temporary
   index), never MongoDB.
@@ -92,6 +131,25 @@ customer `customer@vendora.dev` (who has orders, a cart and a wishlist) plus 19 
 
 ---
 
+## Run it with Docker
+
+The whole stack runs in containers: the API (`server/Dockerfile`, Node 24 running the TypeScript directly), the web app
+(`client/Dockerfile`, a Vite build served by nginx, which also forwards API calls to the API container),
+Redis and Elasticsearch.
+
+```bash
+cp server/.env.example server/.env   # fill in MONGO_URI (Atlas), JWT_SECRET, AWS and Stripe keys
+docker compose up -d --build         # open http://localhost:8080
+docker compose logs -f api           # API logs
+docker compose down                  # stop everything
+```
+
+Compose reads `server/.env` and points the API at the `redis` and `elasticsearch` containers
+(`REDIS_URL`, `ELASTICSEARCH_NODE`, `CLIENT_URL` and `SERVER_URL` are set in `docker-compose.yml`).
+Without Atlas, start the bundled MongoDB with `docker compose --profile local-db up -d mongo` and set
+`MONGO_URI=mongodb://mongo:27017/vendora`. Locally stored uploads go in the `api-uploads` volume.
+For Stripe webhooks, forward them to the web port: `stripe listen --forward-to localhost:8080/payments/webhook`.
+
 ## Switching on the real services
 
 Edit `server/.env` (copy it from `server/.env.example`) and restart the API. The startup log and
@@ -105,7 +163,7 @@ Edit `server/.env` (copy it from `server/.env.example`) and restart the API. The
 | **AWS S3** | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | Image uploads. The bucket needs public read for `products/*`, `stores/*`, `avatars/*`, `reviews/*` and `returns/*` (or a CloudFront URL in `AWS_S3_PUBLIC_URL`); the IAM key only needs `s3:PutObject` and `s3:DeleteObject`. Run `pnpm --dir server s3:check` to test the bucket |
 | **Stripe** | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (test keys) | The Stripe Payment Element replaces the test gateway; see *Stripe setup* below |
 
-If you have Docker, `docker compose up -d redis elasticsearch` starts Redis 7 and Elasticsearch 8.19 (both bound to localhost, restarting with Docker Desktop); plain `docker compose up -d` also starts MongoDB 7.
+If you have Docker, `docker compose up -d redis elasticsearch` starts Redis 7 and Elasticsearch 8.19 (both bound to localhost, restarting with Docker Desktop); a local MongoDB 7 is `docker compose --profile local-db up -d mongo`.
 
 ### Stripe setup (payments, refunds, vendor payouts)
 
@@ -151,6 +209,8 @@ error and shows in Admin → Payments.
 
 **Backend → Render** (`render.yaml` included) or any Node host
 - Root directory: `server`, build command `pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/health`
+- Node 22.18 or newer (`render.yaml` sets `NODE_VERSION=24`): the API is TypeScript that Node runs directly, so there is no build step
+- Or deploy the container: `server/Dockerfile` builds a ready-to-run API image
 - Environment: `NODE_ENV=production`, `MONGO_URI` (Atlas), `JWT_SECRET`, `CLIENT_URL=https://<your-vercel-app>`,
   `SERVER_URL=https://<your-api>`, plus Redis (Upstash), Elasticsearch (Elastic Cloud), S3 and Stripe keys.
   In production the refresh cookie defaults to `SameSite=None; Secure`, which an API on a separate domain needs (HTTPS only).
@@ -161,7 +221,8 @@ error and shows in Admin → Payments.
   HTTPS endpoint and API key or username/password, and keep the cluster on a private network.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
-- Root directory: `client`, build `pnpm build`, output `dist`
+- Root directory: `client`, build `pnpm build` (type-checks, then builds), output `dist`
+- Or deploy the container: `client/Dockerfile` builds the app and serves it with nginx, forwarding API calls to the `api` host
 - Environment: `VITE_API_URL=https://<your-api>` (the API's origin, no `/api` suffix)
 
 **Security checklist before going live**
@@ -173,20 +234,41 @@ error and shows in Admin → Payments.
 
 ---
 
+## TypeScript
+
+Both apps are written in TypeScript (`.ts` / `.tsx`).
+- **Client:** Vite compiles it; `pnpm build` type-checks first (`tsc`), then builds.
+- **Server:** Node 22.18+ runs the `.ts` files directly (type stripping), so there is no build step. `pnpm typecheck`
+  checks the types. The code uses only syntax Node can strip (`erasableSyntaxOnly`), and imports use `.ts` extensions.
+- Shared shapes live in `client/src/types.ts` (API objects) and `server/src/types/express.d.ts` (`req.user`,
+  `req.vendor`); the Mongoose models export their document and method types.
+- `strict` is off for now; turning it on is the next step.
+
+```bash
+pnpm --dir server typecheck
+pnpm --dir client typecheck
+```
+
 ## Project structure
 
 ```
-├── client/                  React SPA (Vite)
+├── client/                  React SPA (Vite, TypeScript)
+│   ├── Dockerfile, nginx.conf   production image: Vite build served by nginx, API calls forwarded to the API
+│   ├── tsconfig.json
 │   └── src/
+│       ├── types.ts         shapes of the API objects (user, product, order, …) and the API error type
 │       ├── components/      layout (search bar), product (share pop-up, seller/admin actions), cart, checkout, orders (returns,
 │       │                    refunds), dashboard, account, admin (open-orders dialog), vendor (store preview), ui
 │       ├── pages/           storefront, account, orders, vendor/* (incl. returns, payouts), admin/* (incl. payments, returns), auth/*
 │       ├── lib/             api client, session, cart hooks + live cart updates (SSE), roles (who may buy), wheel scrolling,
 │       │                    formatting, Stripe loader
 │       └── store/           Zustand stores (auth profile, theme)
-├── server/                  Express API
+├── server/                  Express API (TypeScript, run directly by Node 24)
+│   ├── Dockerfile           production image
+│   ├── tsconfig.json        type-check only (no build output)
 │   ├── src/
 │   │   ├── config/          env, MongoDB connection
+│   │   ├── types/           Express request fields added by the auth middleware
 │   │   ├── models/          User, Session, Address, Vendor, Product, Category, Rating, Review, ReviewVote,
 │   │   │                    Coupon, CouponRedemption, Cart, Order, Payment, Refund, Return, WebhookEvent, Settings
 │   │   ├── services/        cache (Redis), locks, rateLimitStore, search (Elasticsearch), storage (S3),
@@ -197,19 +279,25 @@ error and shows in Admin → Payments.
 │   │   ├── routes/          route definitions with zod validation + RBAC middleware
 │   │   ├── middleware/      auth/RBAC, validation, uploads, errors
 │   │   └── seed/            seed script + DummyJSON snapshot
-│   ├── scripts/             redis-check, s3-check, es-check (live service checks)
+│   ├── scripts/             redis-check, s3-check, es-check (live service checks), seed-fresh
 │   └── test/                node:test unit tests
 ├── docs/ARCHITECTURE.md     roles, schema, concurrency, auth, lifecycle, payments, cache, search, API list
 ├── docs/API_TESTS.md        Postman/curl test plan for every endpoint
-├── docker-compose.yml       local Redis / Elasticsearch (and optional MongoDB)
-└── render.yaml              backend deploy blueprint
+├── docs/TEST_RESULTS.md     test results, end-to-end check, latency/throughput, Elasticsearch vs fallback
+├── docs/DECISIONS.md        design decisions and trade-offs
+├── docs/PRESENTATION.md     10-minute final presentation outline
+├── docs/REFLECTION.md       individual reflection (template)
+├── docs/diagrams/           Mermaid sources of the architecture diagrams
+├── docs/screenshots/        21 screenshots: customer, seller, admin, mobile, dark mode
+├── docker-compose.yml       full stack (api, web, Redis, Elasticsearch; optional MongoDB)
+└── render.yaml              backend deploy blueprint (Node 24)
 ```
 
 ## Troubleshooting
 
 - **`EADDRINUSE` / port 5050 is busy:** another `pnpm --dir server dev` is usually still running in another terminal: stop
   it with Ctrl+C (find it with `Get-NetTCPConnection -LocalPort 5050 -State Listen`). Otherwise change `PORT` and
-  `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.js`.
+  `SERVER_URL` in `server/.env`, and the proxy target in `client/vite.config.ts`.
 - **Uploaded image shows `AccessDenied`:** the S3 bucket policy is missing that folder (`products/*`, `stores/*`,
   `avatars/*`, `reviews/*`, `returns/*`). Check with `pnpm --dir server s3:check`.
 - **Search runs on MongoDB** (`/health` or Admin → Settings & system shows `mongodb`): Elasticsearch isn't reachable

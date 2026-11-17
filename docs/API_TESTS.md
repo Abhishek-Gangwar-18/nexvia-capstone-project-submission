@@ -14,7 +14,7 @@ Run the sections **in order**. A few cases change data; they are marked ⚠ and 
 
 | Variable | Initial value / where it comes from |
 |---|---|
-| `baseUrl` | `http://localhost:5050` (no `/api` prefix any more) |
+| `baseUrl` | `http://localhost:5050` (no `/api` prefix any more). With the Docker stack (`docker compose up -d --build`) use `http://localhost:8080`: nginx forwards every API path to the API |
 | `customerToken` | 2.6 login `customer@vendora.dev` / `Customer@123` → response `accessToken` |
 | `customer2Token` | 2.9 login `ananya.gupta@example.com` / `Customer@123` → `accessToken` |
 | `vendorToken` | 2.10 login `technova@vendora.dev` / `Vendor@123` → `accessToken` |
@@ -40,6 +40,10 @@ Run the sections **in order**. A few cases change data; they are marked ⚠ and 
 | `adminCouponId` | 8.36 create coupon → `coupon._id` |
 
 ### Things to know
+- **Automated checks first:** `pnpm --dir server test` (API unit tests), `pnpm --dir server typecheck` and
+  `pnpm --dir client typecheck` (TypeScript), `pnpm --dir client build`.
+- **Refresh calls need `X-Requested-With: vendora`** (the app sends it on every request); without it
+  `/auth/refresh` answers 403.
 - **Access tokens live 15 minutes.** On `401 "Your session has expired"`, log in again (or use 2.15 refresh).
 - **Error shape:** `{ "message": "...", "details"?: { "fields": { "<field>": "<message>" }, "code"?: "..." } }`.
   Validation errors read `"<field>: <message>"`.
@@ -916,6 +920,6 @@ curl -i "{{baseUrl}}/vendor/products?q=samsng" -H "Authorization: Bearer {{vendo
 - **Stripe card payments, webhooks, Connect payouts:** through the app with test cards and `stripe listen` (README →
   *Stripe setup*); refund retry, reconciliation and payout reversal are covered by `pnpm --dir server test`.
 - **Returns and the Refunds card:** customer → order page → *Return items*; vendor/admin → *Returns*. Concurrency
-  (double requests, payout races) is covered by `test/returns.test.js`.
+  (double requests, payout races) is covered by `test/returns.test.ts`.
 - **Redis, S3, Elasticsearch:** `pnpm --dir server redis:check`, `s3:check`, `es:check` (live), plus unit tests for
   failover, uploads and search.

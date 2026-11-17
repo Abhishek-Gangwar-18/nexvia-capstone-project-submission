@@ -15,7 +15,7 @@ Access is enforced on the server by `protect` (access token plus an active-sessi
 Seller routes also require an **approved** store (`loadVendor`). On the client, `RequireAuth` guards each route group by role.
 
 **Only customers buy.** Cart and checkout routes are customer-only on the server (403 otherwise), and the UI hides
-every buying control from sellers and admins (`client/src/lib/roles.js`):
+every buying control from sellers and admins (`client/src/lib/roles.ts`):
 
 - Product cards show no **Add** button or quantity stepper; the product page shows, instead of *Add to cart / Buy now*,
   **Edit product** (a seller's own listing), **Moderate: remove / restore listing** (admin, with a reason) and a short
@@ -29,14 +29,14 @@ every buying control from sellers and admins (`client/src/lib/roles.js`):
 
 ```mermaid
 flowchart LR
-  subgraph Client [React SPA - Vite]
+  subgraph Client [React SPA - Vite, TypeScript]
     UI[Pages + components] --> RQ[TanStack Query]
     UI --> ZS[Zustand: auth profile, theme]
   end
   RQ -->|REST, Bearer access token| API
   RQ -->|refresh cookie, /auth only| API
 
-  subgraph Server [Node.js + Express API]
+  subgraph Server [Node.js + Express API, TypeScript]
     API[Routes -> controllers] --> SVC[Services]
     SVC --> M[(MongoDB)]
     SVC --> R[(Redis)]
@@ -52,11 +52,34 @@ a local equivalent and logs which one it is using:
 
 | Service | Adapter | Fallback |
 |---|---|---|
-| MongoDB | `config/db.js` | Required (Atlas or any MongoDB). On a standalone server, payments use atomic single-document claims instead of transactions |
-| Redis | `services/cache.js` | In-memory store with the same API (development only: production refuses to start without Redis unless `ALLOW_MEMORY_CACHE=true`) |
-| Elasticsearch | `services/search.js` | MongoDB aggregation search with the same filters, facets and sorting |
-| AWS S3 | `services/storage.js` | Files written to `server/uploads` and served at `/uploads` |
-| Stripe | `services/payment.js` | Built-in test gateway using the same payment, verify and finalize flow |
+| MongoDB | `config/db.ts` | Required (Atlas or any MongoDB). On a standalone server, payments use atomic single-document claims instead of transactions |
+| Redis | `services/cache.ts` | In-memory store with the same API (development only: production refuses to start without Redis unless `ALLOW_MEMORY_CACHE=true`) |
+| Elasticsearch | `services/search.ts` | MongoDB aggregation search with the same filters, facets and sorting |
+| AWS S3 | `services/storage.ts` | Files written to `server/uploads` and served at `/uploads` |
+| Stripe | `services/payment.ts` | Built-in test gateway using the same payment, verify and finalize flow |
+
+**Code:** both apps are TypeScript. The client is compiled by Vite (`tsc` checks types before each build). The API runs its
+`.ts` files directly on Node 24 (type stripping, no build step); `tsc` only checks types. Shared types:
+`client/src/types.ts` (API objects), `server/src/types/express.d.ts` (`req.user`, `req.auth`, `req.vendor`, `req.valid`), and
+each Mongoose model exports its document and method types (`UserDocument`, `OrderDocument`, `VendorDocument`).
+
+**Containers (`docker-compose.yml`):**
+
+```mermaid
+flowchart LR
+  B[Browser] -->|:8080| W[web: nginx + built React app]
+  W -->|API paths| A[api: Node 24, :5050]
+  A --> R[(redis)]
+  A --> E[(elasticsearch)]
+  A --> M[(MongoDB Atlas, or the optional mongo container)]
+  A --> S3[(AWS S3)]
+  A --> STR[Stripe]
+```
+
+nginx serves the app and forwards the API paths (`/auth`, `/products`, `/cart`, …) to the `api` container, so the
+browser talks to one origin, as with the Vite dev proxy. A page load of a path that is also an API prefix (`/cart`,
+`/orders`, `/vendor/*`) gets the app instead. The live cart stream is not buffered. Redis and Elasticsearch are not
+published to the host network beyond localhost.
 
 Every URL uses ids (`/product/:productId`, `/store/:storeId`, `/search?category=<categoryId>`). There are no slugs.
 
@@ -311,7 +334,7 @@ Design notes:
 
 ### Live updates (change streams + Server-Sent Events)
 
-An open cart must not show stale stock, prices or coupons. `services/productEvents.js` watches MongoDB change streams
+An open cart must not show stale stock, prices or coupons. `services/productEvents.ts` watches MongoDB change streams
 (they need a replica set; Atlas is one):
 
 | Watched | Trigger | Effect |
@@ -408,10 +431,10 @@ sequenceDiagram
 
 Writes invalidate the matching keys, for example when a product, rating, category or setting changes.
 
-**Locks** (`services/locks.js`) are `SET key <random token> NX EX <ttl>`: taken and given an expiry in one
+**Locks** (`services/locks.ts`) are `SET key <random token> NX EX <ttl>`: taken and given an expiry in one
 command, so a crashed holder can't block a package forever, and released by a Lua script that deletes the key
 only if it still holds the caller's token. **Rate limits** use one Lua script (`INCR` + `PEXPIRE` on the first
-hit) through `services/rateLimitStore.js`, so every API instance shares the same counters. The global
+hit) through `services/rateLimitStore.ts`, so every API instance shares the same counters. The global
 600-requests-per-minute flood guard stays per instance, to spare Redis a command on every request.
 
 **When Redis is down** the failure policy depends on what the key protects:
@@ -529,7 +552,7 @@ atomic status change, so a double click can't apply it twice.
   alias in one atomic `updateAliases` call, so search never sees an empty or half-built index. Products changed
   while it was filling are written again after the switch. One rebuild runs at a time (Redis lock
   `lock:search:reindex`; a second one gets 409).
-- **When it rebuilds.** On startup when there is no index, when `INDEX_VERSION` in `services/search.js` changed (bump
+- **When it rebuilds.** On startup when there is no index, when `INDEX_VERSION` in `services/search.ts` changed (bump
   it whenever the settings or mappings change), or when the document count differs from MongoDB; after an outage;
   and from Admin → Settings → Reindex.
 - **Mapping** (`dynamic: strict`). Title, brand, category name, tags, specs and store name are copied into
@@ -544,7 +567,7 @@ atomic status change, so a double click can't apply it twice.
   matching (description included) and the response has `relaxed: true`, which the search page explains. Price,
   rating and stock go in the bool filter; category and brand go in `post_filter`, so each facet still shows its other
   options. `createdAt` breaks sort ties, so pages never swap products.
-- **Every search box uses it.** Besides the shop's product search, `services/entitySearch.js` keeps two more
+- **Every search box uses it.** Besides the shop's product search, `services/entitySearch.ts` keeps two more
   indices: `<alias>-vendors` (store name, tagline, email, phone, GSTIN, city/state, owner name and email) and
   `<alias>-users` (name, email, phone). The shoppers' store search matches only what a store page shows (name,
   tagline, city/state), so nobody can probe which store an email or phone belongs to; admin search uses every field.
