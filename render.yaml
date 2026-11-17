@@ -8,6 +8,9 @@ services:
     startCommand: pnpm start
     healthCheckPath: /health
     envVars:
+      # The API is TypeScript that Node runs directly (type stripping needs Node 22.18+).
+      - key: NODE_VERSION
+        value: '24'
       - key: NODE_ENV
         value: production
       - key: JWT_SECRET
