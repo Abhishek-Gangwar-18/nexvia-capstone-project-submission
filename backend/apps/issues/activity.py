@@ -48,4 +48,6 @@ def mentioned_members(workspace, body):
     emails = {email.lower() for email in MENTION_RE.findall(body)}
     if not emails:
         return []
-    return [m.user for m in Membership.objects.filter(workspace=workspace, user__email__in=emails).select_related("user")]
+    # Deactivated users are never notified, and exact matching uses the unique email index (stored lowercase).
+    return [m.user for m in Membership.objects.filter(
+        workspace=workspace, user__email__in=emails, user__is_active=True).select_related("user")]

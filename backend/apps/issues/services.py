@@ -1,3 +1,5 @@
+import logging
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
@@ -8,6 +10,7 @@ from .models import RANK_STEP, Issue
 
 MIN_RANK_GAP = 1e-6
 UNSET = object()
+logger = logging.getLogger(__name__)
 
 
 def rebalance_ranks(project_id):
@@ -32,9 +35,14 @@ def rank_between(prev_rank, next_rank):
 def move_issue(issue, *, status=None, sprint=UNSET, prev_id=None, next_id=None):
     """Drag-and-drop move: optionally change status/sprint, then slot between two neighbours."""
     # Shared project lock (see projects/services.py): a workflow replacement can't delete the status mid-move.
-    issue.project = lock_project(issue.project_id)
-    if issue.project.is_archived:
+    project = lock_project(issue.project_id)
+    if project.is_archived:
         raise ValidationError({"project": ARCHIVED_MESSAGE})
+    # Re-read under the lock: the transition check and resolved_at must use the current status, and the save
+    # below writes only the moved columns, so a concurrent PATCH of other fields isn't reverted.
+    issue.refresh_from_db()
+    issue.project = project
+    before = (issue.status_id, issue.status.name, issue.sprint_id, issue.sprint.name if issue.sprint_id else None)
     if status is not None and status.pk != issue.status_id:
         if not WorkflowStatus.objects.filter(pk=status.pk).exists():
             raise ValidationError({"status": "This status no longer exists. Reload the board."})
@@ -62,8 +70,8 @@ def move_issue(issue, *, status=None, sprint=UNSET, prev_id=None, next_id=None):
     if new_rank is not None:
         issue.rank = new_rank
 
-    issue.save()
-    return issue
+    issue.save(update_fields=["status", "sprint", "rank", "resolved_at", "updated_at"])
+    return before
 
 
 # ------------------------------------------------------------------------------------- hierarchy
@@ -174,7 +182,7 @@ def add_attachment(issue, uploader, uploaded, record):
     attachment = IssueAttachment(
         workspace_id=issue.workspace_id, issue=issue, uploaded_by=uploader,
         original_name=uploaded.name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:255],
-        content_type=uploaded.content_type or "application/octet-stream", size=uploaded.size,
+        content_type=uploaded.content_type, size=uploaded.size,  # verified by the serializer; DB CHECK backs it
     )
     attachment.file.save(uploaded.name, uploaded, save=False)  # exact storage key now in attachment.file.name
     stored_name, storage = attachment.file.name, attachment.file.storage
@@ -183,7 +191,10 @@ def add_attachment(issue, uploader, uploaded, record):
             attachment.save()
             record(attachment)
     except BaseException:
-        storage.delete(stored_name)
+        try:
+            storage.delete(stored_name)
+        except Exception:  # never hide the original error; the orphan sweep removes the file later
+            logger.exception("Could not remove stored file %s after a failed upload", stored_name)
         raise
     return attachment
 

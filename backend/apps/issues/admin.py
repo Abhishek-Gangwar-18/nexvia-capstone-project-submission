@@ -41,4 +41,14 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_display = ["entity_type", "entity_label", "action", "actor", "workspace", "created_at"]
     list_filter = ["workspace", "entity_type", "action"]
     search_fields = ["entity_label", "issue_key", "actor__email"]
-    readonly_fields = ["created_at", "updated_at", "changes"]
+    readonly_fields = ["created_at", "changes"]
+
+    # History is append-only: nobody edits or deletes it by hand, staff included.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

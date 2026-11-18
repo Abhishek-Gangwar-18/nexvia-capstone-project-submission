@@ -12,11 +12,11 @@ from rest_framework.response import Response
 from apps.billing.limits import check_file_size
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
 from apps.core.pagination import AlwaysPageNumberPagination, CappedListMixin, paginate_or_cap
-from apps.tenants.models import Membership
+from apps.tenants.models import Workspace, Membership
 
 from .activity import mentioned_members, record_event, record_issue_event
 from .filters import AuditLogFilter, IssueFilter
-from .models import Issue, IssueAttachment, AuditLog, IssueComment, Label
+from .models import LABELS_PER_WORKSPACE, Issue, IssueAttachment, AuditLog, IssueComment, Label
 from apps.projects.models import Sprint, WorkflowStatus
 from apps.projects.services import ARCHIVED_MESSAGE, lock_project
 from .serializers import (
@@ -92,12 +92,27 @@ class IssueViewSet(CappedListMixin, TenantModelViewSet):
         return super().list(request, *args, **kwargs)
 
     def _locked_status_check(self, serializer, project, instance=None):
-        """Take the shared project lock, then re-check what concurrent edits could invalidate:
-        the chosen status still exists, and the parent/type hierarchy (including cycles) still holds."""
+        """Take the shared project lock, then re-read and re-check what a concurrent edit could have changed.
+        For an update, `instance` is refreshed from the database here, so every check below (and the derived
+        values computed in save) uses the current row, not the copy loaded before the lock."""
         project = lock_project(project.pk)
         if project.is_archived:
             raise exceptions.ValidationError({"project": [ARCHIVED_MESSAGE]})
         data = serializer.validated_data
+        if instance is not None:
+            instance.refresh_from_db()
+            status = data.get("status")
+            if status is not None and status.pk != instance.status_id and not project.workflow.can_transition(
+                instance.status, status
+            ):
+                raise exceptions.ValidationError(
+                    {"status": [f"Transition '{instance.status.name}' → '{status.name}' is not allowed."]}
+                )
+            sprint = data.get("sprint")
+            if sprint is not None and sprint.pk != instance.sprint_id:
+                state = Sprint.objects.filter(pk=sprint.pk).values_list("state", flat=True).first()
+                if state == Sprint.State.CLOSED:
+                    raise exceptions.ValidationError({"sprint": ["Issues can't be added to a closed sprint."]})
         status = data.get("status")
         if status is not None and not WorkflowStatus.objects.filter(pk=status.pk).exists():
             raise exceptions.ValidationError({"status": ["This status no longer exists. Reload and try again."]})
@@ -123,11 +138,12 @@ class IssueViewSet(CappedListMixin, TenantModelViewSet):
         issue = serializer.instance
         tracked = ("title", "description", "issue_type", "priority", "status_id", "sprint_id", "parent_id",
                    "assignee_id", "story_points", "due_date")
-        before = {name: getattr(issue, name) for name in tracked}
-        before_labels = set(issue.labels.values_list("name", flat=True))
         with transaction.atomic():
+            # Lock and re-read first; the audit "before" values come from that fresh row too.
             self._locked_status_check(serializer, issue.project, instance=issue)
-            serializer.save()
+            before = {name: getattr(issue, name) for name in tracked}
+            before_labels = set(issue.labels.values_list("name", flat=True))
+            serializer.save()  # IssueSerializer.update writes only the columns this request changed
         changes = {}
         for name in tracked:
             old, new = before[name], getattr(issue, name)
@@ -154,12 +170,11 @@ class IssueViewSet(CappedListMixin, TenantModelViewSet):
     @action(detail=True, methods=["post"])
     def move(self, request, key=None):
         issue = self.get_object()
-        old_status_id, old_status = issue.status_id, issue.status.name
-        old_sprint_id, old_sprint = issue.sprint_id, issue.sprint.name if issue.sprint_id else None
         payload = IssueMoveSerializer(data=request.data, context=self.get_serializer_context())
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
-        move_issue(
+        # The "from" values are read inside move_issue, after the lock, so the audit reflects the real change.
+        old_status_id, old_status, old_sprint_id, old_sprint = move_issue(
             issue,
             status=data.get("status"),
             sprint=data["sprint"] if "sprint" in data else UNSET,
@@ -225,7 +240,8 @@ class IssueViewSet(CappedListMixin, TenantModelViewSet):
     def attachments(self, request, key=None):
         issue = self.get_object()
         if request.method == "GET":
-            return Response(IssueAttachmentSerializer(issue.attachments.select_related("uploaded_by"), many=True).data)
+            return paginate_or_cap(self, request, issue.attachments.select_related("uploaded_by"),
+                                   IssueAttachmentSerializer, newest_first=True)
         payload = IssueAttachmentUploadSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         uploaded = payload.validated_data["file"]
@@ -291,6 +307,11 @@ class LabelViewSet(TenantModelViewSet):
     def perform_create(self, serializer):
         try:
             with transaction.atomic():
+                # Lock the workspace row so two concurrent creates can't both pass the count at 499.
+                Workspace.objects.select_for_update(no_key=True).filter(pk=self.workspace.pk).first()
+                if Label.objects.for_workspace(self.workspace).count() >= LABELS_PER_WORKSPACE:
+                    raise exceptions.ValidationError(
+                        {"name": [f"A workspace can have at most {LABELS_PER_WORKSPACE} labels. Delete unused labels first."]})
                 label = serializer.save(workspace=self.workspace)
         except IntegrityError:  # unique (workspace, name) is the final safeguard
             raise exceptions.ValidationError({"name": ["A label with this name already exists."]})

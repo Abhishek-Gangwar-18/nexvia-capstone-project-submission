@@ -1,3 +1,6 @@
+from datetime import datetime, time, timedelta
+
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 from django_filters import rest_framework as filters
 
@@ -50,7 +53,9 @@ class IssueFilter(filters.FilterSet):
         return qs.filter(assignee_id__in=ids)
 
     def filter_label(self, qs, name, value):
-        return qs.filter(labels__id=value).distinct()
+        # EXISTS instead of JOIN + DISTINCT: a semi-join can't duplicate issues, so no sort/hash over wide rows.
+        links = Issue.labels.through.objects.filter(issue_id=OuterRef("pk"), label_id=value)
+        return qs.filter(Exists(links))
 
     def filter_overdue(self, qs, name, value):
         if not value:
@@ -62,10 +67,26 @@ class AuditLogFilter(filters.FilterSet):
     entity_type = filters.CharFilter(field_name="entity_type")
     action = filters.CharFilter(field_name="action")
     actor = filters.NumberFilter(field_name="actor_id")
-    project = filters.CharFilter(field_name="project_key", lookup_expr="iexact")
-    date_from = filters.DateFilter(field_name="created_at", lookup_expr="date__gte")
-    date_to = filters.DateFilter(field_name="created_at", lookup_expr="date__lte")
+    # Keys are canonical uppercase (DB CHECK on projects), so uppercase the input and match exactly.
+    project = filters.CharFilter(method="filter_project_key")
+    # Same records as created_at__date >= / <= (dates in the current timezone, UTC), written as a plain
+    # timestamp range so the (workspace_id, created_at) index can serve it instead of casting every row.
+    date_from = filters.DateFilter(method="filter_date_from")
+    date_to = filters.DateFilter(method="filter_date_to")
 
     class Meta:
         model = AuditLog
         fields = []
+
+    def filter_project_key(self, qs, name, value):
+        return qs.filter(project_key=value.strip().upper())
+
+    @staticmethod
+    def _start_of(day):
+        return timezone.make_aware(datetime.combine(day, time.min), timezone.get_current_timezone())
+
+    def filter_date_from(self, qs, name, value):
+        return qs.filter(created_at__gte=self._start_of(value))
+
+    def filter_date_to(self, qs, name, value):
+        return qs.filter(created_at__lt=self._start_of(value + timedelta(days=1)))

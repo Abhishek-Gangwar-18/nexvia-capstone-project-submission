@@ -10,7 +10,7 @@ from apps.accounts.models import User
 from apps.accounts.serializers import UserMiniSerializer
 from apps.core.api import WorkspaceScopedMixin
 from apps.projects.models import Project, Sprint, WorkflowStatus
-from apps.projects.views import sprint_queryset
+from apps.projects.views import attach_sprint_totals, sprint_queryset
 
 from .models import Issue
 from .serializers import IssueListSerializer
@@ -75,7 +75,7 @@ class DashboardView(WorkspaceScopedMixin, GenericAPIView):
             .annotate(total=Count("issues"), done=Count("issues", filter=Q(issues__status__category=DONE)))
             .order_by("name")
         )
-        sprints = sprint_queryset(workspace).filter(state=Sprint.State.ACTIVE, project__is_archived=False)
+        sprints = attach_sprint_totals(sprint_queryset(workspace).filter(state=Sprint.State.ACTIVE, project__is_archived=False))
 
         return Response({
             "totals": totals,

@@ -15,12 +15,15 @@ from apps.accounts.serializers import UserMiniSerializer
 from apps.core.fields import TenantPrimaryKeyRelatedField, WorkspaceMemberField
 from apps.projects.models import Project, Sprint, WorkflowStatus
 
-from .models import Issue, IssueAttachment, AuditLog, IssueComment, Label
+from .models import (
+    ATTACHMENT_TYPES, LABEL_NAME_MAX, LABELS_PER_ISSUE, Issue, IssueAttachment, AuditLog, IssueComment, Label, canonical_label_name,
+)
 
 
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 DUE_DATE_YEARS = 10
 STORY_POINTS_MAX = 100
+DESCRIPTION_MAX = 50_000
 
 
 def shift_years(day, years):
@@ -39,6 +42,10 @@ class StrictIntegerField(serializers.IntegerField):
 
 
 class LabelSerializer(serializers.ModelSerializer):
+    # Raw input may be longer than the stored limit (decomposed accents shrink under NFC); the real limit is
+    # checked on the canonical name in validate_name. This only bounds the input size.
+    name = serializers.CharField(max_length=LABEL_NAME_MAX * 4)
+
     class Meta:
         model = Label
         fields = ["id", "name", "color"]
@@ -49,7 +56,13 @@ class LabelSerializer(serializers.ModelSerializer):
         return value
 
     def validate_name(self, value):
-        value = value.strip().lower()
+        value = canonical_label_name(value)
+        if not value:
+            raise serializers.ValidationError("This field may not be blank.")
+        if len(value) > LABEL_NAME_MAX:  # checked after folding: "İ" * 40 becomes 80 characters
+            raise serializers.ValidationError(f"Label names can be at most {LABEL_NAME_MAX} characters.")
+        if value != value.lower():  # rare scripts where case-folding gives uppercase (e.g. Cherokee)
+            raise serializers.ValidationError("This name contains characters that can't be used in a label.")
         workspace = self.context["request"].workspace
         clash = Label.objects.for_workspace(workspace).filter(name=value)
         if self.instance:
@@ -87,6 +100,11 @@ class IssueSerializer(serializers.ModelSerializer):
     reporter_detail = UserMiniSerializer(source="reporter", read_only=True)
     labels = TenantPrimaryKeyRelatedField(queryset=Label.objects.all(), many=True, required=False)
     story_points = StrictIntegerField(min_value=0, max_value=STORY_POINTS_MAX, required=False, allow_null=True)
+    # Same cap as the DB CHECK (ck_issue_description_max); not trimmed, so markdown whitespace survives.
+    description = serializers.CharField(
+        max_length=DESCRIPTION_MAX, required=False, allow_blank=True, trim_whitespace=False,
+        error_messages={"max_length": f"Description can be at most {DESCRIPTION_MAX:,} characters."},
+    )
 
     class Meta:
         model = Issue
@@ -96,6 +114,28 @@ class IssueSerializer(serializers.ModelSerializer):
             "reporter_detail", "story_points", "due_date", "rank", "labels", "resolved_at", "created_at", "updated_at",
         ]
         read_only_fields = ["key", "number", "rank", "resolved_at", "created_at", "updated_at"]
+
+    def validate_labels(self, value):
+        # The request always carries the issue's whole label set (it replaces, never appends), so the
+        # resulting set is exactly this one, deduplicated.
+        if len({label.pk for label in value}) > LABELS_PER_ISSUE:
+            raise serializers.ValidationError(f"An issue can have at most {LABELS_PER_ISSUE} labels.")
+        return value
+
+    def update(self, instance, validated_data):
+        """Write only the columns this request changed (plus derived ones), never the whole row: a full-row
+        UPDATE would put back stale values of fields another user changed meanwhile (a lost update).
+        The view has already locked the project and re-read `instance`, so derived values use the current row."""
+        labels = validated_data.pop("labels", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        update_fields = set(validated_data) | {"updated_at"}
+        if "status" in validated_data:
+            update_fields.add("resolved_at")  # recomputed in Issue.save() from the new status
+        instance.save(update_fields=sorted(update_fields))
+        if labels is not None:
+            instance.labels.set(labels)
+        return instance
 
     def validate_due_date(self, value):
         if value is None:
@@ -246,7 +286,8 @@ class IssueAttachmentUploadSerializer(serializers.Serializer):
         if not matches:
             raise serializers.ValidationError("The file's contents don't match its extension.")
         # Store the type we verified, never the client's header (octet-stream used to bypass the check).
-        value.content_type = sorted(self.ALLOWED_TYPES[extension])[0]
+        # One canonical value per extension, the same list the DB CHECK allows.
+        value.content_type = ATTACHMENT_TYPES[extension]
         return value
 
     @staticmethod
