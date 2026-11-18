@@ -223,7 +223,7 @@ def apply_subscription(record_id, data, fetch_started_at):
     Lock order: workspace row, then subscription row (same everywhere, so no deadlocks)."""
     with transaction.atomic():
         workspace_id = Subscription.objects.values_list("workspace_id", flat=True).get(pk=record_id)
-        workspace = Workspace.objects.select_for_update().get(pk=workspace_id)
+        workspace = Workspace.objects.select_for_update(no_key=True).get(pk=workspace_id)
         record = Subscription.objects.select_for_update().get(pk=record_id)
         # Compare fetch *start* times: a request that began earlier can finish later, and must not win.
         if record.synced_at and record.synced_at > fetch_started_at:
@@ -235,7 +235,9 @@ def apply_subscription(record_id, data, fetch_started_at):
         record.current_period_end = _period_end(data)
         record.cancel_at_period_end = bool(data.get("cancel_at_period_end") or data.get("cancel_at"))
         record.synced_at = fetch_started_at
-        record.save()
+        # Only the fields this function owns: never the checkout fields, whatever changes around it later.
+        record.save(update_fields=["stripe_subscription_id", "status", "current_period_end", "cancel_at_period_end",
+                                   "synced_at", "updated_at"])
 
         new_plan = workspace.plan
         if record.status in PAID_STATUSES:

@@ -140,10 +140,16 @@ class StripeWebhookView(APIView):
         try:
             prepared = services.prepare_event(event)  # Stripe calls happen here, with no transaction open
             with transaction.atomic():
-                StripeEvent.objects.create(event_id=event_id, event_type=event_type)
+                # Only the event-row insert means "already processed": its own savepoint, so a unique violation
+                # here (a parallel delivery won the race) rolls back just the insert. An IntegrityError from
+                # apply_event must NOT be read as a duplicate: it falls through to the failure branch (500, so
+                # Stripe retries) and rolls back the whole transaction, event row included.
+                try:
+                    with transaction.atomic():
+                        StripeEvent.objects.create(event_id=event_id, event_type=event_type)
+                except IntegrityError:
+                    return Response({"received": True, "duplicate": True})
                 services.apply_event(event, prepared)
-        except IntegrityError:
-            return Response({"received": True, "duplicate": True})  # a parallel delivery won the race
         except stripe.StripeError:
             logger.exception("Stripe webhook %s (%s) failed: Stripe unavailable", event_id, event_type)
             return Response({"detail": "Temporary error."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)

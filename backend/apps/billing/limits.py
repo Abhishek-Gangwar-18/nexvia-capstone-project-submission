@@ -19,13 +19,18 @@ class PlanLimitReached(exceptions.APIException):
 
 
 def usage(workspace):
-    members = Membership.objects.filter(workspace=workspace).count()
+    # Every membership holds a seat, deactivated users included: deactivating stops access, not billing, so a
+    # deactivate/reactivate cycle can't get round the limit. Removing the member frees the seat.
+    memberships = Membership.objects.filter(workspace=workspace)
+    members = memberships.count()
+    deactivated = memberships.filter(user__is_active=False).count()
     invites = Invitation.objects.filter(
         workspace=workspace, accepted_at__isnull=True, expires_at__gt=timezone.now()
     ).count()
     return {
         "projects": Project.objects.for_workspace(workspace).filter(is_archived=False).count(),
         "members": members,
+        "deactivated_members": deactivated,  # already included in "members"
         "pending_invitations": invites,
     }
 
@@ -42,8 +47,12 @@ def check_can_add_member(workspace):
     limit = plan_limits(workspace.plan)["members"]
     current = usage(workspace)
     if limit is not None and current["members"] + current["pending_invitations"] >= limit:
+        note = f" ({current['deactivated_members']} of them deactivated)" if current["deactivated_members"] else ""
         raise PlanLimitReached(
-            "members", f"Your plan allows {limit} members, counting pending invitations. Upgrade to invite more.", workspace
+            "members",
+            f"Your plan allows {limit} members, counting pending invitations and deactivated members{note}. "
+            "Remove members you no longer need, or upgrade to invite more.",
+            workspace,
         )
 
 
