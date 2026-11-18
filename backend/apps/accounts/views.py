@@ -63,7 +63,7 @@ class RegisterView(generics.CreateAPIView):
             user = serializer.save()
         except IntegrityError:
             # Two concurrent sign-ups can both pass the existence check; the unique constraint decides.
-            if get_user_model().objects.filter(email__iexact=serializer.validated_data["email"]).exists():
+            if get_user_model().objects.filter(email=serializer.validated_data["email"]).exists():
                 raise exceptions.ValidationError({"email": ["An account with this email already exists."]})
             raise
         workspace = getattr(user, "landing_workspace", None)
@@ -156,7 +156,7 @@ class PasswordResetRequestView(APIView):
         serializer = PasswordResetRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = get_user_model().objects.filter(
-            email__iexact=serializer.validated_data["email"], is_active=True
+            email=serializer.validated_data["email"], is_active=True
         ).first()
         if user is not None and user.has_usable_password():
             enqueue(send_password_reset_email, user.pk)

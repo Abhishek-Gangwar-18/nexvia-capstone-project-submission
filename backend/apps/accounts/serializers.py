@@ -10,7 +10,6 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.tenants.models import Invitation
 from apps.tenants.services import accept_invitation, create_workspace
 
 from .models import AVATAR_COLORS, User
@@ -27,7 +26,8 @@ class UserMiniSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "display_name", "initials", "avatar_color", "job_title"]
+        # is_active lets pickers hide deactivated people while member lists still show them.
+        fields = ["id", "email", "display_name", "initials", "avatar_color", "job_title", "is_active"]
         read_only_fields = fields
 
 
@@ -130,7 +130,7 @@ class RegisterSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         value = normalize_email(value)
-        if User.objects.filter(email__iexact=value).exists():
+        if User.objects.filter(email=value).exists():  # value is normalized above
             raise serializers.ValidationError("An account with this email already exists.")
         return value
 
@@ -138,7 +138,9 @@ class RegisterSerializer(serializers.Serializer):
         _check_password(attrs["password"], User(email=attrs["email"], first_name=attrs["first_name"]), "password")
         token = attrs.get("invite_token")
         if token:
-            invitation = Invitation.objects.select_related("workspace").filter(token=token).first()
+            from apps.tenants.views import find_invitation  # hashes the token; tenants imports accounts
+
+            invitation = find_invitation(token)
             if invitation is None or not invitation.is_usable:
                 raise serializers.ValidationError({"invite_token": "This invitation is invalid or has expired."})
             if invitation.email.lower() != attrs["email"]:

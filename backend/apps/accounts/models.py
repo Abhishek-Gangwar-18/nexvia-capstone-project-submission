@@ -2,6 +2,10 @@ import random
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
+from django.db.models import Q
+from django.db.models.functions import Lower
+
+from apps.core.models import hex_color_check
 
 AVATAR_COLORS = [
     "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e", "#f97316",
@@ -46,6 +50,10 @@ class User(AbstractUser):
     avatar_color = models.CharField(max_length=7, default=random_avatar_color)
     job_title = models.CharField(max_length=100, blank=True)
     email_notifications = models.BooleanField(default=True)
+    # When the profile row last changed. Like every auto_now field it is skipped by QuerySet.update(), and a
+    # save(update_fields=[...]) that leaves it out (e.g. Django's last_login hook) doesn't touch it either,
+    # so logging in is not a "profile change". Not an audit trail: it records when, not what.
+    updated_at = models.DateTimeField(auto_now=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
@@ -54,6 +62,17 @@ class User(AbstractUser):
 
     class Meta:
         ordering = ["first_name", "last_name", "email"]
+        constraints = [
+            # Unique (above) plus lowercase means unique case-insensitively, whoever writes the row.
+            models.CheckConstraint(condition=Q(email=Lower("email")), name="ck_user_email_lowercase"),
+            hex_color_check("avatar_color", "ck_user_avatar_color_hex"),  # the palette itself is checked in the app
+        ]
+
+    def save(self, *args, **kwargs):
+        # Every write path (register, admin forms, shell) stores the same normalised email.
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.display_name
