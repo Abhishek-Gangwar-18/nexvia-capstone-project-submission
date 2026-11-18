@@ -20,9 +20,14 @@ import { useSortableContainers, type DropResult } from "@/hooks/useSortableConta
 import { usePermissions, useProjectContext, useWorkspace } from "@/hooks/useWorkspace";
 import { formatDate, percent, rankBetween } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
-import type { WorkflowStatus } from "@/types";
+import type { Issue, Sprint, WorkflowStatus } from "@/types";
 
 const columnId = (statusId: number) => `col-${statusId}`;
+// Stable fallbacks for queries without data. A fresh `[]` on every render would change `serverItems` each time,
+// and useSortableContainers copies it into state in an effect, so the page re-rendered forever (and starved
+// navigation) whenever the issues query was disabled: a scrum board with no active sprint.
+const NO_ISSUES: Issue[] = [];
+const NO_SPRINTS: Sprint[] = [];
 
 export default function BoardPage() {
   const project = useProjectContext();
@@ -31,12 +36,12 @@ export default function BoardPage() {
   const canEdit = canEditWorkspace && !project.is_archived;
   const me = useAuth((s) => s.user);
   const isScrum = project.board?.board_type === "scrum";
-  const sprints = useSprints(project.key).data ?? [];
+  const sprints = useSprints(project.key).data ?? NO_SPRINTS;
   const activeSprint = sprints.find((s) => s.state === "active") ?? null;
   const plannedSprints = useMemo(() => sprints.filter((s) => s.state === "planned"), [sprints]);
   const needsSprint = isScrum && !project.active_sprint;
 
-  const { data: issues = [], isLoading } = useIssues(
+  const { data: issues = NO_ISSUES, isLoading } = useIssues(
     { project: project.key, exclude_type: "epic", ...(isScrum ? { sprint: "active" } : {}) },
     { enabled: !needsSprint },
   );

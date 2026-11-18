@@ -185,13 +185,18 @@ function sprintStats(ids: string[], issuesById: Map<string, Issue>) {
   return `${pluralize(ids.length, "issue")} · ${points} pts`;
 }
 
+// Stable fallbacks while the queries load: a fresh `[]` per render would rebuild `serverItems` every render, and
+// useSortableContainers copies it into state in an effect, which re-renders forever (see BoardPage).
+const NO_ISSUES: Issue[] = [];
+const NO_SPRINTS: Sprint[] = [];
+
 export default function BacklogPage() {
   const project = useProjectContext();
   const { canEdit: canEditWorkspace, isAdmin } = usePermissions();
   const canEdit = canEditWorkspace && !project.is_archived;
   const me = useAuth((s) => s.user);
-  const { data: sprints = [], isLoading: sprintsLoading } = useSprints(project.key);
-  const { data: issues = [], isLoading } = useIssues({ project: project.key, exclude_type: "epic" });
+  const { data: sprints = NO_SPRINTS, isLoading: sprintsLoading } = useSprints(project.key);
+  const { data: issues = NO_ISSUES, isLoading } = useIssues({ project: project.key, exclude_type: "epic" });
   const members = useMembers().data ?? [];
   const labelList = useLabels().data ?? [];
   const labels = useMemo(() => new Map(labelList.map((l) => [l.id, l])), [labelList]);
@@ -300,7 +305,7 @@ export default function BacklogPage() {
                 <>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-semibold">{sprint.name}</h3>
+                      <h2 className="text-sm font-semibold">{sprint.name}</h2>
                       {sprint.state === "active" && (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-px text-[10px] font-bold tracking-wide text-emerald-700 uppercase dark:bg-emerald-500/15 dark:text-emerald-300">
                           <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" /> Active
@@ -359,7 +364,7 @@ export default function BacklogPage() {
           header={
             <div className="flex flex-1 items-center gap-2">
               <Inbox className="size-4 text-slate-400" />
-              <h3 className="text-sm font-semibold">Backlog</h3>
+              <h2 className="text-sm font-semibold">Backlog</h2>
               <span className="text-xs text-slate-400">{sprintStats(dnd.items[BACKLOG] ?? [], issuesById)}</span>
             </div>
           }
