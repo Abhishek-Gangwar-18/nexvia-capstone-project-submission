@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -18,6 +19,12 @@ export default defineConfig({
       "/api": { target: apiTarget, changeOrigin: true },
       "/media": { target: apiTarget, changeOrigin: true },
     },
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    css: false,
+    restoreMocks: true,
   },
   build: {
     chunkSizeWarningLimit: 900,
