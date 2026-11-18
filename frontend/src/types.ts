@@ -24,9 +24,9 @@ export interface Me extends UserMini {
   date_joined: string;
 }
 
+/** Login/register response. The refresh token is not here: the server keeps it in an httpOnly cookie. */
 export interface AuthResponse {
   access: string;
-  refresh: string;
   user: Me;
   workspace?: string | null;
 }

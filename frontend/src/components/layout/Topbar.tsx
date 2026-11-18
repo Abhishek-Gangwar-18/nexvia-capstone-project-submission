@@ -2,11 +2,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { CircleUser, CreditCard, LogOut, Menu, Monitor, Moon, Plus, Search, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Dropdown } from "@/components/ui/Dropdown";
 import { Avatar, Kbd } from "@/components/ui/Misc";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
-import { api } from "@/lib/api";
+import { logoutSession } from "@/lib/session";
 import { PLANS } from "@/lib/constants";
 import { useAuth } from "@/store/auth";
 import { useUI, type Theme } from "@/store/ui";
@@ -22,15 +23,13 @@ export function useLogout() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   return async () => {
-    const refresh = useAuth.getState().refresh;
-    try {
-      if (refresh) await api.post("/auth/logout/", { refresh });
-    } catch {
-      /* token may already be invalid */
+    // Only a confirmed server logout ends the session (here and in other tabs); otherwise the httpOnly cookie
+    // would still be valid and a reload would quietly sign the user back in.
+    const loggedOut = await logoutSession(() => navigate("/login", { replace: true }));
+    if (!loggedOut) {
+      toast.error("Couldn't log out. Check your connection and try again.");
+      return;
     }
-    // Leave the protected page first; clearing auth while still on it makes RequireAuth add a stale ?next=.
-    await navigate("/login", { replace: true });
-    useAuth.getState().clear();
     qc.clear();
   };
 }

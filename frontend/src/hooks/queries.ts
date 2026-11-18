@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { api } from "@/lib/api";
+import { announce } from "@/lib/session";
 import { useAuth } from "@/store/auth";
 import type {
   AuthResponse, Board, DashboardData, Invitation, InvitationPreview, Issue, IssueDetail, Label, Me, Member,
@@ -69,7 +70,10 @@ export function useLogin() {
     meta: { silent: true },
     mutationFn: (body: { email: string; password: string }) =>
       api.post<AuthResponse>("/auth/login/", body).then((r) => r.data),
-    onSuccess: signIn,
+    onSuccess: (data) => {
+      signIn(data);
+      announce("login");
+    },
   });
 }
 
@@ -102,7 +106,10 @@ export function useRegister() {
   return useMutation({
     meta: { silent: true },
     mutationFn: (body: RegisterBody) => api.post<AuthResponse>("/auth/register/", body).then((r) => r.data),
-    onSuccess: signIn,
+    onSuccess: (data) => {
+      signIn(data);
+      announce("login");
+    },
   });
 }
 
@@ -124,9 +131,9 @@ export function useChangePassword() {
   return useMutation({
     meta: { silent: true },
     mutationFn: (body: { current_password: string; new_password: string }) =>
-      api.post<{ access: string; refresh: string }>("/auth/change-password/", body).then((r) => r.data),
-    // The server revokes every old session, so keep this tab signed in with the fresh pair.
-    onSuccess: (tokens) => useAuth.getState().setTokens(tokens.access, tokens.refresh),
+      api.post<{ access: string }>("/auth/change-password/", body).then((r) => r.data),
+    // The server revokes every old session and sets a fresh refresh cookie; keep this tab signed in.
+    onSuccess: (tokens) => useAuth.getState().setAccess(tokens.access),
   });
 }
 
