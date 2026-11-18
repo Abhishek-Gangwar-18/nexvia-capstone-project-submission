@@ -23,6 +23,21 @@ export class SessionExpired extends Error {
   }
 }
 
+/** The server rate-limited the refresh (429). The session is still valid: wait `retryAfter` seconds, then retry. */
+export class RateLimited extends Error {
+  constructor(public retryAfter: number) {
+    super(`Too many requests right now. Try again in ${retryAfter} seconds.`);
+    this.name = "RateLimited";
+  }
+}
+
+/** Seconds from a Retry-After header (delta-seconds or an HTTP date); 30 when missing or unusable. */
+export function retryAfterSeconds(value: unknown): number {
+  const raw = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  const seconds = /^\d+$/.test(raw) ? Number(raw) : raw ? Math.ceil((Date.parse(raw) - Date.now()) / 1000) : NaN;
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 3600) : 30;
+}
+
 export const canAutoRefresh = () => typeof navigator !== "undefined" && !!navigator.locks;
 
 async function requestNewAccessToken(): Promise<string> {
@@ -33,6 +48,10 @@ async function requestNewAccessToken(): Promise<string> {
     // 401/400: the cookie is gone or invalid. Anything else (network, 5xx) is not proof the session ended.
     if (axios.isAxiosError(error) && error.response && [400, 401].includes(error.response.status)) {
       throw new SessionExpired();
+    }
+    // 429: rate limited, not logged out. Keep the session and say when to try again.
+    if (axios.isAxiosError(error) && error.response?.status === 429) {
+      throw new RateLimited(retryAfterSeconds(error.response.headers?.["retry-after"]));
     }
     throw error;
   }
@@ -66,7 +85,8 @@ let restoring: Promise<void> | null = null;
 
 /**
  * Page load: get an access token from the cookie, then the user, then let protected routes render.
- * An ended session clears auth (show login); a network/server error keeps the cookie and offers a retry.
+ * 401 (session ended) clears auth and shows login; 429 (rate limited) keeps the session and retries after
+ * Retry-After; a network/server error keeps the cookie and offers a retry.
  */
 export function restoreSession(): Promise<void> {
   if (restoring) return restoring;
@@ -81,6 +101,7 @@ export function restoreSession(): Promise<void> {
       useAuth.getState().signIn({ access, user });
     } catch (error) {
       if (error instanceof SessionExpired) useAuth.getState().clear();
+      else if (error instanceof RateLimited) useAuth.getState().setRateLimited(error.retryAfter);
       else useAuth.getState().setStatus("error");
     }
   })().finally(() => {
