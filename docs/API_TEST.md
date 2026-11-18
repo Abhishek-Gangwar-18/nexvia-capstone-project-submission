@@ -451,6 +451,9 @@ Rules:
 - only `planned` sprints start, and only the `active` one completes. Both lock the project, so a double click
   gets a `400` instead of a second start or a second completion event
 - closed sprints are read-only, and renaming a sprint to a blank name is a `400`
+- `goal` is at most 10,000 characters (on create, PATCH and start); an active sprint's dates can't be cleared
+- a PATCH is checked against the sprint **as it is when it gets the lock**: if the sprint was completed meanwhile,
+  the PATCH is a `400` (read-only) instead of silently reopening it
 - only **planned** sprints can be deleted (admin). Active and closed ones are `400`: closed sprints are velocity
   history. Deleting a planned sprint sends its issues back to the backlog
 - in an archived project every sprint write is `400 {"project": ["Restore the project first."]}`
@@ -461,7 +464,9 @@ Rules:
 curl -s $API/labels/ -H "$AUTH" -H "$WS"
 curl -s -X POST $API/labels/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" \
   -d '{"name":"Customer-Facing","color":"#ec4899"}'
-# name stored lower-case and unique per workspace ("Bug" and "bug" collide) → 400 on "name"; color must be #RRGGBB
+# name stored in one canonical form (trimmed, Unicode NFC + casefold) and unique per workspace: "Bug"/"bug",
+# "ΣΑΣ"/"σας" and composed/decomposed accents all collide → 400 on "name". At most 40 characters AFTER folding
+# ("İ" folds to 2 characters). color must be #RRGGBB. Limits: 500 labels per workspace, 20 labels per issue (400).
 
 curl -s $API/members/ -H "$AUTH" -H "$WS"
 curl -s -X PATCH $API/members/<membership id>/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" \
@@ -492,8 +497,14 @@ curl -s -X POST $API/workspace/transfer-ownership/ -H "$AUTH" -H "$WS" -H "Conte
 
 ```bash
 curl -s -X DELETE $API/workspace/ -H "$AUTH" -H "$WS" -H "Content-Type: application/json" \
-  -d '{"confirm":"acme","password":"Demo@1234"}'          # 204; wrong or missing either → 400
+  -d '{"confirm":"acme","password":"Demo@1234"}'          # 202; wrong or missing either → 400
+# → 202 {"detail": "Workspace deletion started."}
 ```
+
+Deletion is asynchronous. The workspace disappears at once: every request with its `X-Workspace` now returns 404,
+it leaves `GET /workspaces/`, its invitation links stop working, and a second `DELETE` is a 404. A background job
+cancels the Stripe subscription (retrying if Stripe is down; no data is deleted before Stripe confirms) and then
+removes the data in batches. A write that was already in flight when deletion started is rejected with 404.
 
 Invitation flow (admin creates it, then the invitee accepts). Only the owner can invite with `"role":"admin"`, and an
 admin invitation stops working if its sender is no longer the owner when it's accepted:
@@ -594,7 +605,10 @@ curl -s $API/projects/WEB/workflow/ -H "$AUTH" -H "$WS"       # any role
 
 `PUT` (admin) replaces the workflow. List order sets the status order, and transitions use **indexes into that
 list**. A status with an `id` is kept, one without is created, and one left out is deleted. A status in use can't
-be removed or change category. At least one `todo` and one `done` status are required. The replacement locks the
+be removed or change category. At least one `todo` and one `done` status are required, names are unique ignoring
+case, and names can't start with `__workflow_tmp_` (reserved for the save step). With `"enforce_transitions": true`
+at least one transition is required and every status must take part in one, in or out (separate groups such as
+A→B and C→D are fine) → otherwise 400 on `transitions`, naming the unconnected statuses. The replacement locks the
 project and validates under that lock, so it can't race an issue moving into a status it deletes.
 
 ```bash
@@ -623,7 +637,9 @@ Comments list oldest first (a conversation); activity lists newest first. Only a
 Allowed files: CSV, GIF, JPEG, Markdown, PDF, PNG, TXT, WebP, ZIP, within the plan's size and a hard 100 MB cap.
 The **contents** decide, not the name or `Content-Type`: images, PDF and ZIP must start with their real signature,
 and text files must be valid UTF-8 without NUL bytes. SVG, HTML and every other type are rejected, and the stored
-content type is the verified one. In an archived project, comment and attachment writes and issue deletes return
+content type is the verified one, one canonical type per extension (`text/csv` for `.csv`, `application/zip` for
+`.zip`, …). `GET /issues/{key}/attachments/` returns the newest 200 (`X-Truncated: true` when there are more) or
+pages of 50 with `?page=`. In an archived project, comment and attachment writes and issue deletes return
 `400 {"project": ["Restore the project first."]}`; reads still work.
 
 ### 4.11 Webhooks (admin)
@@ -813,7 +829,7 @@ before the one already applied is discarded.
 | `GET/POST /workspaces/` | | logged in | my workspaces (with my role) / create one (I become owner; ≤ 10 owned) |
 | `GET /workspace/` | ✅ | viewer | current workspace |
 | `PATCH /workspace/` | ✅ | admin | rename |
-| `DELETE /workspace/` | ✅ | owner | `{"confirm": "<slug>", "password": "…"}` → delete everything in it |
+| `DELETE /workspace/` | ✅ | owner | `{"confirm": "<slug>", "password": "…"}` → **202**; hidden at once, data removed in the background |
 | `POST /workspace/transfer-ownership/` | ✅ | owner | `{"member_id": …}`: you become admin |
 | `GET /members/` | ✅ | viewer | list (`?search=`) |
 | `PATCH /members/{id}/` | ✅ | admin (owner for admins) | change role (see the matrix in 4.6) |
@@ -997,7 +1013,7 @@ through M2M) are converted to the same `400` format. Database constraint races b
 
 ```bash
 cd backend
-pytest                                   # all 501 tests (Postgres and Redis must be running; Stripe isn't needed)
+pytest                                   # all 924 tests (Postgres and Redis must be running; Stripe isn't needed)
 pytest -k Isolation                      # just the tenant-isolation tests
 pytest apps/core/tests/test_api.py::TestSprints -v
 pytest --create-db                       # rebuild the test DB after a migration
@@ -1028,21 +1044,34 @@ test. Celery tasks run eagerly in tests, so no worker is needed.
 | `billing/tests/test_billing.py::TestLimits` | project / member / file-size limits per plan, archived projects don't count, un-archiving is checked |
 | `billing/tests/test_billing.py::TestApi` | billing state per role, owner-only Checkout / Portal / Sync, plan validation, Stripe errors → generic 503 (Stripe mocked) |
 | `billing/tests/test_billing.py::TestWebhook` | signature check, duplicate events skipped, subscription events move the plan, cancellation → Free, payment-failed notification |
-| `billing/tests/test_billing.py::TestWorkspaceDeletion` | the subscription is cancelled before a workspace is deleted |
+| `billing/tests/test_billing.py::TestWorkspaceDeletion` | the background purge cancels the subscription before deleting any data; a Stripe outage keeps the (hidden) workspace and its data |
 | `test_api.py::TestAuth` (extended) | per-email lockout, logout 204/400, logout-all, password reset flow, register trimming and race, `is_staff` hidden |
 | `tenants/tests/test_group2_hardening.py` | owner/admin role matrix, ownership transfer, delete confirmation, slug race, owned-workspace cap, one open invite per email, unassign on removal, invite purge, resend cooldown, public endpoint throttles and shape |
 | `projects/tests/test_group3_hardening.py` | owner-only project delete with confirmation, files removed only after commit, archived read-only, key race and DB case rule, sprint lock order, planned-only sprint delete, sprint naming, workflow lock and query count, WIP limit rules, color, PUT 405 |
 | `issues/tests/test_group4_hardening.py` | author-only comment edit, archived guard on comments/files/deletes, parent hierarchy and cycles under the lock, file signature checks, upload cleanup on failure, list caps and `X-Truncated`, audit always paged, trigram index used, label rules, story points and due-date bounds |
 | `automation/tests/test_group5_hardening.py` | one-time webhook secret, timestamped signatures, SSRF and redirects, test/redelivery throttles, endpoint cap under concurrency, retry policy and `Retry-After`, auto-disable once, delivery claims and lease recovery, 20 s attempt deadline, redelivery rules, retention purge, grouped digest, report dedupe under concurrency, stale report runs, pagination, no actor email, tenant isolation |
+| `*/tests/test_<table>_table.py` (21 files, the schema review) | one file per table, e.g. `tenants/tests/test_workspace_table.py`, `projects/tests/test_sprint_table.py`, `automation/tests/test_delivery_table.py`, `billing/tests/test_stripeevent_table.py`: lost-update races (a stale PATCH against start/complete, auto-disable, pruning, issue numbering), every CHECK / trigger / composite FK hit through raw SQL and bulk writes, async workspace deletion (partial purge + retry, Stripe retry, concurrent writes, lock orderings), index plans, and each migration's "report and stop" path |
 | `billing/tests/test_group6_hardening.py` | concurrent checkout opens one session, session reuse rules, customer idempotency, duplicate subscriptions cancelled and audited, lock order, stale and overlapping snapshots, owner-email task, throttles, webhook transaction boundary and 500 handling, StripeEvent purge, `over_limit`, cancel-then-failed-delete retry |
 
 Frontend checks:
 
 ```bash
 cd frontend
+pnpm test             # Vitest unit + component tests (29 tests, ~5 s, no backend needed)
+pnpm test:watch       # re-run tests on file change
 pnpm typecheck        # strict TypeScript
 pnpm build            # type-check + production bundle
 ```
+
+The frontend tests use **Vitest** + **React Testing Library** in a `jsdom` environment (config in the `test`
+block of `vite.config.ts`, setup in `src/test/setup.ts`). The API is mocked, so they run without Django.
+
+| File | What it proves |
+|---|---|
+| `src/lib/utils.test.ts` | Kanban rank math (`rankBetween`) for empty column, top, bottom and between cards; API error → message mapping (network, 5xx, DRF `detail`, field errors, `non_field_errors`); 402 plan-limit detection; field-error map; pluralize, percent, overdue dates |
+| `src/components/ui/Button.test.tsx` | default `type="button"`, click handler, disabled while loading, accessible label on `IconButton` |
+| `src/store/auth.test.ts` | sign-in persists tokens to localStorage, token rotation, logout clears state |
+| `src/pages/auth/LoginPage.test.tsx` | `safeNext` open-redirect guard (external, protocol-relative and auth-page targets), submit → redirect to `next`, error message on failed login, signed-in users skip the form |
 
 End-to-end check of the whole Docker stack (stdlib only, no installs needed):
 
@@ -1082,4 +1111,6 @@ a report and audit entries to Acme; `seed_demo --reset` clears them.
 | `503` from `/billing/checkout/` | no `STRIPE_SECRET_KEY`, or prices missing: run `python manage.py stripe_setup` |
 | `402 plan_limit_reached` | expected on that plan: upgrade via 4.16, or use Acme (Pro) / Initech (Enterprise) |
 | `400` from `/billing/portal/` | the workspace has no billing account yet: start a checkout first |
+| `migrate` stops with `RuntimeError: Fix these … before migrating: …` | a schema-review migration found existing rows that break a new rule. It lists their ids and values and changes nothing: fix those rows (rename, re-enter or remove them by hand), then run `migrate` again |
+| `404 Workspace not found.` right after deleting a workspace | expected: deletion hides it at once and finishes in the background (needs the Celery worker; the beat re-queues it every 10 min) |
 | Docker: `connection refused` on 8080 | `docker compose ps`; wait for `backend` to be healthy, or check `docker compose logs backend` |

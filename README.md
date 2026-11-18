@@ -4,13 +4,17 @@ A Jira-like platform where every company gets its own isolated workspace with pr
 scrum boards, sprints, custom workflows and billing.
 
 **Stack:** Django REST Framework · React 19 + TypeScript (Vite, pnpm) · PostgreSQL · Celery + Redis ·
-Stripe Billing · Docker · GitHub Actions
+Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 
 | 📄 Doc | What's inside |
 |---|---|
 | **README.md** (this file) | What it is, how to run it (Docker or local), demo accounts, project status |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, multi-tenancy, data model, auth & roles, billing, frontend, Docker and CI/CD |
 | [docs/API_TEST.md](docs/API_TEST.md) | Testing the API with Swagger / curl / PowerShell, endpoint reference, security scenarios, automated tests |
+| [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (924 backend, 29 frontend, 26/26 smoke) and measured API response times |
+| [docs/DEMO.md](docs/DEMO.md) | Step-by-step demo script with accounts, timings and fallbacks |
+| [docs/PRESENTATION.md](docs/PRESENTATION.md) | 10-minute presentation outline: problem, design, challenges, results, next steps |
+| [docs/REFLECTION.md](docs/REFLECTION.md) | Individual reflection (draft to personalise) |
 
 ---
 
@@ -25,6 +29,7 @@ Stripe Billing · Docker · GitHub Actions
 | 5 | Webhooks + Celery background jobs (notifications, reports, email) | ✅ done |
 | 6 | Stripe Billing (test mode) + plan limits | ✅ done |
 | 7 | Docker images + GitHub Actions CI/CD | ✅ done |
+| + | API hardening review (88 endpoints) and schema review (all 21 tables) | ✅ done |
 
 ## Features
 
@@ -49,6 +54,11 @@ Stripe Billing · Docker · GitHub Actions
   workspaces.
 - Destructive deletes need confirmation (project key; workspace slug + password), and concurrent requests are
   serialised with row and advisory locks backed by database constraints, so races return a clean 400, not a 500.
+  Deleting a workspace hides it at once and removes its data in the background in short batches, so even a very
+  large workspace can be deleted without request timeouts.
+- **Integrity in the database**: every rule a bulk write, the admin or raw SQL could break is a PostgreSQL CHECK,
+  unique index, composite foreign key or trigger (all 21 tables reviewed), and every edit saves only the fields it
+  changed after re-reading the row under a lock, so concurrent writers never undo each other.
 
 **Project management**
 - Projects with keys (`WEB`), per-project workflows (To Do → In Progress → In Review → Done) and boards.
@@ -101,6 +111,27 @@ Stripe Billing · Docker · GitHub Actions
 - One command runs the whole stack, migrates and loads the demo data.
 - **GitHub Actions**: backend tests on Postgres + Redis, frontend build, Docker build + end-to-end smoke test,
   image push to GHCR and an SSH deploy.
+
+---
+
+## Screenshots
+
+All screenshots are in [docs/screenshots/](docs/screenshots/) (1440×900, demo data from `seed_demo`).
+
+| Kanban board (drag and drop) | Dashboard |
+|---|---|
+| ![Kanban board](docs/screenshots/04-kanban-board.png) | ![Dashboard](docs/screenshots/03-dashboard.png) |
+| **Issue details: comments, files, activity** | **Backlog and sprints** |
+| ![Issue drawer](docs/screenshots/06-issue-drawer.png) | ![Backlog](docs/screenshots/05-backlog-sprints.png) |
+| **Custom workflow editor** | **Audit log** |
+| ![Workflow editor](docs/screenshots/07-workflow-editor.png) | ![Audit log](docs/screenshots/08-audit-log.png) |
+| **Billing (Stripe, test mode)** | **Members and roles** |
+| ![Billing](docs/screenshots/12-billing.png) | ![Members](docs/screenshots/11-members-roles.png) |
+| **Viewer role: read-only board** | **Dark mode** |
+| ![Viewer read-only](docs/screenshots/13-viewer-read-only.png) | ![Dark mode](docs/screenshots/14-dark-mode-board.png) |
+
+More: [home page](docs/screenshots/01-home.png) · [login](docs/screenshots/02-login.png) ·
+[settings](docs/screenshots/09-settings.png) · [reports](docs/screenshots/10-reports.png)
 
 ---
 
@@ -216,7 +247,7 @@ The demo workspaces are set to these plans directly and aren't billed through St
 backend/                  Django project (config/) + apps: core, accounts, tenants, projects, issues,
                           automation, billing · Dockerfile · docker-entrypoint.sh
 frontend/                 React + TypeScript SPA (Vite, pnpm): public home page + the app · Dockerfile · nginx.conf.template
-docs/                     ARCHITECTURE.md, API_TEST.md
+docs/                     ARCHITECTURE.md, API_TEST.md, TEST_RESULTS.md, DEMO.md, PRESENTATION.md, REFLECTION.md, screenshots/
 scripts/smoke_test.py     end-to-end checks against a running stack
 .github/workflows/ci.yml  CI/CD pipeline
 docker-compose.yml        full stack locally (or just db + redis for development)
@@ -259,7 +290,8 @@ The full walkthrough, endpoint table and security scenarios are in [docs/API_TES
 ## Tests
 
 ```bash
-cd backend && pytest                 # 501 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing
+cd backend && pytest                 # 924 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing, schema integrity
+cd frontend && pnpm test             # 29 Vitest + React Testing Library tests (utils, Kanban rank math, auth store, login page)
 cd frontend && pnpm build            # strict TypeScript check + production build
 python scripts/smoke_test.py         # 26 end-to-end checks against the running Docker stack (http://localhost:8080)
 ```
@@ -271,7 +303,7 @@ python scripts/smoke_test.py         # 26 end-to-end checks against the running 
 | Job | What it does |
 |---|---|
 | **Backend tests** | Postgres 16 + Redis 7 services, `manage.py check`, missing-migration check, `pytest` |
-| **Frontend build** | pnpm (version from `package.json`), Node 24, `pnpm install --frozen-lockfile`, `pnpm build` |
+| **Frontend build** | pnpm (version from `package.json`), Node 24, `pnpm install --frozen-lockfile`, `pnpm test` (Vitest), `pnpm build` |
 | **Docker** | builds both images, starts the full stack, runs `scripts/smoke_test.py`; on `main` pushes the images to `ghcr.io/<owner>/flowboard-backend` and `flowboard-frontend` (tags `latest` and the commit SHA) |
 | **Deploy** | `main` only, in the `production` environment: copies `docker-compose.prod.yml` to the server over SSH, then `pull` + `up -d`. Skipped until the secrets below exist |
 
@@ -300,5 +332,7 @@ images are private by default), and create a `.env` next to the compose file wit
 | Paid in Checkout but the plan didn't change | Webhooks aren't reaching you: run `stripe listen …`. Returning from Checkout also syncs from Stripe, as does `POST /api/billing/sync/` |
 | `402` when creating a project, inviting or uploading | The plan limit is reached; upgrade, or archive a project |
 | Port 8080 already in use | Set `APP_HTTP_PORT` in `.env`, then `docker compose up -d` |
+| `migrate` stops with `RuntimeError: Fix these … before migrating` | A schema-review migration found existing rows that break a new database rule (for example two labels that are the same ignoring case, or a blank name). It lists their ids and changes nothing; fix those rows, then run `migrate` again |
+| A deleted workspace still has data in the database | Deletion is asynchronous: the workspace disappears at once and the Celery worker removes its data in batches (the beat re-queues unfinished deletions every 10 minutes). Start the worker and beat |
 | Container keeps restarting | `docker compose logs backend` (usually a bad `DATABASE_URL` or the database not ready yet) |
 
