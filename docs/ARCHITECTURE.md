@@ -106,6 +106,8 @@ flowchart LR
 ├── .github/workflows/ci.yml    CI/CD pipeline
 ├── scripts/smoke_test.py       end-to-end checks against a running stack
 ├── scripts/nginx_security_test.sh  nginx hardening checks against the built frontend image
+├── e2e/                       Playwright browser tests of the 8 main user flows (run against an isolated stack)
+├── load/k6-api.js             k6 load test: ramping signed-in users, auth, reports, webhooks
 ├── README.md
 ├── docs/
 │   ├── API_TEST.md             manual + automated API testing guide
@@ -453,7 +455,8 @@ were dropped)
 | Expired-token cleanup | nightly at 03:45 | Celery beat `flush_expired_tokens` deletes expired `OutstandingToken` rows (and their blacklist rows) in batches; revoked tokens that haven't expired stay revoked |
 | Logout | blacklists that refresh token (204, idempotent) | `logout-all` blacklists every outstanding one; the access token expires naturally |
 | Password change / reset | revokes every refresh token | change returns a fresh pair; reset uses Django's single-use `PasswordResetTokenGenerator` (1 hour) and always answers 204 |
-| Brute-force protection | per-endpoint scopes (login 5/min, register 10/h, refresh 30/min, change-password 5/h, reset 5/h) | plus a per-email lockout: 10 failures in 15 min. Counters are in the shared Redis cache |
+| Brute-force protection | per-endpoint scopes (login 5/min, register 10/h, change-password 5/h, reset 5/h) | plus a per-email lockout: 10 failures in 15 min. Counters are in the shared Redis cache |
+| Refresh limits | layered (`apps/accounts/throttles.py`) | every page load refreshes, and offices share one IP, so: **30/min per verified account** (from a token whose signature, expiry and type are checked and that isn't blacklisted, never an unverified claim), **30/min per IP for invalid tokens** (missing, forged, expired, revoked), and a **600/min per IP** ceiling. A 429 carries `Retry-After` and leaves the cookie alone |
 | Passwords | Django validators | length, common, numeric, similarity; errors are reported on the password field |
 | Session auth | not used by the API | JWT only; Django admin keeps its own session login (shares the Redis login lockout; nginx limits it to `ADMIN_ALLOWLIST`) |
 | Deactivated users | refused | access tokens fail authentication and refresh is refused (SimpleJWT checks `is_active`) |
@@ -481,7 +484,7 @@ The access token lives **only in memory** (`store/auth.ts`); nothing is persiste
 | Area | What's in place |
 |---|---|
 | Admin | nginx serves `/admin/` only to `ADMIN_ALLOWLIST` (comma-separated IPs/CIDRs; empty = closed, a plain 404); admin login rate limited per IP; a malformed allowlist stops the container |
-| Proxy trust | the real client IP comes from `X-Forwarded-For` only when the TCP peer is in `TRUSTED_PROXY_CIDRS` |
+| Proxy trust | nginx takes the real client IP from `X-Forwarded-For` only when the TCP peer is in `TRUSTED_PROXY_CIDRS` (set it to the TLS load balancer's address in production, or every user appears to come from the balancer). Django's per-IP limits trust only the last `X-Forwarded-For` entry, the one nginx adds (`NUM_PROXIES=1` when `DJANGO_BEHIND_PROXY` is set); before, a client could send a different header per request to escape every per-IP limit |
 | Headers | `server_tokens off`, `X-Frame-Options DENY`, `nosniff`, `Referrer-Policy same-origin`, `Permissions-Policy`, and a strict CSP without `unsafe-inline`/`unsafe-eval`: the theme script's hash is computed at container start, the toast library's style hash at build time. `CSP_HEADER` can switch to report-only while checking a change |
 | HTTPS | production: SSL redirect (except `/api/health/`), HSTS for one year; `includeSubDomains`/`preload` are opt-in (`DJANGO_HSTS_INCLUDE_SUBDOMAINS`, `DJANGO_HSTS_PRELOAD`) |
 | API docs | `API_DOCS` = `public`, `staff` or `off` (404). Default: public with DEBUG, off otherwise |
@@ -718,8 +721,9 @@ Mutations invalidate the related keys (issues, sprints, projects, dashboard). A 
   and serialised **across tabs with the Web Locks API**: refresh tokens rotate, so two tabs rotating the same
   cookie would revoke each other. After getting the lock, a tab first checks whether it already has a newer token.
   Browsers without Web Locks don't auto-refresh: an expired access token sends the user to log in again;
-- a 400/401 from refresh means the session ended (auth cleared, then `/login?next=…`); a network or 5xx error
-  keeps the session.
+- a 400/401 from refresh means the session ended (auth cleared, then `/login?next=…`); a 429 means rate limited,
+  not logged out (the session is kept and `SessionGate` shows a "too many requests" screen that counts down
+  `Retry-After` and retries by itself); a network or 5xx error keeps the session.
 
 **Page load:** `SessionGate` (`App.tsx`) calls `restoreSession()`: refresh through the cookie, then
 `/auth/me/`, then render the protected routes. An ended session shows login; a network error shows a retry
@@ -895,11 +899,15 @@ Image pushes use the workflow's own `GITHUB_TOKEN` (`packages: write`); no perso
 
 | Level | Tooling | Scope |
 |---|---|---|
-| Backend (983 tests) | pytest-django on **real PostgreSQL** and **Redis** (the shared throttle cache), DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input, plus the review hardening: race tests with real threads and connections (checkout, webhook cap, report dedupe, `skip_locked` claims), lock-order and query-count checks, `EXPLAIN` on the trigram index, a trickling socket for the webhook deadline; and the schema review: one `test_<table>_table.py` per table with lost-update races (stale PATCH vs concurrent writes), raw-SQL and bulk writes against every CHECK, trigger and composite FK, index plans, and each migration's "report and stop" path; and the security hardening: production settings, the shared admin/API lockout, cookie-mode auth, expired-token cleanup and log redaction. Celery tasks run eagerly and never touch the broker; Stripe calls are mocked |
-| Frontend (47 tests) | **Vitest** + React Testing Library + user-event on `jsdom`; API hooks mocked | Kanban rank math, API error mapping and plan-limit detection, `Button` behaviour and accessibility, the in-memory auth store and legacy-token removal, session restore, refresh, Web Locks and logout (`lib/session.test.ts`), login page (submit, redirect, error, open-redirect guard). Runs in CI before the build |
+| Backend (995 tests) | pytest-django on **real PostgreSQL** and **Redis** (the shared throttle cache), DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input, plus the review hardening: race tests with real threads and connections (checkout, webhook cap, report dedupe, `skip_locked` claims), lock-order and query-count checks, `EXPLAIN` on the trigram index, a trickling socket for the webhook deadline; and the schema review: one `test_<table>_table.py` per table with lost-update races (stale PATCH vs concurrent writes), raw-SQL and bulk writes against every CHECK, trigger and composite FK, index plans, and each migration's "report and stop" path; and the security hardening: production settings, the shared admin/API lockout, cookie-mode auth, expired-token cleanup, log redaction and the layered refresh limits (including the spoofed `X-Forwarded-For` case). Celery tasks run eagerly and never touch the broker; Stripe calls are mocked |
+| Frontend (68 tests) | **Vitest** + React Testing Library + user-event on `jsdom`; API hooks mocked | Kanban rank math, API error mapping and plan-limit detection, `Button` behaviour and accessibility, the in-memory auth store and legacy-token removal, session restore, refresh, Web Locks and logout (`lib/session.test.ts`), login page (submit, redirect, error, open-redirect guard), the session screens (401 / 429 / network), webhook deliveries (auto-refresh, Redeliver, permissions), and a render-loop regression for boards without an active sprint. Runs in CI before the build |
 | Types | `tsc -b` (strict, `noUnused*`) | the whole frontend, including the test files |
 | nginx security | `scripts/nginx_security_test.sh` against the built frontend image on an isolated Docker network | 33 checks: admin allowlist and trusted proxies, admin login rate limit, headers and CSP, access- and error-log redaction, config validation |
 | Stack smoke test | `scripts/smoke_test.py` (stdlib only), run in CI against the Docker stack | 26 checks through nginx: login, projects/issues/boards/sprints/dashboard, tenant isolation, role blocks, comments, upload + download, worker-built report + CSV, notifications, webhooks, billing, unsigned Stripe webhook rejected, OpenAPI schema |
+| Browser E2E | **Playwright** (`e2e/`), Chromium, against an isolated stack (`-p flowboard-e2e`) | 7 tests covering 8 flows: auth (cookie, reload, rotation, change password, logout), workspaces and invites, projects and workflow, sprints and issues (assign, priority, move, comment, upload), webhooks (failed delivery, Redeliver), Stripe sandbox checkout, reports and notifications ([TEST_RESULTS.md §4b](TEST_RESULTS.md#4b-browser-end-to-end-tests-playwright-77)) |
+| Load | **k6** (`load/k6-api.js`) | 1 → 50 concurrent signed-in users with think time: 0% errors, p95 71 ms ([§5a](TEST_RESULTS.md#5a-load-test-k6)) |
+| Accessibility | Lighthouse in light and dark mode, plus keyboard checks | 100 on every audited page ([§6a](TEST_RESULTS.md#6a-frontend-performance-and-accessibility-lighthouse)) |
+| Fresh clone test | manual, before submission ([TEST_RESULTS.md §4a](TEST_RESULTS.md#4a-fresh-clone-test)) | clean clone with `.env.example`, `build --no-cache`, empty volumes under a separate compose project (`-p flowboard-fresh`): 84 migrations, demo data loaded, smoke test 26/26 |
 | Browser checks | headless Chromium during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode, billing, a real Stripe test payment, the home page (desktop + mobile, light + dark, no horizontal overflow, signed-in redirect) |
 
 The tests use Postgres rather than SQLite because partial unique indexes, check constraints and
@@ -922,9 +930,11 @@ row-locking behaviour are part of what's being tested.
 | + | API hardening review of all 88 endpoints, group by group: auth, tenants, projects, issues, automation, billing (sections [6](#6-domain-rules)–[8a](#8a-billing-stripe)) | ✅ |
 | + | Frontend unit and component tests with Vitest + React Testing Library, run in CI ([11](#11-testing-strategy)) | ✅ |
 | + | Security hardening: production configuration, refresh token in an httpOnly cookie, expired-token cleanup, and a security audit that removed secrets from the logs ([7.1](#71-browser-sessions-refresh-token-in-an-httponly-cookie), [7.2](#72-security-hardening-production-configuration-and-logging)) | ✅ |
+| + | Browser E2E (Playwright), load (k6) and Lighthouse testing; fixed what they found: a board render loop, per-IP refresh limits hitting shared office IPs (and a spoofable client IP), the webhook delivery UI, accessibility ([TEST_RESULTS.md §8](TEST_RESULTS.md#8-issues-found-by-these-tests-all-fixed)) | ✅ |
 | + | Schema review of all 21 tables: DB-enforced integrity, lost-update fixes, async workspace deletion, measured indexes ([5](#5-data-model), [6](#6-domain-rules)) | ✅ |
 
 Possible next steps: more frontend tests (board drag-and-drop, issue drawer) and a linter in CI, splitting the
-main JS bundle, browser E2E tests in CI, an HTTPS reverse proxy (e.g. Caddy) in the production compose file,
+main JS bundle (mobile Lighthouse performance is 59–75 because of it), running the Playwright suite in CI,
+paginating the project-wide issue list (it returns up to 1,000 rows at once), an HTTPS reverse proxy (e.g. Caddy) in the production compose file,
 running `scripts/nginx_security_test.sh` in CI, a Redis password in production (defence in depth; Redis is
 already internal-only), pinning Celery's JSON serializer explicitly, and `CONCURRENTLY` index builds for large databases.

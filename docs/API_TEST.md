@@ -186,7 +186,7 @@ Counters live in the shared Redis cache, so they hold across every API process.
 |---|---|---|
 | `POST /auth/login/` | 5/min, plus 10 failures per 15 min per email | IP, and email |
 | `POST /auth/register/` | 10/hour | IP |
-| `POST /auth/refresh/` | 30/min | IP |
+| `POST /auth/refresh/` | 30/min per account (valid token) · 30/min per IP (invalid token) · 600/min per IP overall | account, IP |
 | `POST /auth/change-password/` | 5/hour | user |
 | `POST /auth/password-reset/` · `/confirm/` | 5/hour · 10/hour | IP |
 | `POST /workspaces/` | 10/hour (and at most 10 owned workspaces) | user |
@@ -961,6 +961,8 @@ GLOBEX="Authorization: Bearer $(login owner@globex.test)"
 | 31 | Admin from an unlisted IP | `GET /admin/` through nginx from an IP not in `ADMIN_ALLOWLIST` | **404** |
 | 32 | Swagger in production | `GET /api/docs/` with `API_DOCS=off` | **404** |
 | 33 | Secret in a logged URL | open `/reset-password/<uid>/<token>` or `/api/invitations/preview/<token>/` | the nginx and Django log lines show `[REDACTED]` instead of the token |
+| 34 | Escape a per-IP limit with a spoofed header | send a different `X-Forwarded-For` with each login (through nginx) | still **429** after 5: only the last entry, added by nginx, counts |
+| 35 | Many users behind one office IP | several accounts refresh from the same IP | each account has its own 30/min; only invalid tokens share the per-IP limit |
 | 20 | Non-owner starts a payment | admin or viewer → `POST /billing/checkout/` (or `/portal/`, `/sync/`) | **403** |
 | 21 | Exceed a plan limit | 4th project on Free, invite past the member cap, file over the plan size | **402** `plan_limit_reached` |
 | 22 | Forged Stripe webhook | `POST /billing/webhook/` without a valid `Stripe-Signature` | **400** `Invalid signature.` (503 when no webhook secret is set) |
@@ -1032,7 +1034,7 @@ through M2M) are converted to the same `400` format. Database constraint races b
 
 ```bash
 cd backend
-pytest                                   # all 983 tests (Postgres and Redis must be running; Stripe isn't needed)
+pytest                                   # all 995 tests (Postgres and Redis must be running; Stripe isn't needed)
 pytest -k Isolation                      # just the tenant-isolation tests
 pytest apps/core/tests/test_api.py::TestSprints -v
 pytest --create-db                       # rebuild the test DB after a migration
@@ -1073,6 +1075,7 @@ test. Celery tasks run eagerly in tests, so no worker is needed.
 | `core/tests/test_security_hardening.py` | production settings: API docs gate, CORS, SSL redirect exemption, HSTS opt-ins, the shared admin/API login lockout |
 | `accounts/tests/test_cookie_auth.py` | cookie mode: cookie attributes, no refresh in bodies, cookie-only refresh/logout, matching clear on logout/401, logout-all, body mode unchanged |
 | `automation/tests/test_token_cleanup.py` | nightly expired-token cleanup: only expired rows, revoked live tokens stay revoked, batches, resumes after a failure, retries |
+| `accounts/tests/test_refresh_rate_limits.py` | layered refresh limits: users sharing an IP refresh independently, one account over its limit is throttled, invalid/forged/revoked tokens use the IP bucket and never the victim's, the IP ceiling, retry after the window, counters visible from another Redis connection, body mode unchanged, 429 keeps the cookie, spoofed `X-Forwarded-For` can't escape the refresh or login limits |
 | `core/tests/test_log_redaction.py` | reset, invite and invite-preview tokens (in paths, encoded query strings and secret query parameters) never reach the logs; ordinary paths, status and timing stay |
 | `billing/tests/test_group6_hardening.py` | concurrent checkout opens one session, session reuse rules, customer idempotency, duplicate subscriptions cancelled and audited, lock order, stale and overlapping snapshots, owner-email task, throttles, webhook transaction boundary and 500 handling, StripeEvent purge, `over_limit`, cancel-then-failed-delete retry |
 
@@ -1080,7 +1083,7 @@ Frontend checks:
 
 ```bash
 cd frontend
-pnpm test             # Vitest unit + component tests (47 tests, ~5 s, no backend needed)
+pnpm test             # Vitest unit + component tests (68 tests, ~15 s, no backend needed)
 pnpm test:watch       # re-run tests on file change
 pnpm typecheck        # strict TypeScript
 pnpm build            # type-check + production bundle
@@ -1094,7 +1097,10 @@ block of `vite.config.ts`, setup in `src/test/setup.ts`). The API is mocked, so 
 | `src/lib/utils.test.ts` | Kanban rank math (`rankBetween`) for empty column, top, bottom and between cards; API error → message mapping (network, 5xx, DRF `detail`, field errors, `non_field_errors`); 402 plan-limit detection; field-error map; pluralize, percent, overdue dates |
 | `src/components/ui/Button.test.tsx` | default `type="button"`, click handler, disabled while loading, accessible label on `IconButton` |
 | `src/store/auth.test.ts` | the auth store stays in memory (nothing in localStorage), starts as `restoring`, removes the legacy persisted tokens |
-| `src/lib/session.test.ts` | cookie-mode refresh, single-flight and Web Locks serialisation, session restore (401 → login, network error → retry), no auto-refresh without Web Locks, logout only after a 204, no tokens in cross-tab messages |
+| `src/lib/session.test.ts` | cookie-mode refresh, single-flight and Web Locks serialisation, session restore (401 → login, network error → retry), no auto-refresh without Web Locks, logout only after a 204, no tokens in cross-tab messages; a 429 keeps the session and `Retry-After` is honoured |
+| `src/App.test.tsx` | the session screen per restore outcome: 429 → rate-limit message with countdown and automatic retry, network error → connection message, 401 → login |
+| `src/components/settings/AutomationSections.test.tsx` | webhook deliveries refresh while in flight and stop when terminal; Redeliver success and refusal; no button on delivered/in-flight rows; disabled endpoint; non-admins see nothing |
+| `src/pages/project/BoardPage.test.tsx` | board and backlog stop rendering when queries have no data (regression for a render loop that froze navigation) |
 | `src/pages/auth/LoginPage.test.tsx` | `safeNext` open-redirect guard (external, protocol-relative and auth-page targets), submit → redirect to `next`, error message on failed login, signed-in users skip the form |
 
 End-to-end check of the whole Docker stack (stdlib only, no installs needed):
@@ -1124,6 +1130,7 @@ a report and audit entries to Acme; `seed_demo --reset` clears them.
 | `404 Workspace not found.` with the right slug | the logged-in user isn't a member of it: log in as that workspace's user |
 | `401 … token_not_valid` | access tokens last 30 min: log in again or call `/auth/refresh/` |
 | `401 no_refresh_cookie` on refresh | you sent `X-Auth-Mode: cookie` without the cookie; drop the header to use a body token |
+| `429` on refresh with `Retry-After` | that account refreshed more than 30 times in a minute, or the IP sent 30 invalid tokens; wait the given seconds. The session isn't ended |
 | `429` on login | wait a minute (5 logins/min per IP), or 15 minutes after 10 failed attempts for that email |
 | `429` everywhere in tests or after a restart | counters live in Redis: `python manage.py shell -c "from django.core.cache import cache; cache.clear()"` |
 | `ConnectionError` mentioning Redis or port 6380 | start Redis (`docker compose up -d redis`): rate limits need the shared cache |

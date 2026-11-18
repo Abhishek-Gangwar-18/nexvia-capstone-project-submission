@@ -35,7 +35,7 @@ python scripts/smoke_test.py                                       # confirm 26/
 | 10 | 4:45 | `alex@flowboard.test` | Workspace switcher: Acme ↔ Globex, show different projects | "One user can belong to several workspaces; data never mixes." |
 | 11 | 5:15 | `viewer@acme.test` | Board is read-only, no create/delete buttons | "Roles: owner, admin, member, viewer. The UI only shows what the API allows." |
 | 12 | 5:45 | `owner@globex.test` | Create projects until the Free plan limit → upgrade prompt → **Billing** → Stripe test checkout | "Stripe Billing in test mode enforces plan limits." |
-| 13 | 6:30 | (terminal / browser) | GitHub Actions run (green), `pnpm test`, `pytest` summary | "CI runs 983 backend tests, 47 frontend tests and a 26-check end-to-end test on every push." |
+| 13 | 6:30 | (terminal / browser) | GitHub Actions run (green), `pnpm test`, `pytest` summary | "CI runs 995 backend tests, 68 frontend tests and a 26-check end-to-end test on every push; Playwright browser tests and a k6 load test cover the full flows." |
 | 14 | 7:00 | n/a | Dark mode toggle, end | n/a |
 
 ## Fallbacks

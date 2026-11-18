@@ -58,10 +58,13 @@ Pick the 3 you can explain best:
 ## 5. Results (1 min)
 
 - All **7 milestones** delivered.
-- **983 backend tests**, **47 frontend tests**, **26/26** end-to-end checks: all passing, run in CI on every push.
+- **995 backend tests**, **68 frontend tests**, **26/26** smoke checks: all passing, run in CI on every push.
+- **7/7 Playwright browser tests** over 8 user flows (including a Stripe sandbox payment); **k6**: 50 concurrent users, 0% errors, p95 71 ms; **Lighthouse accessibility 100** in light and dark mode.
+- Testing found and fixed a board render loop, per-IP refresh limits that would hit shared office IPs (plus a spoofable client IP), and accessibility gaps.
 - Production hardening: admin IP allowlist, strict CSP, HSTS, API docs off, and a security audit with no open findings.
 - API medians **6–56 ms**, p95 under **75 ms** on the demo data (see [TEST_RESULTS.md](TEST_RESULTS.md)).
-- Dockerized stack (Postgres, Redis, Django, Celery worker + beat, nginx) with a deploy job on `main`.
+- Dockerized stack (Postgres, Redis, Django, Celery worker + beat, nginx) with a deploy job on `main`; verified
+  from a fresh clone (no-cache build, empty database, demo data, smoke test 26/26).
 
 ## 6. Next steps (30 s)
 

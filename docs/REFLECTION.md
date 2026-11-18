@@ -20,7 +20,7 @@ _List what you personally designed and built. If you worked alone, say so._
 - Stripe Billing in test mode with plan limits
 - Docker setup and the GitHub Actions pipeline
 - Security hardening: production configuration, the httpOnly refresh cookie, token cleanup and a security audit
-- The test suites (983 backend, 47 frontend, 26-check smoke test, 33 nginx security checks) and the documentation
+- The test suites (995 backend, 68 frontend, 26-check smoke test, 33 nginx security checks), Playwright browser tests, a k6 load test, a Lighthouse audit, and the documentation
 
 ## 2. What I learned
 

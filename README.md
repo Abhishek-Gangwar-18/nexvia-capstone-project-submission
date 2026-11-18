@@ -11,7 +11,7 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 | **README.md** (this file) | What it is, features, architecture, tech stack, how to run it (Docker or local), demo accounts, project status |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture and ER diagrams, multi-tenancy, data model, auth & security, billing, frontend, Docker and CI/CD |
 | [docs/API_TEST.md](docs/API_TEST.md) | API documentation: auth (body and browser cookie modes), every endpoint, testing with Swagger / curl / PowerShell, security scenarios, automated tests |
-| [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (983 backend, 47 frontend, 26/26 smoke, 33/33 nginx security) and measured API response times |
+| [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (995 backend, 68 frontend, 7 browser E2E, 26/26 smoke, 33/33 nginx security), load test, Lighthouse and API response times |
 | [docs/DEMO.md](docs/DEMO.md) | Step-by-step demo script with accounts, timings and fallbacks |
 | [docs/PRESENTATION.md](docs/PRESENTATION.md) | 10-minute presentation outline: problem, design, challenges, results, next steps |
 | [docs/REFLECTION.md](docs/REFLECTION.md) | Individual reflection (draft to personalise) |
@@ -206,6 +206,10 @@ http://localhost:8080/admin/ (the dev compose file allows every IP; in productio
 | `sh scripts/nginx_security_test.sh` | 33 nginx security checks against the built frontend image (`docker build -t flowboard-frontend:local frontend` first) |
 | `docker compose down` | Stop everything (add `-v` to also delete the database) |
 
+Tested from a fresh clone: `.env.example` and the defaults are enough, with no cached images and an empty
+database ([TEST_RESULTS.md §4a](docs/TEST_RESULTS.md#4a-fresh-clone-test)). The compose project is named
+`flowboard`; to run a second copy next to an existing one, pass `-p <other-name>` and different host ports.
+
 The Docker stack and the local setup below share the same Postgres container and data.
 
 ## Quick start: local development (hot reload)
@@ -297,6 +301,8 @@ backend/                  Django project (config/) + apps: core, accounts, tenan
 frontend/                 React + TypeScript SPA (Vite, pnpm): public home page + the app · Dockerfile · nginx.conf.template
 docs/                     ARCHITECTURE.md, API_TEST.md, TEST_RESULTS.md, DEMO.md, PRESENTATION.md, REFLECTION.md, screenshots/
 scripts/                  smoke_test.py (end-to-end checks against a running stack), nginx_security_test.sh (nginx hardening checks)
+e2e/                      Playwright browser tests of the main user flows
+load/                     k6 load test (k6-api.js)
 .github/workflows/ci.yml  CI/CD pipeline
 docker-compose.yml        full stack locally (or just db + redis for development)
 docker-compose.prod.yml   production stack using the images CI pushes to GHCR
@@ -340,12 +346,17 @@ The full walkthrough, endpoint table and security scenarios are in [docs/API_TES
 ## Tests
 
 ```bash
-cd backend && pytest                 # 983 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing, schema integrity, security hardening
-cd frontend && pnpm test             # 47 Vitest + React Testing Library tests (utils, Kanban rank math, auth store, session/refresh/logout, login page)
+cd backend && pytest                 # 995 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing, schema integrity, security hardening
+cd frontend && pnpm test             # 68 Vitest + React Testing Library tests (utils, Kanban rank math, auth store, session/refresh/logout, login page, webhooks UI, board)
 cd frontend && pnpm build            # strict TypeScript check + production build
 python scripts/smoke_test.py         # 26 end-to-end checks against the running Docker stack (http://localhost:8080)
 sh scripts/nginx_security_test.sh    # 33 nginx checks: admin allowlist, proxy trust, headers/CSP, log redaction
 ```
+
+Browser end-to-end tests (Playwright, `e2e/`, 7 tests covering 8 user flows including a Stripe sandbox payment) and the
+k6 load test (`load/k6-api.js`) run against an isolated copy of the stack so they never touch your data; the commands
+and the latest results (0% errors and p95 71 ms at 50 users, Lighthouse accessibility 100) are in
+[docs/TEST_RESULTS.md](docs/TEST_RESULTS.md).
 
 ## CI/CD (GitHub Actions)
 
@@ -378,6 +389,8 @@ proxy's address, so client IPs are real); `API_DOCS`, `CSP_HEADER` and the HSTS 
 | `429 Too Many Requests` while testing | Rate limits (see `docs/API_TEST.md` §3); clear the counters with `python manage.py shell -c "from django.core.cache import cache; cache.clear()"` |
 | Webhook receiver rejects every signature | Since the API review, sign `"<X-FlowBoard-Timestamp>.<raw body>"`, not the body alone |
 | Demo login stopped working | Re-run `python manage.py seed_demo --reset` |
+| "Too many requests right now" screen | The session is fine; that account refreshed more than 30 times in a minute (many reloads or tabs). It retries by itself when the countdown ends |
+| Every user hits rate limits at once in production | nginx sees the TLS load balancer as the client: set `TRUSTED_PROXY_CIDRS` to the balancer's address |
 | Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again. Browsers without the Web Locks API don't refresh automatically, so they ask for a login when the 30-minute access token expires |
 | "Couldn't log out" toast | The logout request didn't reach the server, so the session cookie is still valid; check the connection and try again |
 | `/admin/` returns 404 | nginx only serves the admin to `ADMIN_ALLOWLIST`; add your IP (or `*` in development) |
