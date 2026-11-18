@@ -3,11 +3,12 @@ from django.contrib.auth.tokens import default_token_generator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from django.db import transaction
-from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import exceptions, serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+
+from . import lockout
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.tenants.services import accept_invitation, create_workspace
@@ -77,35 +78,23 @@ def _required_text(value, label):
     return value
 
 
-LOGIN_FAILURE_LIMIT = 10
-LOGIN_FAILURE_WINDOW = 15 * 60  # seconds
-
-
-def _login_failure_key(email):
-    return f"login-failures:{email}"
-
-
 class LoginSerializer(TokenObtainPairSerializer):
-    """Besides the per-IP throttle, lock an email out after repeated failures from any number of IPs."""
+    """Besides the per-IP throttle, lock an email out after repeated failures from any number of IPs.
+    The counter (apps/accounts/lockout.py) is shared with the Django admin login."""
 
     def validate(self, attrs):
         email = attrs[self.username_field] = normalize_email(attrs[self.username_field])
-        key = _login_failure_key(email)
-        if cache.get(key, 0) >= LOGIN_FAILURE_LIMIT:
+        if lockout.is_locked(email):
             raise exceptions.Throttled(
-                wait=LOGIN_FAILURE_WINDOW,
+                wait=lockout.LOGIN_FAILURE_WINDOW,
                 detail="Too many failed login attempts for this account. Try again in 15 minutes.",
             )
         try:
             data = super().validate(attrs)
         except exceptions.AuthenticationFailed:
-            cache.add(key, 0, LOGIN_FAILURE_WINDOW)  # window starts at the first failure
-            try:
-                cache.incr(key)
-            except ValueError:  # expired between add and incr
-                cache.set(key, 1, LOGIN_FAILURE_WINDOW)
+            lockout.record_failure(email)
             raise
-        cache.delete(key)
+        lockout.clear(email)
         data["user"] = MeSerializer(self.user).data
         return data
 

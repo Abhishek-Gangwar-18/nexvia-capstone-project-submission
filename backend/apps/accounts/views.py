@@ -6,13 +6,14 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import TokenBackendError, TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenBackendError, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.state import token_backend
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from . import cookie_auth
 from .serializers import (
     ChangePasswordSerializer,
     LoginSerializer,
@@ -39,15 +40,42 @@ class SafeTokenRefreshSerializer(TokenRefreshSerializer):
 
 
 class SafeTokenRefreshView(TokenRefreshView):
+    """Body mode: unchanged. Cookie mode (X-Auth-Mode: cookie): the refresh token comes ONLY from the httpOnly
+    cookie (a body token is ignored; no cookie is a 401), and the rotated one goes back ONLY into the cookie."""
+
     serializer_class = SafeTokenRefreshSerializer
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth_refresh"
+
+    def post(self, request, *args, **kwargs):
+        if not cookie_auth.is_cookie_mode(request):
+            return super().post(request, *args, **kwargs)
+        raw = cookie_auth.cookie_token(request)
+        if not raw:
+            return self._session_ended("No session cookie. Log in again.", "no_refresh_cookie")
+        serializer = self.get_serializer(data={"refresh": raw})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as exc:
+            return self._session_ended(str(exc), "token_not_valid")
+        except (InvalidToken, exceptions.AuthenticationFailed) as exc:
+            return self._session_ended(str(getattr(exc, "detail", exc)), "token_not_valid")
+        return cookie_auth.deliver(request, Response(serializer.validated_data, status=status.HTTP_200_OK))
+
+    @staticmethod
+    def _session_ended(detail, code):
+        response = Response({"detail": detail, "code": code}, status=status.HTTP_401_UNAUTHORIZED)
+        cookie_auth.clear_refresh_cookie(response)  # a dead cookie is useless; don't keep sending it
+        return response
 
 
 class LoginView(TokenObtainPairView):
     serializer_class = LoginSerializer
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth_login"
+
+    def post(self, request, *args, **kwargs):
+        return cookie_auth.deliver(request, super().post(request, *args, **kwargs))
 
 
 class RegisterView(generics.CreateAPIView):
@@ -67,14 +95,14 @@ class RegisterView(generics.CreateAPIView):
                 raise exceptions.ValidationError({"email": ["An account with this email already exists."]})
             raise
         workspace = getattr(user, "landing_workspace", None)
-        return Response(
+        return cookie_auth.deliver(request, Response(
             {
                 "user": MeSerializer(user).data,
                 **tokens_for(user),
                 "workspace": workspace.slug if workspace else None,
             },
             status=status.HTTP_201_CREATED,
-        )
+        ))
 
 
 def _is_blacklisted(raw):
@@ -92,6 +120,17 @@ class LogoutView(APIView):
 
     @extend_schema(request=LogoutSerializer, responses={204: None})
     def post(self, request):
+        if cookie_auth.is_cookie_mode(request):
+            # Cookie mode: revoke the cookie's token (if it's still valid) and always clear the cookie. Idempotent.
+            raw = cookie_auth.cookie_token(request)
+            if raw:
+                try:
+                    RefreshToken(raw).blacklist()
+                except TokenError:
+                    pass  # expired, malformed or already revoked: nothing left to revoke
+            response = Response(status=status.HTTP_204_NO_CONTENT)
+            cookie_auth.clear_refresh_cookie(response)
+            return response
         serializer = LogoutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         raw = serializer.validated_data["refresh"]
@@ -110,8 +149,13 @@ class LogoutAllView(APIView):
 
     @extend_schema(request=None, responses={204: None})
     def post(self, request):
+        # Revokes every refresh token (all devices). Access tokens already issued stay valid until they expire
+        # (30 min), as before: they aren't tracked server-side.
         blacklist_all_tokens(request.user)
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        if cookie_auth.is_cookie_mode(request):
+            cookie_auth.clear_refresh_cookie(response)
+        return response
 
 
 class MeView(generics.RetrieveUpdateAPIView):
@@ -138,7 +182,7 @@ class ChangePasswordView(APIView):
             user.save(update_fields=["password"])
             blacklist_all_tokens(user)  # every other session must log in again
             tokens = tokens_for(user)
-        return Response(tokens, status=status.HTTP_200_OK)
+        return cookie_auth.deliver(request, Response(tokens, status=status.HTTP_200_OK))
 
 
 class PasswordResetRequestView(APIView):
