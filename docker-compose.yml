@@ -6,6 +6,8 @@ name: flowboard
 x-backend-env: &backend-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-insecure-change-me-please-use-a-long-random-string-in-prod}
   DJANGO_DEBUG: ${APP_DJANGO_DEBUG:-False}
+  # Local stack: Swagger/OpenAPI stay open (the image runs with DEBUG off). Production defaults to off.
+  API_DOCS: ${API_DOCS:-public}
   DJANGO_ALLOWED_HOSTS: ${APP_ALLOWED_HOSTS:-localhost,127.0.0.1}
   CSRF_TRUSTED_ORIGINS: ${APP_CSRF_TRUSTED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
   DJANGO_BEHIND_PROXY: "True"
@@ -99,6 +101,10 @@ services:
     restart: unless-stopped
     environment:
       BACKEND_UPSTREAM: backend:8000
+      # Local development: the admin stays reachable from your machine ("*" = everyone). Production defaults
+      # to closed; see docker-compose.prod.yml.
+      ADMIN_ALLOWLIST: ${ADMIN_ALLOWLIST:-*}
+      CSP_HEADER: ${CSP_HEADER:-Content-Security-Policy}
     ports:
       - "${APP_HTTP_PORT:-8080}:80"
     depends_on:
