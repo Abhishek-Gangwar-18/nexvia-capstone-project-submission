@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { CalendarDays } from "lucide-react";
 import { useCallback } from "react";
 import { useSearchParams } from "react-router";
@@ -56,8 +57,13 @@ export function StatusDot({ color }: { color: string }) {
 export function LabelChip({ label, className }: { label: Label; className?: string }) {
   return (
     <span
-      className={cn("inline-flex items-center rounded px-1.5 py-px text-[10px] font-semibold", className)}
-      style={{ backgroundColor: `${label.color}1f`, color: label.color }}
+      className={cn(
+        "inline-flex items-center rounded px-1.5 py-px text-[10px] font-semibold",
+        // Text from the label colour, mixed toward black (light) or white (dark) so it stays readable (WCAG AA).
+        "text-[color-mix(in_srgb,var(--label)_55%,black)] dark:text-[color-mix(in_srgb,var(--label)_45%,white)]",
+        className,
+      )}
+      style={{ backgroundColor: `${label.color}1f`, "--label": label.color } as CSSProperties}
     >
       {label.name}
     </span>
@@ -96,7 +102,7 @@ export function DueChip({ date, done }: { date: string | null; done: boolean }) 
       className={cn(
         "inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] font-semibold",
         overdue
-          ? "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400"
+          ? "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400"
           : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
       )}
     >

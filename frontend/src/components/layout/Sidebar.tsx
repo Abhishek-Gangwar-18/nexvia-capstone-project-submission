@@ -9,7 +9,7 @@ import { Logo } from "@/components/ui/Misc";
 import { useProjects, useWorkspaces } from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
 import { PLANS, ROLES } from "@/lib/constants";
-import { cn } from "@/lib/utils";
+import { cn, readableOn } from "@/lib/utils";
 import { useUI } from "@/store/ui";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 
@@ -168,8 +168,8 @@ export function Sidebar() {
                   )}
                 >
                   <span
-                    className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] text-[9px] font-bold text-white"
-                    style={{ backgroundColor: project.color }}
+                    className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] text-[9px] font-bold"
+                    style={readableOn(project.color)}
                   >
                     {project.key.charAt(0)}
                   </span>

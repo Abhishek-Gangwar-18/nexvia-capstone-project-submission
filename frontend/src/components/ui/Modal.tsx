@@ -67,7 +67,7 @@ export function Drawer({
   label: string;
 }) {
   return (
-    <Dialog open={open} onClose={onClose} className="relative z-40">
+    <Dialog open={open} onClose={onClose} className="relative z-40" aria-label={label}>
       <DialogBackdrop
         transition
         className="fixed inset-0 bg-slate-950/30 transition duration-300 data-closed:opacity-0"
@@ -76,7 +76,6 @@ export function Drawer({
         <div className="pointer-events-none fixed inset-y-0 right-0 flex max-w-full pl-0 sm:pl-10">
           <DialogPanel
             transition
-            aria-label={label}
             className="pointer-events-auto flex h-full w-screen max-w-4xl flex-col bg-white shadow-2xl transition duration-300 ease-out data-closed:translate-x-full dark:bg-slate-900"
           >
             {children}

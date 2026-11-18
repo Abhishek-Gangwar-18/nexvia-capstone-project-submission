@@ -1,6 +1,6 @@
 import { LoaderCircle, User } from "lucide-react";
 import type { ReactNode } from "react";
-import { cn } from "@/lib/utils";
+import { cn, readableOn } from "@/lib/utils";
 import type { UserMini } from "@/types";
 
 const avatarSizes = {
@@ -36,9 +36,9 @@ export function Avatar({
   return (
     <span
       title={user.display_name}
-      style={{ backgroundColor: user.avatar_color }}
+      style={readableOn(user.avatar_color)}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-full font-semibold tracking-tight text-white select-none",
+        "inline-flex shrink-0 items-center justify-center rounded-full font-semibold tracking-tight select-none",
         ring && "ring-2 ring-white dark:ring-slate-900",
         avatarSizes[size],
         className,

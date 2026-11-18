@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/Input";
 import { Avatar, EmptyState, ProgressBar, Skeleton } from "@/components/ui/Misc";
 import { useProjects } from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
-import { cn, percent, pluralize } from "@/lib/utils";
+import { cn, percent, pluralize, readableOn } from "@/lib/utils";
 
 export default function ProjectsPage() {
   const workspace = useWorkspace();
@@ -86,8 +86,8 @@ export default function ProjectsPage() {
                   <div className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: project.color }} />
                   <div className="flex items-start gap-3">
                     <span
-                      className="flex size-11 shrink-0 items-center justify-center rounded-xl text-base font-bold text-white shadow-sm"
-                      style={{ backgroundColor: project.color }}
+                      className="flex size-11 shrink-0 items-center justify-center rounded-xl text-base font-bold shadow-sm"
+                      style={readableOn(project.color)}
                     >
                       {project.key.slice(0, 2)}
                     </span>

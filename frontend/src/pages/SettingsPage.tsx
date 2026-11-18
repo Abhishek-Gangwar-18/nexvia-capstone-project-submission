@@ -80,10 +80,10 @@ export default function SettingsPage() {
         <Section icon={<Building className="size-4" />} title="General" description="Your workspace's name and address.">
           <form onSubmit={saveName} className="space-y-4">
             <Field label="Workspace name">
-              <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!isAdmin} maxLength={100} />
+              <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!isAdmin} maxLength={100} aria-label="Workspace name" />
             </Field>
             <Field label="Workspace URL" hint="Used in links and the X-Workspace API header.">
-              <Input value={`/w/${workspace.slug}`} disabled className="font-mono" />
+              <Input value={`/w/${workspace.slug}`} disabled className="font-mono" aria-label="Workspace URL" />
             </Field>
             <p className="text-xs text-slate-500">
               Created {formatDate(workspace.created_at)} · Owner {workspace.owner.display_name}

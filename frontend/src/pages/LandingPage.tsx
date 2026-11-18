@@ -159,7 +159,7 @@ function ThemeToggle() {
 }
 
 const primaryCta =
-  "inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:-translate-y-0.5 hover:bg-brand-700 hover:shadow-brand-600/35 dark:bg-brand-500 dark:hover:bg-brand-400";
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:-translate-y-0.5 hover:bg-brand-700 hover:shadow-brand-600/35 dark:bg-brand-600 dark:hover:bg-brand-500";
 const secondaryCta =
   "inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800";
 
@@ -213,7 +213,7 @@ function Header() {
           <Link to="/login" className="hidden rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex dark:text-slate-200 dark:hover:bg-slate-800">
             Log in
           </Link>
-          <Link to="/register" className="hidden items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-brand-600/20 transition hover:bg-brand-700 sm:inline-flex dark:bg-brand-500 dark:hover:bg-brand-400">
+          <Link to="/register" className="hidden items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-brand-600/20 transition hover:bg-brand-700 sm:inline-flex dark:bg-brand-600 dark:hover:bg-brand-500">
             Get started <ArrowRight className="size-4" />
           </Link>
           <button
@@ -258,27 +258,27 @@ const COLUMNS: { name: string; dot: string; cards: MockCard[] }[] = [
   {
     name: "To Do", dot: "bg-slate-400",
     cards: [
-      { key: "WEB-14", title: "Onboarding wizard copy", type: "bg-emerald-500", pts: 3, who: "AR", color: "bg-pink-500" },
-      { key: "API-9", title: "Rate limiter for public API", type: "bg-sky-500", pts: 5, who: "BJ", color: "bg-amber-500" },
+      { key: "WEB-14", title: "Onboarding wizard copy", type: "bg-emerald-500", pts: 3, who: "AR", color: "bg-pink-700" },
+      { key: "API-9", title: "Rate limiter for public API", type: "bg-sky-500", pts: 5, who: "BJ", color: "bg-amber-700" },
     ],
   },
   {
     name: "In Progress", dot: "bg-blue-500",
     cards: [
-      { key: "WEB-12", title: "Redesign checkout flow", type: "bg-emerald-500", pts: 8, who: "DJ", color: "bg-brand-500" },
+      { key: "WEB-12", title: "Redesign checkout flow", type: "bg-emerald-500", pts: 8, who: "DJ", color: "bg-brand-600" },
     ],
   },
   {
     name: "In Review", dot: "bg-violet-500",
     cards: [
-      { key: "MOB-8", title: "Fix crash on Android 14", type: "bg-rose-500", pts: 2, who: "EM", color: "bg-teal-500" },
-      { key: "WEB-10", title: "Dark mode for dashboard", type: "bg-sky-500", pts: 3, who: "JW", color: "bg-violet-500" },
+      { key: "MOB-8", title: "Fix crash on Android 14", type: "bg-rose-500", pts: 2, who: "EM", color: "bg-teal-700" },
+      { key: "WEB-10", title: "Dark mode for dashboard", type: "bg-sky-500", pts: 3, who: "JW", color: "bg-violet-700" },
     ],
   },
   {
     name: "Done", dot: "bg-emerald-500",
     cards: [
-      { key: "API-4", title: "JWT refresh rotation", type: "bg-sky-500", pts: 5, who: "RC", color: "bg-rose-500" },
+      { key: "API-4", title: "JWT refresh rotation", type: "bg-sky-500", pts: 5, who: "RC", color: "bg-rose-700" },
     ],
   },
 ];
@@ -342,7 +342,7 @@ function ProductPreview() {
                 <p className="text-[11px] text-slate-500">Oct 30 – Nov 12 · 14 issues · 64 pts</p>
               </div>
               <div className="flex -space-x-1.5">
-                {["bg-brand-500", "bg-pink-500", "bg-amber-500", "bg-teal-500", "bg-violet-500"].map((c, i) => (
+                {["bg-brand-600", "bg-pink-700", "bg-amber-700", "bg-teal-700", "bg-violet-700"].map((c, i) => (
                   <span key={c} className={cn("flex size-6 items-center justify-center rounded-full text-[9px] font-bold text-white ring-2 ring-white dark:ring-slate-900", c)}>
                     {["DJ", "AR", "BJ", "EM", "JW"][i]}
                   </span>
@@ -374,7 +374,7 @@ function ProductPreview() {
       <div className="absolute top-[46%] left-[30%] hidden w-44 -rotate-3 sm:block md:left-[42%]">
         <div className="motion-safe:animate-float">
           <MiniCard
-            card={{ key: "WEB-15", title: "Add Stripe checkout to pricing", type: "bg-emerald-500", pts: 5, who: "DJ", color: "bg-brand-500" }}
+            card={{ key: "WEB-15", title: "Add Stripe checkout to pricing", type: "bg-emerald-500", pts: 5, who: "DJ", color: "bg-brand-600" }}
             className="shadow-2xl ring-2 shadow-brand-900/20 ring-brand-500/60"
           />
           <MousePointer2 className="absolute -right-3 -bottom-4 size-6 fill-slate-900 text-white drop-shadow dark:fill-white dark:text-slate-900" />
@@ -557,7 +557,7 @@ function Workspaces() {
                   <span className={cn("flex size-9 items-center justify-center rounded-xl bg-gradient-to-br text-sm font-bold", t.grad)}>{t.name[0]}</span>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{t.name}</p>
-                    <p className="text-xs text-slate-400">{t.plan} plan</p>
+                    <p className="text-xs text-slate-300">{t.plan} plan</p>
                   </div>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-1.5">
@@ -582,7 +582,7 @@ function Workspaces() {
                     <Icon className="mt-0.5 size-4 shrink-0 text-brand-300" />
                     <div>
                       <p className="text-sm font-semibold">{label}</p>
-                      <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{description}</p>
+                      <p className="mt-0.5 text-xs leading-relaxed text-slate-300">{description}</p>
                     </div>
                   </div>
                 );
@@ -601,12 +601,12 @@ function HowItWorks() {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <SectionHeading eyebrow="How it works" title="Up and running in four steps" text="From sign-up to your first finished sprint, without setup headaches." />
         <ol className="relative mt-16 grid gap-8 md:grid-cols-2 lg:grid-cols-4">
-          <div className="pointer-events-none absolute top-7 right-[12%] left-[12%] hidden h-px bg-gradient-to-r from-transparent via-brand-300 to-transparent lg:block dark:via-brand-500/40" />
+          <li aria-hidden="true" className="pointer-events-none absolute top-7 right-[12%] left-[12%] hidden h-px bg-gradient-to-r from-transparent via-brand-300 to-transparent lg:block dark:via-brand-500/40"></li>
           {STEPS.map(({ icon: Icon, title, text }, i) => (
             <li key={title} className="relative text-center">
               <span className="relative mx-auto flex size-14 items-center justify-center rounded-2xl bg-white text-brand-600 shadow-lg ring-1 shadow-brand-900/5 ring-slate-200 dark:bg-slate-900 dark:text-brand-400 dark:ring-slate-800">
                 <Icon className="size-6" />
-                <span className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white dark:bg-brand-500">{i + 1}</span>
+                <span className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white dark:bg-brand-600">{i + 1}</span>
               </span>
               <h3 className="mt-6 text-base font-semibold text-slate-900 dark:text-white">{title}</h3>
               <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-slate-600 dark:text-slate-400">{text}</p>

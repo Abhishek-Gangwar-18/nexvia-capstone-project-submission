@@ -9,7 +9,7 @@ import { EmptyState, PageLoader } from "@/components/ui/Misc";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import { useDeleteProject, useProject, useUpdateProject } from "@/hooks/queries";
 import { usePermissions, useWorkspace } from "@/hooks/useWorkspace";
-import { cn } from "@/lib/utils";
+import { cn, readableOn } from "@/lib/utils";
 import { useUI } from "@/store/ui";
 
 export default function ProjectLayout() {
@@ -51,8 +51,8 @@ export default function ProjectLayout() {
       <div className="border-b border-slate-200/80 bg-white px-4 pt-5 sm:px-8 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-wrap items-center gap-3">
           <span
-            className="flex size-10 shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white shadow-sm"
-            style={{ backgroundColor: project.color }}
+            className="flex size-10 shrink-0 items-center justify-center rounded-xl text-sm font-bold shadow-sm"
+            style={readableOn(project.color)}
           >
             {project.key.slice(0, 2)}
           </span>

@@ -47,7 +47,17 @@
   color-scheme: light;
 }
 
+/* WCAG AA in light mode: slate-400 text was 2.6:1 on white and slate-500 4.3:1 on slate-100. These pass
+   (>= 4.8:1 and >= 5.7:1) on every light surface. Dark mode is adjusted below. */
+:root:not(.dark) {
+  --color-slate-400: #5d6d84;
+  --color-slate-500: #526177;
+}
+
 .dark {
+  /* WCAG AA: slate-500 secondary text was 3.7:1 on the dark surfaces; this is 4.7:1 on slate-800 and
+     5.7:1 on slate-900. Light mode keeps the stock shade. */
+  --color-slate-500: #8193ab;
   --tooltip-bg: #0f172a;
   --tooltip-border: #334155;
   --chart-grid: #1e293b;

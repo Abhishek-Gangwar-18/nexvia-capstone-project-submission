@@ -81,3 +81,36 @@ export function pluralize(count: number, word: string, plural = `${word}s`) {
 export function percent(part: number, total: number) {
   return total ? Math.round((part / total) * 100) : 0;
 }
+
+/* ------------------------------------------------------------ colour contrast (WCAG AA) */
+
+function luminance(hex: string): number {
+  const v = hex.replace("#", "");
+  const [r, g, b] = [0, 2, 4]
+    .map((i) => parseInt(v.slice(i, i + 2), 16) / 255)
+    .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+export function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const darken = (hex: string, factor: number) =>
+  `#${[0, 2, 4]
+    .map((i) => Math.round(parseInt(hex.replace("#", "").slice(i, i + 2), 16) * factor).toString(16).padStart(2, "0"))
+    .join("")}`;
+
+/**
+ * Background + text colours for initials/keys on a user-chosen colour (avatars, project badges) that meet WCAG AA
+ * (4.5:1): white text if it passes, else dark text if that passes, else white on a slightly darkened background.
+ */
+export function readableOn(hex: string): { backgroundColor: string; color: string } {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return { backgroundColor: hex, color: "#ffffff" };
+  if (contrastRatio("#ffffff", hex) >= 4.5) return { backgroundColor: hex, color: "#ffffff" };
+  if (contrastRatio("#0f172a", hex) >= 4.5) return { backgroundColor: hex, color: "#0f172a" };
+  let factor = 0.95;
+  while (contrastRatio("#ffffff", darken(hex, factor)) < 4.5 && factor > 0.4) factor -= 0.05;
+  return { backgroundColor: darken(hex, factor), color: "#ffffff" };
+}

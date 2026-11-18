@@ -1,5 +1,5 @@
 import { Menu, MenuButton, MenuItem, MenuItems, MenuSeparator } from "@headlessui/react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export interface DropdownItem {
@@ -23,7 +23,11 @@ export function Dropdown({
 }) {
   return (
     <Menu>
-      <MenuButton as="div" className={cn("inline-flex", className)}>{trigger}</MenuButton>
+      {/* The trigger (a <button>) is the menu button itself, so aria-expanded/aria-haspopup sit on the button and
+          not on a role-less wrapper div. The div only handles layout. */}
+      <div className={cn("inline-flex", className)}>
+        <MenuButton as={Fragment}>{trigger}</MenuButton>
+      </div>
       <MenuItems
         anchor={anchor}
         transition

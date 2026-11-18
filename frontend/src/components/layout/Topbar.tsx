@@ -68,9 +68,10 @@ export function Topbar() {
       <div className="flex-1" />
 
       {canEdit && (
-        <Button variant="primary" size="sm" icon={<Plus className="size-4" />} onClick={() => openCreate()}>
-          <span className="hidden sm:inline">Create</span>
-          <span className="ml-1 hidden sm:inline-flex">
+        <Button variant="primary" size="sm" icon={<Plus className="size-4" />} onClick={() => openCreate()} aria-keyshortcuts="c">
+          {/* Screen-reader text on small screens (icon only there), visible text from sm up. */}
+          <span className="sr-only sm:not-sr-only">Create</span>
+          <span className="ml-1 hidden sm:inline-flex" aria-hidden="true">
             <Kbd className="border-white/20 bg-white/15 text-white dark:border-white/20 dark:bg-white/15 dark:text-white">C</Kbd>
           </span>
         </Button>
@@ -85,7 +86,7 @@ export function Topbar() {
       <Dropdown
         header={
           <div className="flex items-center gap-2.5">
-            <Avatar user={user} size="md" />
+            <span aria-hidden="true"><Avatar user={user} size="md" /></span>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">{user?.display_name}</p>
               <p className="truncate text-xs text-slate-500">{user?.email}</p>
@@ -93,8 +94,9 @@ export function Topbar() {
           </div>
         }
         trigger={
-          <button className="cursor-pointer rounded-full transition hover:ring-4 hover:ring-slate-100 dark:hover:ring-slate-800" aria-label="Account menu">
-            <Avatar user={user} size="md" />
+          <button className="cursor-pointer rounded-full transition hover:ring-4 hover:ring-slate-100 dark:hover:ring-slate-800">
+            <span className="sr-only">Account menu</span>
+            <span aria-hidden="true"><Avatar user={user} size="md" /></span>
           </button>
         }
         items={[
