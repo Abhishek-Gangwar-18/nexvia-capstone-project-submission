@@ -62,7 +62,7 @@ Acme's projects are `WEB` (Website Revamp), `MOB` (Mobile App) and `API` (Platfo
 
 ### A. Swagger UI (easiest)
 
-1. Open **http://127.0.0.1:8000/api/docs/**. It needs no login, but it loads its assets from a CDN, so you
+1. Open **http://127.0.0.1:8000/api/docs/** (development; production turns it off with `API_DOCS=off`). Swagger uses body mode: tokens come back in the JSON. It needs no login, but it loads its assets from a CDN, so you
    need internet access.
 2. Run `POST /api/auth/login/` → **Try it out** with `{"email": "owner@acme.test", "password": "Demo@1234"}`.
 3. Copy the `access` value, click **Authorize** (top right), paste it into **jwtAuth** (no `Bearer ` prefix).
@@ -106,6 +106,7 @@ Invoke-RestMethod -Method Post -Uri "$base/issues/" -Headers $h -ContentType "ap
 | `Authorization: Bearer <access>` | every endpoint except register/login/refresh/logout, password reset, invitation preview, health, docs | `Bearer eyJhbGci…` |
 | `X-Workspace: <slug>` | every **workspace-scoped** endpoint (see the table in section 5) | `X-Workspace: acme` |
 | `Content-Type: application/json` | requests with a body | |
+| `X-Auth-Mode: cookie` | optional; the browser app sends it on every request. Switches the auth endpoints to the httpOnly refresh cookie (see Tokens below) | `X-Auth-Mode: cookie` |
 
 `?workspace=acme` as a query parameter works as a fallback for `X-Workspace`.
 
@@ -831,15 +832,15 @@ before the one already applied is discarded.
 | Method & path | WS? | Min role | Purpose |
 |---|:-:|---|---|
 | `GET /health/` | | public | liveness + DB check |
-| `POST /auth/register/` | | public | sign up (+ `workspace_name` or `invite_token`) · throttled |
-| `POST /auth/login/` | | public | JWT pair + user · throttled |
-| `POST /auth/refresh/` | | public | rotate tokens · throttled |
-| `POST /auth/logout/` | | public | revoke one refresh token → 204 (400 if missing/malformed) |
-| `POST /auth/logout-all/` | | logged in | revoke every refresh token → 204 |
+| `POST /auth/register/` | | public | sign up (+ `workspace_name` or `invite_token`) · throttled. Cookie mode: refresh token set as the `fb_refresh` cookie, not in the body |
+| `POST /auth/login/` | | public | JWT pair + user · throttled. Cookie mode: `{access, user}` + `fb_refresh` cookie |
+| `POST /auth/refresh/` | | public | rotate tokens · throttled. Body mode: `{refresh}` → `{access, refresh}`. Cookie mode: reads only the cookie → `{access}` + rotated cookie; no or invalid cookie → 401 and the cookie is cleared |
+| `POST /auth/logout/` | | public | revoke one refresh token → 204 (body mode: 400 if missing/malformed). Cookie mode: revokes the cookie's token if valid, always clears the cookie, 204 |
+| `POST /auth/logout-all/` | | logged in | revoke every refresh token → 204 (cookie mode also clears the cookie) |
 | `POST /auth/password-reset/` | | public | email a reset link → always 204 · throttled |
 | `POST /auth/password-reset/confirm/` | | public | `uid`, `token`, `new_password` → 204 · throttled |
 | `GET/PATCH /auth/me/` | | logged in | profile (`first_name`, `last_name`, `job_title`, `avatar_color`, `email_notifications`) |
-| `POST /auth/change-password/` | | logged in | → 200 new token pair; other sessions revoked · throttled |
+| `POST /auth/change-password/` | | logged in | → 200 new token pair; other sessions revoked · throttled. Cookie mode: `{access}` + new cookie |
 | `GET/POST /workspaces/` | | logged in | my workspaces (with my role) / create one (I become owner; ≤ 10 owned) |
 | `GET /workspace/` | ✅ | viewer | current workspace |
 | `PATCH /workspace/` | ✅ | admin | rename |
@@ -891,7 +892,7 @@ before the one already applied is discarded.
 | `POST /billing/portal/` | ✅ | owner | Stripe Customer Portal URL · throttled |
 | `POST /billing/sync/` | ✅ | owner | re-read the subscription from Stripe · throttled per workspace |
 | `POST /billing/webhook/` | | Stripe signature | Stripe events (not in Swagger) |
-| `GET /schema/` · `GET /docs/` | | public | OpenAPI 3 + Swagger UI |
+| `GET /schema/` · `GET /docs/` | | `API_DOCS` | OpenAPI 3 + Swagger UI: public in development, `staff` or 404 (`off`, the production default) otherwise |
 
 ### Issue list filters
 

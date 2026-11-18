@@ -1,20 +1,21 @@
 # FlowBoard: Test Results
 
 Measured on **18 November 2026** on the local development machine (Windows 11, 20 logical CPUs). All numbers
-below come from real runs. The backend and frontend suites were re-run after the security hardening (production
-configuration, httpOnly refresh cookie, token cleanup, log redaction);
-the end-to-end smoke test (§4) and the API timings (§5) are from the earlier run with the full Docker stack and
-haven't been re-measured since. How each suite works is described in
+below come from real runs. Everything except the API timings (§5) was re-run in the final verification after the
+security hardening (production configuration, httpOnly refresh cookie, token cleanup, log redaction): backend and
+frontend suites, Django checks, a full Docker rebuild, the smoke test and the nginx security checks. The API timings
+are from the earlier run with the full Docker stack and haven't been re-measured since. How each suite works is described in
 [API_TEST.md §8](API_TEST.md#8-automated-tests) and [ARCHITECTURE.md §11](ARCHITECTURE.md#11-testing-strategy).
 
 ## 1. Summary
 
 | Suite | Tool | Tests | Result | Run time |
 |---|---|---|---|---|
-| Backend unit + API + concurrency + schema integrity + security | pytest-django on PostgreSQL 16 + Redis 7 | **983** | ✅ 983 passed, 0 failed | 19 min 18 s (1158 s, last full run, serial; includes real-thread race and migration tests) |
+| Backend unit + API + concurrency + schema integrity + security | pytest-django on PostgreSQL 16 + Redis 7 | **983** | ✅ 983 passed, 0 failed | 18 min 45 s (1125 s, final verification run, serial; the previous run took 1158 s; includes real-thread race and migration tests) |
 | Frontend unit + component | Vitest 3.2 + React Testing Library (jsdom) | **47** | ✅ 47 passed, 0 failed | ~5 s |
 | End-to-end smoke (full Docker stack) | `scripts/smoke_test.py` through nginx | **26 checks** | ✅ 26/26 passed | a few seconds |
 | nginx security (built frontend image) | `scripts/nginx_security_test.sh` | **33 checks** | ✅ 33/33 passed | ~30 s |
+| Docker stack rebuild | `docker compose up -d --build --wait` | 6 services | ✅ all up, backend healthy | a few minutes |
 | Django system check | `manage.py check` | n/a | ✅ no issues | n/a |
 | Migration drift | `makemigrations --check --dry-run` | n/a | ✅ no changes detected | n/a |
 | Type check + production build | `tsc -b` + `vite build` | n/a | ✅ no errors | ~6 s |

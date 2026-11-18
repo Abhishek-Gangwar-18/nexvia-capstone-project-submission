@@ -67,6 +67,7 @@ Pick the 3 you can explain best:
 
 - Real-time board updates (WebSockets / Django Channels).
 - Route-level code splitting to shrink the main frontend bundle.
+- Run the nginx security checks in CI and add a Redis password in production.
 - More frontend tests (board drag-and-drop, issue drawer) and browser end-to-end tests (Playwright).
 - Load testing (e.g. Locust) and caching for the dashboard.
 - Import real seed data from the public Jira dataset.

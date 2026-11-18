@@ -8,9 +8,9 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 
 | 📄 Doc | What's inside |
 |---|---|
-| **README.md** (this file) | What it is, how to run it (Docker or local), demo accounts, project status |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, multi-tenancy, data model, auth & roles, billing, frontend, Docker and CI/CD |
-| [docs/API_TEST.md](docs/API_TEST.md) | Testing the API with Swagger / curl / PowerShell, endpoint reference, security scenarios, automated tests |
+| **README.md** (this file) | What it is, features, architecture, tech stack, how to run it (Docker or local), demo accounts, project status |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture and ER diagrams, multi-tenancy, data model, auth & security, billing, frontend, Docker and CI/CD |
+| [docs/API_TEST.md](docs/API_TEST.md) | API documentation: auth (body and browser cookie modes), every endpoint, testing with Swagger / curl / PowerShell, security scenarios, automated tests |
 | [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (983 backend, 47 frontend, 26/26 smoke, 33/33 nginx security) and measured API response times |
 | [docs/DEMO.md](docs/DEMO.md) | Step-by-step demo script with accounts, timings and fallbacks |
 | [docs/PRESENTATION.md](docs/PRESENTATION.md) | 10-minute presentation outline: problem, design, challenges, results, next steps |
@@ -117,6 +117,47 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 - One command runs the whole stack, migrates and loads the demo data.
 - **GitHub Actions**: backend tests on Postgres + Redis, frontend build, Docker build + end-to-end smoke test,
   image push to GHCR and an SSH deploy.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    B["Browser<br/>React SPA"] -->|"HTTPS · access token in memory<br/>refresh token in httpOnly cookie"| N["nginx<br/>SPA · CSP · admin allowlist<br/>redacted access log"]
+    N -->|"/api /admin /static"| D["Django + DRF<br/>(gunicorn)"]
+    D --> P[("PostgreSQL 16<br/>workspace_id on every row")]
+    D -->|"enqueue"| R[("Redis 7<br/>broker · rate limits · lockout")]
+    R --> W["Celery worker<br/>webhooks · email · reports · purges"]
+    BT["Celery beat<br/>nightly jobs"] --> R
+    W --> P
+    D <-->|"Checkout · Portal · signed webhooks"| S["Stripe (test mode)"]
+```
+
+- **Multi-tenancy:** one shared database and schema; every tenant row carries `workspace_id`. The request
+  middleware resolves `X-Workspace` against your memberships, a tenant-aware query manager fails closed, and
+  writes reject foreign ids. Other tenants' data answers 404.
+- **Auth:** JWT (30-minute access, 7-day rotating refresh with a blacklist). The SPA keeps the refresh token in an
+  httpOnly cookie and the access token in memory; scripts use the JSON body.
+- **Background work:** Celery runs webhook deliveries, emails, reports, workspace purges and nightly cleanups.
+- **Integrity:** business rules are backed by PostgreSQL constraints and triggers, not just application code.
+
+The full design, including the ER diagram, request lifecycle and deployment, is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§1 system overview, §5 data model).
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Backend API | Python 3.13, Django 5.2, Django REST Framework, SimpleJWT (rotation + blacklist), django-filter, drf-spectacular (OpenAPI) |
+| Database | PostgreSQL 16 (psycopg 3) |
+| Background jobs | Celery 5 + beat, Redis 7 (broker, shared cache for rate limits and lockouts) |
+| Billing | Stripe Billing (test mode): Checkout, Customer Portal, signed webhooks |
+| Frontend | React 19, TypeScript 5.9, Vite 7, pnpm, React Router 7, TanStack Query 5, Zustand, Tailwind CSS 4, Headless UI, dnd-kit, Recharts |
+| Testing | pytest-django on real PostgreSQL + Redis, Vitest + React Testing Library, a stdlib smoke test, an nginx security script |
+| Delivery | Docker + Docker Compose, gunicorn + whitenoise, nginx 1.29, GitHub Actions, GHCR |
+
+Versions and the reason for each choice: [ARCHITECTURE.md §2](docs/ARCHITECTURE.md#2-tech-stack).
 
 ---
 
@@ -255,7 +296,7 @@ backend/                  Django project (config/) + apps: core, accounts, tenan
                           automation, billing · Dockerfile · docker-entrypoint.sh
 frontend/                 React + TypeScript SPA (Vite, pnpm): public home page + the app · Dockerfile · nginx.conf.template
 docs/                     ARCHITECTURE.md, API_TEST.md, TEST_RESULTS.md, DEMO.md, PRESENTATION.md, REFLECTION.md, screenshots/
-scripts/smoke_test.py     end-to-end checks against a running stack
+scripts/                  smoke_test.py (end-to-end checks against a running stack), nginx_security_test.sh (nginx hardening checks)
 .github/workflows/ci.yml  CI/CD pipeline
 docker-compose.yml        full stack locally (or just db + redis for development)
 docker-compose.prod.yml   production stack using the images CI pushes to GHCR

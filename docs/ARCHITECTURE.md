@@ -82,7 +82,7 @@ flowchart LR
 | Build | Vite + pnpm | 7.3 · 12.16 | Fast dev server with proxy; strict, reproducible installs |
 | Routing | React Router (library mode) | 7.18 | Nested layouts (workspace → project → tab) |
 | Server state | TanStack Query | 5.105 | Caching, invalidation, optimistic updates |
-| Client state | Zustand (persist) | 5.0 | Auth tokens + UI prefs in localStorage |
+| Client state | Zustand | 5.0 | Auth in memory only (refresh token is an httpOnly cookie); UI prefs persisted in localStorage |
 | UI | Tailwind CSS v4, Headless UI, lucide-react | 4.3 · 2.2 · 1.x | Accessible primitives, design tokens, dark mode |
 | Drag & drop | dnd-kit (core + sortable) | 6.3 · 10.0 | Multi-container sortable lists, keyboard support |
 | Charts | Recharts | 3.10 | Dashboard charts |
@@ -105,6 +105,7 @@ flowchart LR
 ├── .gitattributes              keeps LF endings for shell scripts / Dockerfiles
 ├── .github/workflows/ci.yml    CI/CD pipeline
 ├── scripts/smoke_test.py       end-to-end checks against a running stack
+├── scripts/nginx_security_test.sh  nginx hardening checks against the built frontend image
 ├── README.md
 ├── docs/
 │   ├── API_TEST.md             manual + automated API testing guide
@@ -119,8 +120,8 @@ flowchart LR
 │   ├── Dockerfile · docker-entrypoint.sh · .dockerignore
 │   ├── config/                 settings.py (env-driven), urls.py, wsgi/asgi, celery.py
 │   └── apps/
-│       ├── core/               tenancy primitives, API base classes, seed command, tests
-│       ├── accounts/           custom User (email login), auth endpoints
+│       ├── core/               tenancy primitives, API base classes, request logging + redaction, API docs gate, seed command, tests
+│       ├── accounts/           custom User (email login), auth endpoints, refresh-token cookie, login lockout
 │       ├── tenants/            Workspace, Membership, Invitation
 │       ├── projects/           Project, Workflow, WorkflowStatus, WorkflowTransition, Board, Sprint
 │       ├── issues/             Issue, Label, comments, attachments, AuditLog, move service, filters, dashboard
@@ -128,11 +129,13 @@ flowchart LR
 │       └── billing/            plans, limits, Subscription, Stripe services + webhook, stripe_setup command
 └── frontend/
     ├── package.json · pnpm-lock.yaml · pnpm-workspace.yaml · vite.config.ts
-    ├── Dockerfile · nginx.conf.template · .dockerignore
+    ├── Dockerfile · nginx.conf.template · proxy-backend.inc.template · .dockerignore
+    ├── docker/                 40-security-snippets.sh: admin allowlist, trusted proxies, headers and CSP, generated at start
+    ├── scripts/                csp-style-hashes.mjs: CSP hashes for inline styles, computed at build time
     └── src/
         ├── main.tsx · App.tsx · router.tsx · index.css · types.ts
-        ├── lib/                api client, query client, utils, constants
-        ├── store/              zustand: auth, ui
+        ├── lib/                api client, session (cookie refresh, Web Locks, restore, logout), query client, utils, constants
+        ├── store/              zustand: auth (in memory only), ui
         ├── test/               Vitest setup (jest-dom matchers, cleanup); *.test.ts(x) sit next to their code
         ├── hooks/              queries.ts (all API hooks), useWorkspace, useSortableContainers
         ├── components/
@@ -149,8 +152,8 @@ flowchart LR
 
 | App | Owns | Key modules |
 |---|---|---|
-| `core` | The tenancy framework that every other app builds on | `models.py` (TenantModel, TenantQuerySet), `context.py` (ContextVar), `middleware.py`, `api.py` (WorkspaceScopedMixin, TenantModelViewSet), `permissions.py`, `fields.py`, `exceptions.py`, `pagination.py`, `schema.py`, `management/commands/seed_demo.py` |
-| `accounts` | Identity | `User` (email is the username), register/login/refresh/logout/me/change-password |
+| `core` | The tenancy framework that every other app builds on | `models.py` (TenantModel, TenantQuerySet), `context.py` (ContextVar), `middleware.py`, `api.py` (WorkspaceScopedMixin, TenantModelViewSet), `permissions.py`, `fields.py`, `exceptions.py`, `pagination.py`, `schema.py`, `management/commands/seed_demo.py`, `request_logging.py` (request ids, `redact_path`), `docs.py` (`API_DOCS` gate) |
+| `accounts` | Identity | `User` (email is the username), register/login/refresh/logout/me/change-password; `cookie_auth.py` (httpOnly refresh cookie), `lockout.py` (shared API/admin login lockout) |
 | `tenants` | The tenant itself | `Workspace`, `Membership` (role), `Invitation`; services `create_workspace`, `accept_invitation` |
 | `projects` | Containers of work | `Project`, `Workflow` + statuses + transitions, `Board`, `Sprint`; `services.create_project` scaffolds a workflow and a board |
 | `issues` | Work items and history | `Issue`, `Label`, `IssueComment`, `IssueAttachment`, `AuditLog`; `services.move_issue` (ranking), `activity.py` (`record_issue_event`, `record_event`), `dashboard.DashboardView`; `signals.py` guards labels, removes attachment files, releases a removed member's work |
@@ -863,6 +866,13 @@ flowchart LR
 - **Old containers must not run against a migrated database:** stop `backend`, `worker` and `beat` before
   migrating (or let the new image's `RUN_MIGRATIONS` do it on start); code from before the review queries
   columns that no longer exist (for example `Invitation.token`).
+- **Production security settings** (all in `docker-compose.prod.yml`, see [7.2](#72-security-hardening-production-configuration-and-logging)):
+  `ADMIN_ALLOWLIST` (empty = admin closed), `TRUSTED_PROXY_CIDRS` (your TLS proxy, otherwise client IPs are the
+  proxy's), `CSP_HEADER` (switch to `Content-Security-Policy-Report-Only` only while checking a CSP change),
+  `API_DOCS` (`off`), `DJANGO_HSTS_SECONDS` (one year; `DJANGO_HSTS_INCLUDE_SUBDOMAINS`/`DJANGO_HSTS_PRELOAD`
+  only when every subdomain is HTTPS). After changing the nginx config, run `scripts/nginx_security_test.sh`.
+- **Logs from before the redaction fix** may contain real password-reset and invitation tokens. Restrict who can
+  read them and purge them under your retention policy; recreating the containers clears Docker's local logs.
 
 ### CI/CD pipeline (`.github/workflows/ci.yml`)
 
@@ -915,4 +925,6 @@ row-locking behaviour are part of what's being tested.
 | + | Schema review of all 21 tables: DB-enforced integrity, lost-update fixes, async workspace deletion, measured indexes ([5](#5-data-model), [6](#6-domain-rules)) | ✅ |
 
 Possible next steps: more frontend tests (board drag-and-drop, issue drawer) and a linter in CI, splitting the
-main JS bundle, browser E2E tests in CI, and an HTTPS reverse proxy (e.g. Caddy) in the production compose file.
+main JS bundle, browser E2E tests in CI, an HTTPS reverse proxy (e.g. Caddy) in the production compose file,
+running `scripts/nginx_security_test.sh` in CI, a Redis password in production (defence in depth; Redis is
+already internal-only), pinning Celery's JSON serializer explicitly, and `CONCURRENTLY` index builds for large databases.
