@@ -7,7 +7,7 @@ from rest_framework import serializers
 from apps.accounts.serializers import UserMiniSerializer
 from apps.core.fields import TenantPrimaryKeyRelatedField, WorkspaceMemberField
 
-from .models import PROJECT_KEY_VALIDATOR, Board, Project, Sprint, WorkflowStatus
+from .models import PROJECT_DESCRIPTION_MAX, SPRINT_GOAL_MAX, RESERVED_STATUS_PREFIX, PROJECT_KEY_VALIDATOR, Board, Project, Sprint, WorkflowStatus
 from .services import next_sprint_name
 
 HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -52,6 +52,9 @@ class WorkflowConfigSerializer(serializers.Serializer):
             category = status.get("category")
             if not isinstance(name, str) or not name.strip() or len(name.strip()) > 40:
                 errors.setdefault("statuses", {})[index] = "Name is required (1–40 characters)."
+            elif name.strip().casefold().startswith(RESERVED_STATUS_PREFIX):
+                # The editor briefly renames kept statuses to this prefix while saving (to allow name swaps).
+                errors.setdefault("statuses", {})[index] = "Status names can't start with “__workflow_tmp_”."
             elif name.strip().casefold() in names:
                 errors.setdefault("statuses", {})[index] = "Status names must be unique."
             else:
@@ -89,6 +92,21 @@ class WorkflowConfigSerializer(serializers.Serializer):
                 errors.setdefault("transitions", {})[index] = "Duplicate transition."
             else:
                 pairs.add((source, target))
+        if data["enforce_transitions"] and "transitions" not in errors:
+            # With rules enforced, an issue can only move along a transition: no transitions freezes every
+            # issue, and a status no transition touches can never be entered or left. Self-transitions are
+            # already refused above, so they never count. Terminal statuses (incoming only) and branches are
+            # fine, and reachability from a "first" status is deliberately not required.
+            if not pairs:
+                errors["transitions"] = "Add at least one transition, or turn off transition rules."
+            else:
+                connected = {index for pair in pairs for index in pair}
+                isolated = [statuses[i].get("name") for i in range(len(statuses)) if i not in connected]
+                if isolated:
+                    errors["transitions"] = (
+                        "Every status needs at least one transition in or out when rules are enforced. "
+                        f"Not connected: {', '.join(str(n) for n in isolated)}."
+                    )
         if errors:
             raise serializers.ValidationError(errors)
         return data
@@ -99,6 +117,14 @@ class BoardSerializer(serializers.ModelSerializer):
         model = Board
         fields = ["id", "project", "name", "board_type", "wip_limits"]
         read_only_fields = ["project"]
+
+    def update(self, instance, validated_data):
+        """Only the submitted fields: a full-row save would put back stale wip_limits (e.g. a limit the workflow
+        editor just pruned) or overwrite a concurrent board_type change. The view has locked and re-read it."""
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save(update_fields=sorted({*validated_data, "updated_at"}))
+        return instance
 
     def validate_wip_limits(self, value):
         """{"<status id>": <limit>} for this project's current workflow. null removes a limit."""
@@ -129,6 +155,10 @@ class SprintMiniSerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     # Declared explicitly so the model's uppercase-only validator runs after normalisation.
     key = serializers.CharField(max_length=10)
+    description = serializers.CharField(
+        max_length=PROJECT_DESCRIPTION_MAX, required=False, allow_blank=True,
+        error_messages={"max_length": f"Description can be at most {PROJECT_DESCRIPTION_MAX:,} characters."},
+    )
     lead = WorkspaceMemberField(required=False, allow_null=True)
     lead_detail = UserMiniSerializer(source="lead", read_only=True)
     statuses = serializers.SerializerMethodField()
@@ -153,6 +183,14 @@ class ProjectSerializer(serializers.ModelSerializer):
         if not HEX_COLOR.fullmatch(value):
             raise serializers.ValidationError("Color must be a hex color such as #6366f1.")
         return value
+
+    def update(self, instance, validated_data):
+        """Write only the columns this request changed, never the whole row: a full-row save would put back a
+        stale issue_counter (or any other column changed meanwhile). The view has locked and re-read `instance`."""
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save(update_fields=sorted({*validated_data, "updated_at"}))
+        return instance
 
     def validate_key(self, value):
         value = value.strip().upper()
@@ -188,6 +226,10 @@ class SprintSerializer(serializers.ModelSerializer):
     total_points = serializers.IntegerField(read_only=True, default=0)
     done_points = serializers.IntegerField(read_only=True, default=0)
     name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    goal = serializers.CharField(
+        max_length=SPRINT_GOAL_MAX, required=False, allow_blank=True,
+        error_messages={"max_length": f"Goal can be at most {SPRINT_GOAL_MAX:,} characters."},
+    )
 
     class Meta:
         model = Sprint
@@ -212,7 +254,17 @@ class SprintSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_date": "End date must be on or after the start date."})
         if self.instance and self.instance.state == Sprint.State.CLOSED:
             raise serializers.ValidationError("Closed sprints are read-only.")
+        if self.instance and self.instance.state == Sprint.State.ACTIVE and (not start or not end):
+            raise serializers.ValidationError("An active sprint needs both a start and an end date.")
         return attrs
+
+    def update(self, instance, validated_data):
+        """Write only the submitted fields, never the whole row: a full-row save would put back a stale state,
+        dates or completed_at written by start/complete meanwhile. The view has locked and re-read `instance`."""
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save(update_fields=sorted({*validated_data, "updated_at"}))
+        return instance
 
     def create(self, validated_data):
         if not validated_data.get("name"):
@@ -223,7 +275,10 @@ class SprintSerializer(serializers.ModelSerializer):
 class SprintStartSerializer(serializers.Serializer):
     start_date = serializers.DateField(required=False)
     end_date = serializers.DateField(required=False)
-    goal = serializers.CharField(required=False, allow_blank=True)
+    goal = serializers.CharField(
+        required=False, allow_blank=True, max_length=SPRINT_GOAL_MAX,
+        error_messages={"max_length": f"Goal can be at most {SPRINT_GOAL_MAX:,} characters."},
+    )
 
 
 class SprintCompleteSerializer(serializers.Serializer):

@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
+from django.db.models import Count, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, extend_schema_view
@@ -12,10 +12,10 @@ from rest_framework.response import Response
 from apps.billing.limits import check_can_add_project
 from apps.core.api import TenantModelViewSet, WorkspaceScopedMixin
 from apps.issues.activity import field_changes, record_event
-from apps.issues.models import AuditLog
+from apps.issues.models import AuditLog, Issue
 from apps.tenants.models import Membership, Workspace
 
-from .models import Board, Project, Sprint, WorkflowStatus, WorkflowTransition
+from .models import RESERVED_STATUS_PREFIX, Board, Project, Sprint, WorkflowStatus, WorkflowTransition
 from .serializers import (
     BoardSerializer, DeleteProjectSerializer, ProjectSerializer, SprintCompleteSerializer, SprintSerializer, SprintStartSerializer,
     WorkflowConfigSerializer, WorkflowStatusSerializer,
@@ -59,15 +59,24 @@ class ProjectViewSet(TenantModelViewSet):
                 "boards",
                 Prefetch("sprints", queryset=Sprint.objects.filter(state=Sprint.State.ACTIVE), to_attr="active_sprints"),
             )
-            .annotate(
-                issue_count=Count("issues", distinct=True),
-                done_count=Count("issues", filter=Q(issues__status__category=DONE), distinct=True),
-            )
         )
+
+    @staticmethod
+    def with_counts(queryset):
+        """Issue totals per project as correlated subqueries: cost grows with the projects shown, not with
+        every issue in the workspace (JOIN + COUNT(DISTINCT) took 98 ms vs 33 ms at 100k issues)."""
+        issues = Issue.objects.filter(project=OuterRef("pk")).order_by().values("project")
+        count = lambda qs: Coalesce(Subquery(qs.annotate(n=Count("pk")).values("n"), output_field=IntegerField()), 0)
+        return queryset.annotate(issue_count=count(issues), done_count=count(issues.filter(status__category=DONE)))
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # Only the responses that show the counts pay for them (PATCH/DELETE/workflow lookups don't).
+        return self.with_counts(queryset) if self.action in ("list", "retrieve") else queryset
 
     def _lock_workspace(self):
         # Serializes project creation and restores in this workspace, so the plan limit holds.
-        Workspace.objects.select_for_update().filter(pk=self.workspace.pk).first()
+        Workspace.objects.select_for_update(no_key=True).filter(pk=self.workspace.pk).first()
 
     def perform_create(self, serializer):
         data = serializer.validated_data
@@ -82,22 +91,26 @@ class ProjectViewSet(TenantModelViewSet):
                 )
         except IntegrityError:  # unique (workspace, key) is the final safeguard
             raise exceptions.ValidationError({"key": ["This key is already used by another project."]})
-        serializer.instance = self.get_queryset().get(pk=project.pk)
+        serializer.instance = self.with_counts(self.get_queryset()).get(pk=project.pk)
         record_event(self.workspace, self.request.user, AuditLog.Action.CREATED, AuditLog.Entity.PROJECT,
                      project.name, project=project)
 
     def perform_update(self, serializer):
         serializer.validated_data.pop("board_type", None)
-        restoring = serializer.instance.is_archived and serializer.validated_data.get("is_archived") is False
-        if not restoring:
-            assert_project_writable(serializer.instance)  # archived: only the restore itself is allowed
         tracked = ("name", "description", "color", "lead_id", "is_archived")
-        before = {field: getattr(serializer.instance, field) for field in tracked}
         with transaction.atomic():
+            if serializer.validated_data.get("is_archived") is False:
+                self._lock_workspace()  # a restore counts toward the plan limit; workspace before project
+            # Lock and RE-READ the row: the instance loaded for validation may be stale (e.g. issue_counter
+            # moved on since), and the archive/restore rules must see the current state.
+            serializer.instance = lock_project(serializer.instance.pk)
+            restoring = serializer.instance.is_archived and serializer.validated_data.get("is_archived") is False
             if restoring:
-                self._lock_workspace()
                 check_can_add_project(self.workspace)
-            project = serializer.save()
+            else:
+                assert_project_writable(serializer.instance)  # archived: only the restore itself is allowed
+            before = {field: getattr(serializer.instance, field) for field in tracked}
+            project = serializer.save()  # writes only the changed columns (ProjectSerializer.update)
         changes = field_changes(project, before, tracked)
         if changes:
             action = AuditLog.Action.UPDATED
@@ -105,7 +118,7 @@ class ProjectViewSet(TenantModelViewSet):
                 action = AuditLog.Action.ARCHIVED if project.is_archived else AuditLog.Action.RESTORED
             record_event(self.workspace, self.request.user, action, AuditLog.Entity.PROJECT, project.name,
                          project=project, changes=changes)
-        serializer.instance = self.get_queryset().get(pk=project.pk)
+        serializer.instance = self.with_counts(self.get_queryset()).get(pk=project.pk)
 
     @extend_schema(request=DeleteProjectSerializer, responses={204: None})
     def destroy(self, request, *args, **kwargs):
@@ -159,7 +172,7 @@ class ProjectViewSet(TenantModelViewSet):
             # Temporarily rename statuses to allow safe name swaps under the unique constraint.
             for index, status in enumerate(statuses):
                 if status.id in desired_ids:
-                    WorkflowStatus.objects.filter(pk=status.pk).update(name=f"__workflow_tmp_{workflow.pk}_{index}__")
+                    WorkflowStatus.objects.filter(pk=status.pk).update(name=f"{RESERVED_STATUS_PREFIX}{workflow.pk}_{index}__")
             for index, item in enumerate(data["statuses"]):
                 status_id = item.get("id")
                 status = existing.get(status_id) if status_id else WorkflowStatus(workflow=workflow)
@@ -169,11 +182,13 @@ class ProjectViewSet(TenantModelViewSet):
                 status.position = index
                 status.save()
                 ordered.append(status)
-            for transition in data.get("transitions", []):
-                WorkflowTransition.objects.create(
-                    workspace=self.workspace, workflow=workflow,
-                    from_status=ordered[transition["from"]], to_status=ordered[transition["to"]],
-                )
+            # One INSERT. bulk_create skips save()'s Python checks; the DB enforces them instead: composite FKs
+            # keep both statuses and the workspace consistent with the workflow (projects migration 0008).
+            WorkflowTransition.objects.bulk_create([
+                WorkflowTransition(workspace=self.workspace, workflow=workflow,
+                                   from_status=ordered[transition["from"]], to_status=ordered[transition["to"]])
+                for transition in data.get("transitions", [])
+            ])
             workflow.name = data.get("name", workflow.name)
             workflow.enforce_transitions = data["enforce_transitions"]
             workflow.save()
@@ -207,27 +222,50 @@ class BoardViewSet(WorkspaceScopedMixin, mixins.RetrieveModelMixin, mixins.Updat
         return Board.objects.for_workspace(self.workspace).select_related("project")
 
     def perform_update(self, serializer):
-        assert_project_writable(serializer.instance.project)
-        before = {"wip_limits": serializer.instance.wip_limits}
-        board = serializer.save()
+        with transaction.atomic():
+            # Project first (FOR NO KEY UPDATE: waits for the workflow editor's exclusive lock, so a status can't
+            # be removed and pruned mid-PATCH), then the board, RE-READ and RE-VALIDATED: the copy validated so
+            # far was loaded without a lock, so its WIP keys and other fields may be stale.
+            project = lock_project(serializer.instance.project_id)
+            assert_project_writable(project)
+            current = Board.objects.select_for_update().select_related("project").get(pk=serializer.instance.pk)
+            fresh = self.get_serializer(current, data=self.request.data, partial=True)
+            fresh.is_valid(raise_exception=True)
+            before = {"wip_limits": current.wip_limits}
+            board = fresh.save()  # writes only the submitted fields (BoardSerializer.update)
+        serializer.instance = board
         changes = field_changes(board, before, ("wip_limits",))
         if changes:
             record_event(self.workspace, self.request.user, AuditLog.Action.UPDATED, AuditLog.Entity.BOARD, board.name,
                          project=board.project, changes=changes)
 
 
+def attach_sprint_totals(sprints):
+    """Set issue_count / done_count / total_points / done_points on the given sprints with ONE grouped query:
+    a single pass over the issues of exactly these sprints (served by the issues (workspace_id, sprint_id)
+    index). The previous JOIN + COUNT(DISTINCT) over every issue of the workspace took 133 ms at 100k issues,
+    four correlated subqueries still 112 ms (each re-read the same issues)."""
+    sprints = list(sprints)
+    if not sprints:
+        return sprints
+    done = Q(status__category=DONE)
+    totals = {
+        row["sprint_id"]: row
+        for row in Issue.objects.filter(workspace_id=sprints[0].workspace_id, sprint_id__in=[s.pk for s in sprints])
+        .order_by().values("sprint_id")
+        .annotate(issue_count=Count("pk"), done_count=Count("pk", filter=done),
+                  total_points=Sum("story_points"), done_points=Sum("story_points", filter=done))
+    }
+    for sprint in sprints:
+        row = totals.get(sprint.pk, {})
+        for field in ("issue_count", "done_count", "total_points", "done_points"):
+            setattr(sprint, field, row.get(field) or 0)
+    return sprints
+
+
 def sprint_queryset(workspace):
-    done = Q(issues__status__category=DONE)
-    return (
-        Sprint.objects.for_workspace(workspace)
-        .select_related("project")
-        .annotate(
-            issue_count=Count("issues", distinct=True),
-            done_count=Count("issues", filter=done, distinct=True),
-            total_points=Coalesce(Sum("issues__story_points"), Value(0), output_field=IntegerField()),
-            done_points=Coalesce(Sum("issues__story_points", filter=done), Value(0), output_field=IntegerField()),
-        )
-    )
+    """Sprints of a workspace; call attach_sprint_totals() on the rows that are shown."""
+    return Sprint.objects.for_workspace(workspace).select_related("project")
 
 
 class SprintViewSet(TenantModelViewSet):
@@ -236,6 +274,8 @@ class SprintViewSet(TenantModelViewSet):
     required_roles = {"destroy": Role.ADMIN}
 
     def get_queryset(self):
+        # No totals here: they are attached only to the rows a response shows (get_serializer, _refetch), so
+        # PATCH, DELETE, start and complete look the sprint up without computing them.
         qs = sprint_queryset(self.workspace)
         params = self.request.query_params
         project = params.get("project")
@@ -246,8 +286,14 @@ class SprintViewSet(TenantModelViewSet):
             qs = qs.filter(state__in=states)
         return qs.order_by("project", "start_date", "id")
 
+    def get_serializer(self, *args, **kwargs):
+        if args and self.action in ("list", "retrieve"):
+            rows = args[0]
+            args = (attach_sprint_totals(rows) if kwargs.get("many") else attach_sprint_totals([rows])[0], *args[1:])
+        return super().get_serializer(*args, **kwargs)
+
     def _refetch(self, sprint):
-        return sprint_queryset(self.workspace).get(pk=sprint.pk)
+        return attach_sprint_totals([sprint_queryset(self.workspace).get(pk=sprint.pk)])[0]
 
     def _audit(self, action, sprint, changes=None):
         record_event(self.workspace, self.request.user, action, AuditLog.Entity.SPRINT, sprint.name,
@@ -260,10 +306,18 @@ class SprintViewSet(TenantModelViewSet):
         serializer.instance = self._refetch(sprint)
 
     def perform_update(self, serializer):
-        assert_project_writable(serializer.instance.project)
         tracked = ("name", "goal", "start_date", "end_date")
-        before = {field: getattr(serializer.instance, field) for field in tracked}
-        sprint = serializer.save()
+        with transaction.atomic():
+            # Same convention as start/complete: project first, then the sprint, then RE-READ and re-validate.
+            # The instance validated so far was loaded without a lock; start/complete may have changed its
+            # state or dates since, and the closed/date rules must see the current row.
+            project = lock_project(serializer.instance.project_id)
+            assert_project_writable(project)
+            current = Sprint.objects.select_for_update().select_related("project").get(pk=serializer.instance.pk)
+            fresh = self.get_serializer(current, data=self.request.data, partial=True)
+            fresh.is_valid(raise_exception=True)
+            before = {field: getattr(current, field) for field in tracked}
+            sprint = fresh.save()  # writes only the submitted fields (SprintSerializer.update)
         changes = field_changes(sprint, before, tracked)
         if changes:
             self._audit(AuditLog.Action.UPDATED, sprint, {

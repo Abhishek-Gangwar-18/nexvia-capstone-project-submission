@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Board, Project, Sprint, Workflow, WorkflowStatus, WorkflowTransition
+from .models import Board, Project, Sprint, Workflow, WorkflowStatus
 
 
 @admin.register(Project)
@@ -10,6 +10,11 @@ class ProjectAdmin(admin.ModelAdmin):
     search_fields = ["key", "name"]
     list_select_related = ["workspace", "lead"]
 
+    def has_add_permission(self, request):
+        # A project needs its workflow, default statuses and board (create_project); a bare admin-created row
+        # is rejected by the DB at commit (projects migration 0007). Projects are created in the app.
+        return False
+
 
 class WorkflowStatusInline(admin.TabularInline):
     model = WorkflowStatus
@@ -17,23 +22,34 @@ class WorkflowStatusInline(admin.TabularInline):
     fields = ["name", "category", "color", "position"]
 
 
-class WorkflowTransitionInline(admin.TabularInline):
-    model = WorkflowTransition
-    extra = 0
-    fields = ["from_status", "to_status", "name"]
-
-
 @admin.register(Workflow)
 class WorkflowAdmin(admin.ModelAdmin):
     list_display = ["name", "project", "workspace", "enforce_transitions"]
     list_filter = ["workspace"]
-    inlines = [WorkflowStatusInline, WorkflowTransitionInline]
+    # No transitions inline: the workflow editor is the only write path, so its rules (#13: at least one
+    # transition when enforced, no isolated status) can't be bypassed here.
+    inlines = [WorkflowStatusInline]
+
+    # A workflow lives and dies with its project (DB-enforced, projects migration 0007): editable, never added
+    # or deleted on its own.
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Board)
 class BoardAdmin(admin.ModelAdmin):
     list_display = ["name", "project", "board_type", "workspace"]
     list_filter = ["workspace", "board_type"]
+
+    # A board is created with its project (create_project) and deleted with it; edit only.
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Sprint)

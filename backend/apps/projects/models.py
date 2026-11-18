@@ -2,16 +2,23 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
-from django.db.models import F, Q
+from django.db.models import Deferrable, F, Q
+from django.db.models.functions import Length, Lower, Trim
+from django.db.models.lookups import GreaterThan, LessThanOrEqual
 
-from apps.core.models import TenantModel
+from apps.core.models import TenantModel, choices_check, hex_color_check, workspace_fk_without_index
 
 PROJECT_KEY_VALIDATOR = RegexValidator(
     r"^[A-Z][A-Z0-9]{1,9}$", "Key must be 2-10 uppercase letters/digits, starting with a letter."
 )
 
 
+PROJECT_DESCRIPTION_MAX = 10_000
+
+
 class Project(TenantModel):
+    # unique_project_key_per_workspace starts with workspace_id, so a separate single-column index is redundant.
+    workspace = workspace_fk_without_index()
     name = models.CharField(max_length=120)
     key = models.CharField(max_length=10, validators=[PROJECT_KEY_VALIDATOR])
     description = models.TextField(blank=True)
@@ -32,6 +39,10 @@ class Project(TenantModel):
             # Keys are canonical uppercase, so the unique constraint above is effectively case-insensitive:
             # "web" can never be stored next to "WEB".
             models.CheckConstraint(condition=Q(key__regex=r"^[A-Z][A-Z0-9]{1,9}$"), name="project_key_canonical"),
+            hex_color_check("color", "ck_project_color_hex"),
+            models.CheckConstraint(condition=GreaterThan(Length(Trim("name")), 0), name="ck_project_name_not_blank"),
+            models.CheckConstraint(condition=LessThanOrEqual(Length("description"), PROJECT_DESCRIPTION_MAX),
+                                   name="ck_project_description_max"),
         ]
 
     def __str__(self):
@@ -60,6 +71,13 @@ class Workflow(TenantModel):
 
     tenant_parent = "project"
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=GreaterThan(Length(Trim("name")), 0), name="ck_workflow_name_not_blank"),
+            # Target of the transitions' composite FK (workflow_id, workspace_id) (projects migration 0008).
+            models.UniqueConstraint(fields=["id", "workspace"], name="uq_workflow_id_workspace"),
+        ]
+
     def __str__(self):
         return self.name
 
@@ -69,13 +87,23 @@ class Workflow(TenantModel):
         return self.transitions.filter(from_status=from_status, to_status=to_status).exists()
 
 
-class WorkflowStatus(TenantModel):
-    class Category(models.TextChoices):
-        TODO = "todo", "To Do"
-        IN_PROGRESS = "in_progress", "In Progress"
-        DONE = "done", "Done"
 
-    workflow = models.ForeignKey(Workflow, on_delete=models.CASCADE, related_name="statuses")
+class WorkflowStatusCategory(models.TextChoices):
+    TODO = "todo", "To Do"
+    IN_PROGRESS = "in_progress", "In Progress"
+    DONE = "done", "Done"
+
+
+# The workflow editor renames kept statuses to "<prefix><workflow>_<index>__" mid-save so names can be swapped
+# under the unique index; user names may not start with it (WorkflowConfigSerializer).
+RESERVED_STATUS_PREFIX = "__workflow_tmp_"
+
+
+class WorkflowStatus(TenantModel):
+    Category = WorkflowStatusCategory
+
+    # Both unique indexes below start with workflow_id, so a separate single-column index is redundant.
+    workflow = models.ForeignKey(Workflow, on_delete=models.CASCADE, related_name="statuses", db_index=False)
     name = models.CharField(max_length=40)
     category = models.CharField(max_length=20, choices=Category.choices, default=Category.TODO)
     color = models.CharField(max_length=7, default="#64748b")
@@ -87,7 +115,19 @@ class WorkflowStatus(TenantModel):
         ordering = ["position", "id"]
         verbose_name_plural = "workflow statuses"
         constraints = [
-            models.UniqueConstraint(fields=["workflow", "name"], name="unique_status_name_per_workflow"),
+            # Case-insensitive, like the editor's check. Immediate (expression indexes can't be deferred): fine,
+            # because the editor's temporary names are distinct.
+            models.UniqueConstraint("workflow", Lower("name"), name="uq_status_name_ci_per_workflow"),
+            models.CheckConstraint(condition=Q(GreaterThan(Length(Trim("name")), 0)) & Q(name=Trim("name")),
+                                   name="ck_status_name_trimmed_not_blank"),
+            # Deferred to commit: the workflow editor renumbers statuses one row at a time, so positions
+            # can collide mid-transaction even when the final order is valid.
+            models.UniqueConstraint(fields=["workflow", "position"], name="uq_status_position_per_workflow",
+                                    deferrable=Deferrable.DEFERRED),
+            choices_check("category", WorkflowStatusCategory.choices, "ck_status_category"),
+            # Target of the transitions' composite FKs (status_id, workflow_id) (projects migration 0008).
+            models.UniqueConstraint(fields=["id", "workflow"], name="uq_status_id_workflow"),
+            hex_color_check("color", "ck_status_color_hex"),
         ]
 
     def __str__(self):
@@ -96,7 +136,8 @@ class WorkflowStatus(TenantModel):
 
 class WorkflowTransition(TenantModel):
     workflow = models.ForeignKey(Workflow, on_delete=models.CASCADE, related_name="transitions")
-    from_status = models.ForeignKey(WorkflowStatus, on_delete=models.CASCADE, related_name="outgoing")
+    # unique_transition (from_status, to_status) already indexes from_status first.
+    from_status = models.ForeignKey(WorkflowStatus, on_delete=models.CASCADE, related_name="outgoing", db_index=False)
     to_status = models.ForeignKey(WorkflowStatus, on_delete=models.CASCADE, related_name="incoming")
     name = models.CharField(max_length=60, blank=True)
 
@@ -117,12 +158,17 @@ class WorkflowTransition(TenantModel):
             raise ValidationError("Transition statuses must belong to the same workflow.")
 
 
-class Board(TenantModel):
-    class BoardType(models.TextChoices):
-        KANBAN = "kanban", "Kanban"
-        SCRUM = "scrum", "Scrum"
 
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="boards")
+class BoardTypeChoices(models.TextChoices):
+    KANBAN = "kanban", "Kanban"
+    SCRUM = "scrum", "Scrum"
+
+
+class Board(TenantModel):
+    BoardType = BoardTypeChoices
+
+    # uq_one_board_per_project is already a unique index on project_id.
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="boards", db_index=False)
     name = models.CharField(max_length=120)
     board_type = models.CharField(max_length=10, choices=BoardType.choices, default=BoardType.SCRUM)
     # {"<status_id>": <max issues>} - columns are the project's workflow statuses.
@@ -132,16 +178,31 @@ class Board(TenantModel):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            # The app has always assumed one board per project (it reads the first); now the DB agrees.
+            models.UniqueConstraint(fields=["project"], name="uq_one_board_per_project"),
+            choices_check("board_type", BoardTypeChoices.choices, "ck_board_type"),
+            models.CheckConstraint(condition=GreaterThan(Length(Trim("name")), 0), name="ck_board_name_not_blank"),
+            # wip_limits shape (object of whole numbers >= 1) is checked by two raw CHECKs added in
+            # projects migration 0009: Django can't express jsonb_typeof / jsonb_path_exists conditions.
+        ]
 
     def __str__(self):
         return self.name
 
 
+
+class SprintState(models.TextChoices):
+    PLANNED = "planned", "Planned"
+    ACTIVE = "active", "Active"
+    CLOSED = "closed", "Closed"
+
+
+SPRINT_GOAL_MAX = 10_000
+
+
 class Sprint(TenantModel):
-    class State(models.TextChoices):
-        PLANNED = "planned", "Planned"
-        ACTIVE = "active", "Active"
-        CLOSED = "closed", "Closed"
+    State = SprintState
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="sprints")
     name = models.CharField(max_length=120)
@@ -162,6 +223,20 @@ class Sprint(TenantModel):
             models.CheckConstraint(
                 condition=Q(start_date__isnull=True) | Q(end_date__isnull=True) | Q(end_date__gte=F("start_date")),
                 name="sprint_end_after_start",
+            ),
+            choices_check("state", SprintState.choices, "ck_sprint_state"),
+            # Burndown and "days left" need both dates once a sprint is running (start fills them in).
+            models.CheckConstraint(
+                condition=~Q(state="active") | (Q(start_date__isnull=False) & Q(end_date__isnull=False)),
+                name="ck_active_sprint_has_dates",
+            ),
+            models.CheckConstraint(condition=GreaterThan(Length(Trim("name")), 0), name="ck_sprint_name_not_blank"),
+            models.CheckConstraint(condition=LessThanOrEqual(Length("goal"), SPRINT_GOAL_MAX), name="ck_sprint_goal_max"),
+            # Closed exactly when completed: velocity and reports rely on the pair.
+            models.CheckConstraint(
+                condition=(Q(state="closed") & Q(completed_at__isnull=False))
+                | (~Q(state="closed") & Q(completed_at__isnull=True)),
+                name="ck_sprint_completed_at_iff_closed",
             ),
         ]
 
