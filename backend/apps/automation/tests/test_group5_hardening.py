@@ -46,6 +46,13 @@ def endpoint_for(team, **extra):
 
 
 def delivery_for(endpoint, **extra):
+    # Valid rows only (table #16 state CHECKs): a delivered row has delivered_at, a processing row a claim.
+    state, now = extra.get("state"), timezone.now()
+    if state == WebhookDelivery.State.DELIVERED:
+        extra.setdefault("delivered_at", now)
+    elif state == WebhookDelivery.State.PROCESSING:
+        extra.setdefault("claimed_at", now)
+        extra.setdefault("lease_expires_at", now + timedelta(seconds=60))
     return WebhookDelivery.objects.create(workspace=endpoint.workspace, endpoint=endpoint, event_id=uuid.uuid4(),
                                           event="issue.created", payload={"n": 1}, **extra)
 
@@ -177,7 +184,7 @@ class TestEndpointCap:
             res = client.post("/api/webhooks/", {"name": "h", "url": "https://hooks.example.test/y", "events": []},
                               format="json")
         assert res.status_code == 400
-        assert any("FOR UPDATE" in q["sql"] and "tenants_workspace" in q["sql"] for q in queries.captured_queries)
+        assert any("FOR NO KEY UPDATE" in q["sql"] and "tenants_workspace" in q["sql"] for q in queries.captured_queries)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -384,12 +391,14 @@ class TestRetention:
         Notification.objects.filter(pk=read_old.pk).update(created_at=timezone.now() - timedelta(days=91))
         Notification.objects.filter(pk=unread_mid.pk).update(created_at=timezone.now() - timedelta(days=91))
         ready = WorkspaceReport.objects.create(workspace=team["workspace"], state="ready")
+        # A build still in progress (recent) is kept. An old pending one is a lost build: since table #18 the
+        # nightly run fails it and it then ages out like any other report (test_report_table covers that).
         pending = WorkspaceReport.objects.create(workspace=team["workspace"], state="pending")
-        WorkspaceReport.objects.filter(pk__in=[ready.pk, pending.pk]).update(created_at=old)
+        WorkspaceReport.objects.filter(pk=ready.pk).update(created_at=old)
 
         counts = purge_old_records()
-        assert counts == {"webhook_deliveries": 1, "read_notifications": 1, "unread_notifications": 0, "reports": 1,
-                          "stripe_events": 0}
+        assert counts == {"stale_reports_failed": 0, "webhook_deliveries": 1, "read_notifications": 1,
+                          "unread_notifications": 0, "reports": 1, "stripe_events": 0}
         assert set(WebhookDelivery.objects.values_list("pk", flat=True)) == {
             rows["old_processing"].pk, rows["old_pending"].pk, rows["new_failed"].pk}
         assert Notification.objects.filter(pk=unread_mid.pk).exists()

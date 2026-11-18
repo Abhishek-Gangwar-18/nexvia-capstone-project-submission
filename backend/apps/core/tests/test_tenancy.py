@@ -108,9 +108,9 @@ class TestDomainRules:
         assert issue.resolved_at is None
 
     def test_only_one_active_sprint_per_project(self, tenant_a):
-        Sprint.objects.create(project=tenant_a["project"], name="S1", state=Sprint.State.ACTIVE)
+        Sprint.objects.create(project=tenant_a["project"], name="S1", state=Sprint.State.ACTIVE, start_date="2026-11-01", end_date="2026-11-14")
         with pytest.raises(IntegrityError), transaction.atomic():
-            Sprint.objects.create(project=tenant_a["project"], name="S2", state=Sprint.State.ACTIVE)
+            Sprint.objects.create(project=tenant_a["project"], name="S2", state=Sprint.State.ACTIVE, start_date="2026-11-01", end_date="2026-11-14")
 
     def test_default_project_scaffolding(self, tenant_a):
         project = tenant_a["project"]

@@ -5,6 +5,7 @@ import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection, transaction
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from apps.issues.models import Issue, IssueAttachment
 from apps.projects.models import Board, Project, Sprint, WorkflowStatus
@@ -54,7 +55,7 @@ class TestProjectDelete:
     def test_files_removed_only_after_commit(self, api, team, django_capture_on_commit_callbacks):
         issue = Issue.objects.create(project=team["project"], title="with file")
         attachment = IssueAttachment.objects.create(
-            workspace=team["workspace"], issue=issue, uploaded_by=team["owner"], original_name="a.txt",
+            workspace=team["workspace"], issue=issue, uploaded_by=team["owner"], original_name="a.txt", content_type="text/plain",
             size=1, file=SimpleUploadedFile("a.txt", b"x"),
         )
         storage, name = attachment.file.storage, attachment.file.name
@@ -69,7 +70,7 @@ class TestProjectDelete:
     def test_rollback_keeps_file(self, team):
         issue = Issue.objects.create(project=team["project"], title="kept")
         attachment = IssueAttachment.objects.create(
-            workspace=team["workspace"], issue=issue, uploaded_by=team["owner"], original_name="b.txt",
+            workspace=team["workspace"], issue=issue, uploaded_by=team["owner"], original_name="b.txt", content_type="text/plain",
             size=1, file=SimpleUploadedFile("b.txt", b"x"),
         )
         storage, name = attachment.file.storage, attachment.file.name
@@ -109,7 +110,7 @@ class TestArchivedProject:
         assert client.patch("/api/projects/WEB/", {"is_archived": False}, format="json").status_code == 200
 
     def test_complete_blocked(self, api, team, archived):
-        sprint = Sprint.objects.create(project=archived, name="S", state=Sprint.State.ACTIVE)
+        sprint = Sprint.objects.create(project=archived, name="S", state=Sprint.State.ACTIVE, start_date="2026-11-01", end_date="2026-11-14")
         res = owner(api, team).post(f"/api/sprints/{sprint.pk}/complete/", {}, format="json")
         assert res.status_code == 400 and "project" in res.data
 
@@ -130,7 +131,7 @@ class TestProjectCreate:
         with CaptureQueriesContext(connection) as queries:
             owner(api, team).post("/api/projects/", {"name": "Two", "key": "TWO"}, format="json")
         sql = [q["sql"] for q in queries.captured_queries]
-        lock = next(i for i, q in enumerate(sql) if "FOR UPDATE" in q and "tenants_workspace" in q)
+        lock = next(i for i, q in enumerate(sql) if "FOR NO KEY UPDATE" in q and "tenants_workspace" in q)
         insert = next(i for i, q in enumerate(sql) if q.startswith("INSERT INTO \"projects_project\""))
         assert lock < insert
 
@@ -167,8 +168,9 @@ class TestSprintDelete:
     def test_only_planned(self, api, team):
         client = owner(api, team)
         planned = Sprint.objects.create(project=team["project"], name="P")
-        active = Sprint.objects.create(project=team["project"], name="A", state=Sprint.State.ACTIVE)
-        closed = Sprint.objects.create(project=team["project"], name="C", state=Sprint.State.CLOSED)
+        active = Sprint.objects.create(project=team["project"], name="A", state=Sprint.State.ACTIVE, start_date="2026-11-01", end_date="2026-11-14")
+        closed = Sprint.objects.create(project=team["project"], name="C", state=Sprint.State.CLOSED,
+                                       completed_at=timezone.now())
         assert client.delete(f"/api/sprints/{active.pk}/").status_code == 400
         assert client.delete(f"/api/sprints/{closed.pk}/").status_code == 400
         assert client.delete(f"/api/sprints/{planned.pk}/").status_code == 204

@@ -78,10 +78,12 @@ class TestInvitationRoles:
     def test_admin_invite_dies_when_sender_loses_ownership(self, api, team, make_user):
         ws = team["workspace"]
         invite = Invitation.objects.create(workspace=ws, email="late@g2.test", role=Role.ADMIN, invited_by=team["owner"])
+        raw = invite.issue_token()  # only the hash is stored; tests hold the raw token like the email would
+        invite.save(update_fields=["token_hash"])
         new_owner = membership(team, Role.ADMIN)
         assert api(team["owner"], ws).post("/api/workspace/transfer-ownership/", {"member_id": new_owner.id}).status_code == 200
         late = make_user("late@g2.test")
-        res = api(late).post("/api/invitations/accept/", {"token": invite.token}, format="json")
+        res = api(late).post("/api/invitations/accept/", {"token": raw}, format="json")
         assert res.status_code == 400 and "token" in res.data
         assert not Membership.objects.filter(workspace=ws, user=late).exists()
 
@@ -271,14 +273,18 @@ class TestPublicInvitationEndpoints:
 
     def test_preview_exposes_only_display_fields(self, api, team):
         invite = Invitation.objects.create(workspace=team["workspace"], email="p@g2.test", invited_by=team["owner"])
-        data = api().get(f"/api/invitations/preview/{invite.token}/").data
+        raw = invite.issue_token()  # only the hash is stored; tests hold the raw token like the email would
+        invite.save(update_fields=["token_hash"])
+        data = api().get(f"/api/invitations/preview/{raw}/").data
         assert set(data) == {
             "email", "role", "workspace", "workspace_slug", "invited_by", "is_pending", "user_exists", "expires_at",
         }
-        assert invite.token not in str(data) and isinstance(data["invited_by"], str)
+        assert raw not in str(data) and invite.token_hash not in str(data) and isinstance(data["invited_by"], str)
 
     def test_preview_is_throttled(self, api, team):
         invite = Invitation.objects.create(workspace=team["workspace"], email="t@g2.test")
+        raw = invite.issue_token()  # only the hash is stored; tests hold the raw token like the email would
+        invite.save(update_fields=["token_hash"])
         client = api()
-        codes = [client.get(f"/api/invitations/preview/{invite.token}/").status_code for _ in range(31)]
+        codes = [client.get(f"/api/invitations/preview/{raw}/").status_code for _ in range(31)]
         assert codes[:30] == [200] * 30 and codes[30] == 429

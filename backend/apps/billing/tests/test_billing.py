@@ -128,7 +128,7 @@ class TestApi:
     def test_state_shows_usage_and_role(self, api, team):
         owner = api(team["owner"], team["workspace"]).get("/api/billing/").data
         assert owner["plan"] == "free" and owner["can_manage"] is True
-        assert owner["usage"] == {"projects": 1, "members": 4, "pending_invitations": 0}
+        assert owner["usage"] == {"projects": 1, "members": 4, "deactivated_members": 0, "pending_invitations": 0}
         assert [p["id"] for p in owner["plans"]] == ["free", "pro", "enterprise"]
         assert api(team["users"][Role.VIEWER], team["workspace"]).get("/api/billing/").data["can_manage"] is False
 
@@ -271,16 +271,18 @@ class TestWebhook:
 
 
 class TestWorkspaceDeletion:
-    def test_active_subscription_is_cancelled_first(self, api, team, fake_client):
+    def test_active_subscription_is_cancelled_first(self, api, team, fake_client, django_capture_on_commit_callbacks):
         link(team, stripe_subscription_id="sub_1", status="active")
-        assert api(team["owner"], team["workspace"]).delete("/api/workspace/", {"confirm": team["workspace"].slug, "password": "pass12345"}, format="json").status_code == 204
+        with django_capture_on_commit_callbacks(execute=True):  # runs the (eager) background purge
+            assert api(team["owner"], team["workspace"]).delete("/api/workspace/", {"confirm": team["workspace"].slug, "password": "pass12345"}, format="json").status_code == 202
         fake_client.v1.subscriptions.cancel.assert_called_once_with(
             "sub_1", options={"idempotency_key": f"cancel-deleted-ws-{team['workspace'].pk}"}
         )
         assert not Workspace.objects.filter(pk=team["workspace"].pk).exists()
 
-    def test_stripe_failure_keeps_the_workspace(self, api, team, fake_client):
+    def test_stripe_failure_keeps_the_workspace(self, api, team, fake_client, django_capture_on_commit_callbacks):
         link(team, stripe_subscription_id="sub_1", status="active")
         fake_client.v1.subscriptions.cancel.side_effect = stripe.APIConnectionError("down")
-        assert api(team["owner"], team["workspace"]).delete("/api/workspace/", {"confirm": team["workspace"].slug, "password": "pass12345"}, format="json").status_code == 503
-        assert Workspace.objects.filter(pk=team["workspace"].pk).exists()
+        with django_capture_on_commit_callbacks(execute=True):  # the purge runs (eager) and keeps failing
+            assert api(team["owner"], team["workspace"]).delete("/api/workspace/", {"confirm": team["workspace"].slug, "password": "pass12345"}, format="json").status_code == 202
+        assert Workspace.objects.filter(pk=team["workspace"].pk).exists()  # hidden; data kept until Stripe cancels

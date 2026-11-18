@@ -249,11 +249,12 @@ class TestRolePermissions:
         assert admin.delete(f"/api/members/{owner_m.id}/").status_code == 403
         assert admin.delete(f"/api/members/{viewer_m.id}/").status_code == 204
 
-    def test_only_owner_deletes_workspace(self, api, team):
+    def test_only_owner_deletes_workspace(self, api, team, django_capture_on_commit_callbacks):
         ws = team["workspace"]
         assert api(team["users"][Role.ADMIN], ws).delete("/api/workspace/").status_code == 403
         Issue.objects.create(project=team["project"], title="cascade me")
-        assert api(team["owner"], ws).delete("/api/workspace/", {"confirm": ws.slug, "password": "pass12345"}, format="json").status_code == 204
+        with django_capture_on_commit_callbacks(execute=True):  # runs the (eager) background purge
+            assert api(team["owner"], ws).delete("/api/workspace/", {"confirm": ws.slug, "password": "pass12345"}, format="json").status_code == 202
         assert not Workspace.objects.filter(pk=ws.pk).exists()
 
 
@@ -370,7 +371,7 @@ class TestSprints:
         assert closed.status_code == 400
 
     def test_cannot_delete_active_sprint(self, api, team):
-        sprint = Sprint.objects.create(project=team["project"], name="S", state=Sprint.State.ACTIVE)
+        sprint = Sprint.objects.create(project=team["project"], name="S", state=Sprint.State.ACTIVE, start_date="2026-11-01", end_date="2026-11-14")
         res = api(team["owner"], team["workspace"]).delete(f"/api/sprints/{sprint.id}/")
         assert res.status_code == 400
 
@@ -380,8 +381,8 @@ class TestInvitations:
         admin = api(team["users"][Role.ADMIN], team["workspace"])
         res = admin.post("/api/invitations/", {"email": "NEW@hire.test", "role": "member"}, format="json")
         assert res.status_code == 201, res.data
-        token = Invitation.objects.get(email="new@hire.test").token
-        assert res.data["accept_url"].endswith(token)
+        token = res.data["accept_url"].rsplit("/", 1)[1]  # the one-time link is the only place the token appears
+        assert Invitation.objects.get(email="new@hire.test").token_hash != token
         assert admin.post("/api/invitations/", {"email": "new@hire.test"}).status_code == 400
 
         preview = api().get(f"/api/invitations/preview/{token}/")
@@ -396,8 +397,7 @@ class TestInvitations:
 
     def test_existing_user_accepts_with_matching_email_only(self, api, team, tenant_b):
         admin = api(team["owner"], team["workspace"])
-        admin.post("/api/invitations/", {"email": "owner@b.test", "role": "viewer"})
-        token = Invitation.objects.get(email="owner@b.test").token
+        token = admin.post("/api/invitations/", {"email": "owner@b.test", "role": "viewer"}).data["accept_url"].rsplit("/", 1)[1]
         stranger = team["users"][Role.MEMBER]
         assert api(stranger).post("/api/invitations/accept/", {"token": token}).status_code == 403
         res = api(tenant_b["owner"]).post("/api/invitations/accept/", {"token": token})

@@ -218,7 +218,7 @@ class TestApply:
         record = link(tenant_a["workspace"])
         with CaptureQueriesContext(connection) as queries:
             services.apply_subscription(record.pk, sub(), timezone.now())
-        locks = [q["sql"] for q in queries.captured_queries if "FOR UPDATE" in q["sql"]]
+        locks = [q["sql"] for q in queries.captured_queries if q["sql"].endswith(("FOR UPDATE", "FOR NO KEY UPDATE"))]
         assert "tenants_workspace" in locks[0] and "billing_subscription" in locks[1]
 
     def test_unknown_price_logged_and_plan_kept(self, tenant_a, caplog):
@@ -347,18 +347,35 @@ class TestDeletion:
         return {"confirm": tenant["workspace"].slug, "password": "pass12345"}
 
     def test_cancel_then_failed_delete_then_retry(self, api, tenant_a, fake):
+        """Deletion is asynchronous (table #2): the request only marks; the purge cancels Stripe, then deletes.
+        A purge that fails after cancelling leaves it cancelled, and the retry doesn't call Stripe again."""
+        from apps.tenants.deletion import purge_workspace
+
         ws = tenant_a["workspace"]
         link(ws, stripe_subscription_id="sub_1", status="active")
         client = owner(api, tenant_a)
-        with patch.object(Workspace, "delete", side_effect=RuntimeError("db hiccup")), pytest.raises(RuntimeError):
-            client.delete("/api/workspace/", self.body(tenant_a), format="json")
+        assert client.delete("/api/workspace/", self.body(tenant_a), format="json").status_code == 202
+        assert fake.v1.subscriptions.cancel.call_count == 0  # never before the mark is durable
+        with patch("apps.tenants.deletion._delete_in_batches", side_effect=RuntimeError("db hiccup")), \
+                pytest.raises(RuntimeError):
+            purge_workspace(ws.pk)
         assert fake.v1.subscriptions.cancel.call_count == 1
-        assert Subscription.objects.get(workspace=ws).status == "canceled"  # saved despite the failed delete
-        assert client.delete("/api/workspace/", self.body(tenant_a), format="json").status_code == 204
+        assert Subscription.objects.get(workspace=ws).status == "canceled"
+        assert Workspace.objects.filter(pk=ws.pk).exists()
+        assert purge_workspace(ws.pk) == "deleted"
         assert fake.v1.subscriptions.cancel.call_count == 1  # the retry didn't cancel again
 
     def test_cancel_failure_blocks_deletion(self, api, tenant_a, fake):
+        """Stripe down: the request still succeeds (the mark is durable), but no data is deleted until the
+        background purge manages to cancel."""
+        from apps.billing.services import BillingUnavailable
+        from apps.tenants.deletion import purge_workspace
+
         link(tenant_a["workspace"], stripe_subscription_id="sub_1", status="active")
         fake.v1.subscriptions.cancel.side_effect = stripe.APIConnectionError("down")
         res = owner(api, tenant_a).delete("/api/workspace/", self.body(tenant_a), format="json")
-        assert res.status_code == 503 and Workspace.objects.filter(pk=tenant_a["workspace"].pk).exists()
+        assert res.status_code == 202
+        with pytest.raises(BillingUnavailable):
+            purge_workspace(tenant_a["workspace"].pk)
+        assert Workspace.objects.filter(pk=tenant_a["workspace"].pk).exists()
+        assert Subscription.objects.get(workspace=tenant_a["workspace"]).status == "active"

@@ -14,7 +14,7 @@ from apps.automation.tasks import (
 )
 from apps.issues.models import AuditLog, Issue
 from apps.projects.models import Sprint, WorkflowStatus
-from apps.tenants.models import Invitation, Membership
+from apps.tenants.models import Invitation, Membership, hash_invite_token
 
 pytestmark = pytest.mark.django_db
 Role = Membership.Role
@@ -70,10 +70,10 @@ class TestReports:
         today = timezone.localdate()
         for name, points, offset in (("Old", 3, 30), ("New", 8, 10)):
             sprint = Sprint.objects.create(project=project, name=name, state=Sprint.State.CLOSED,
-                                           start_date=today - timedelta(days=offset))
+                                           start_date=today - timedelta(days=offset), completed_at=timezone.now())
             Issue.objects.create(project=project, title="d", sprint=sprint, story_points=points, status=done_status(project))
             Issue.objects.create(project=project, title="o", sprint=sprint, story_points=100)
-        Sprint.objects.create(project=project, name="Active", state=Sprint.State.ACTIVE)
+        Sprint.objects.create(project=project, name="Active", state=Sprint.State.ACTIVE, start_date="2026-11-01", end_date="2026-11-14")
 
         report = make_report(api, team, report_type="velocity", project=project.pk)
         assert [(s["name"], s["completed_points"], s["open_issues"]) for s in report.data["sprints"]] == [
@@ -84,7 +84,7 @@ class TestReports:
     def test_required_targets_and_other_tenants_are_rejected(self, api, team, tenant_b, no_queue):
         client = api(team["owner"], team["workspace"])
         planned = Sprint.objects.create(project=team["project"], name="P")
-        foreign = Sprint.objects.create(project=tenant_b["project"], name="F", state=Sprint.State.ACTIVE, start_date=timezone.localdate())
+        foreign = Sprint.objects.create(project=tenant_b["project"], name="F", state=Sprint.State.ACTIVE, start_date=timezone.localdate(), end_date=timezone.localdate())
         for body in (
             {"report_type": "velocity"}, {"report_type": "sprint_burndown"}, {"report_type": "nope"},
             {"report_type": "sprint_burndown", "sprint": planned.pk},
@@ -180,8 +180,8 @@ class TestAuditLog:
 
     def test_invitation_and_join_are_recorded(self, api, team):
         client = api(team["owner"], team["workspace"])
-        client.post("/api/invitations/", {"email": "new@x.test", "role": "member"}, format="json")
-        token = Invitation.objects.get(email="new@x.test").token
+        created = client.post("/api/invitations/", {"email": "new@x.test", "role": "member"}, format="json")
+        token = created.data["accept_url"].rsplit("/", 1)[1]
         api().post("/api/auth/register/", {
             "email": "new@x.test", "password": "S3cure-pass!", "first_name": "N", "invite_token": token,
         }, format="json")
@@ -236,10 +236,11 @@ class TestEmail:
         assert queued.call_count == 1
 
         invitation = Invitation.objects.get(email="new@x.test")
-        send_invitation_email.apply(args=(invitation.pk,), throw=True)
+        raw = res.data["accept_url"].rsplit("/", 1)[1]
+        send_invitation_email.apply(args=(invitation.pk, raw), throw=True)  # the view passes the raw token
         message = mail.outbox[0]
         assert message.to == ["new@x.test"] and "Acme" in message.subject
-        assert invitation.token in message.body and invitation.token in message.alternatives[0][0]
+        assert raw in message.body and raw in message.alternatives[0][0]
         invitation.refresh_from_db()
         assert invitation.email_sent_at is not None
 
@@ -250,7 +251,11 @@ class TestEmail:
         url = f"/api/invitations/{invitation.pk}/resend/"
         assert api(team["users"][Role.MEMBER], team["workspace"]).post(url).status_code == 403
         res = api(team["owner"], team["workspace"]).post(url)
-        assert res.status_code == 202 and res.data == {"queued": True}
+        # A resend also returns the new one-time link; the stored hash must match it.
+        assert res.status_code == 202 and res.data["queued"] is True
+        raw = res.data["accept_url"].rsplit("/", 1)[1]
+        invitation.refresh_from_db()
+        assert invitation.token_hash == hash_invite_token(raw)
         invitation.expires_at = timezone.now() - timedelta(days=1)
         invitation.save()
         assert api(team["owner"], team["workspace"]).post(url).status_code == 400

@@ -270,8 +270,11 @@ class TestLabels:
         assert res.status_code == 400 and "name" in res.data
 
     def test_db_rejects_mixed_case(self, team):
+        # Label.save() now canonicalizes names, so bypass it with a queryset update to reach the DB CHECK.
+        label = Label.objects.create(workspace=team["workspace"], name="Mixed")
+        assert label.name == "mixed"
         with pytest.raises(IntegrityError), transaction.atomic():
-            Label.objects.create(workspace=team["workspace"], name="Mixed")
+            Label.objects.filter(pk=label.pk).update(name="Mixed")
 
 
 # --------------------------------------------------------------- 12 and 13. fields
