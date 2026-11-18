@@ -14,6 +14,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from . import cookie_auth
+from .throttles import throttles_for
 from .serializers import (
     ChangePasswordSerializer,
     LoginSerializer,
@@ -44,13 +45,19 @@ class SafeTokenRefreshView(TokenRefreshView):
     cookie (a body token is ignored; no cookie is a 401), and the rotated one goes back ONLY into the cookie."""
 
     serializer_class = SafeTokenRefreshSerializer
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "auth_refresh"
+    throttle_classes = []  # layered limits are applied in post(), once the token has been looked at (throttles.py)
 
     def post(self, request, *args, **kwargs):
-        if not cookie_auth.is_cookie_mode(request):
+        cookie_mode = cookie_auth.is_cookie_mode(request)
+        if cookie_mode:
+            raw = cookie_auth.cookie_token(request)
+        else:
+            raw = request.data.get("refresh") if isinstance(request.data, dict) else None
+        for throttle in throttles_for(raw):
+            if not throttle.allow_request(request, self):
+                raise exceptions.Throttled(throttle.wait())  # 429 + Retry-After; the cookie is left alone
+        if not cookie_mode:
             return super().post(request, *args, **kwargs)
-        raw = cookie_auth.cookie_token(request)
         if not raw:
             return self._session_ended("No session cookie. Log in again.", "no_refresh_cookie")
         serializer = self.get_serializer(data={"refresh": raw})

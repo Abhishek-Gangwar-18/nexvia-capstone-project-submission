@@ -218,11 +218,20 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.OptionalPageNumberPagination",
     "DEFAULT_SCHEMA_CLASS": "apps.core.schema.TenantAutoSchema",
     "EXCEPTION_HANDLER": "apps.core.exceptions.exception_handler",
+    # Client IP for the per-IP limits. Behind nginx, X-Forwarded-For is "<whatever the client sent>, <real client
+    # IP appended by nginx>", so only the last entry can be trusted (NUM_PROXIES=1). Without this, DRF used the
+    # whole header, and a client could send a different X-Forwarded-For with each request to escape every per-IP
+    # limit. Without a proxy (local runserver), REMOTE_ADDR is used.
+    "NUM_PROXIES": 1 if env_bool("DJANGO_BEHIND_PROXY", False) else None,
     # Per IP for anonymous calls, per user once authenticated (change-password).
     "DEFAULT_THROTTLE_RATES": {
         "auth_login": "5/min",
         "auth_register": "10/hour",
+        # Refresh (apps/accounts/throttles.py): per verified account, a generous per-IP ceiling for offices behind
+        # one NAT address, and the old strict per-IP limit for invalid tokens.
         "auth_refresh": "30/min",
+        "auth_refresh_ip": "600/min",
+        "auth_refresh_invalid": "30/min",
         "auth_change_password": "5/hour",
         "auth_password_reset": "5/hour",
         "auth_password_reset_confirm": "10/hour",
