@@ -1,14 +1,16 @@
-import { Copy, Plus, RotateCw, Send, Trash } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Copy, Plus, Redo2, RotateCw, Send, Trash } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ConfirmDialog } from "@/components/ui/Modal";
 import {
-  useCreateWebhook, useDeleteWebhook, useRotateWebhookSecret, useTestWebhook, useWebhookDeliveries, useWebhooks,
+  isInFlight, useCreateWebhook, useDeleteWebhook, useRedeliverWebhook, useRotateWebhookSecret, useTestWebhook,
+  useWebhookDeliveries, useWebhooks,
 } from "@/hooks/queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { usePermissions } from "@/hooks/useWorkspace";
-import { cn, pluralize } from "@/lib/utils";
+import { cn, getErrorMessage, pluralize } from "@/lib/utils";
 import type { WebhookDelivery, WebhookEndpoint } from "@/types";
 
 const WEBHOOK_EVENTS = [
@@ -82,14 +84,15 @@ export function WebhooksSection() {
         >
           Add webhook
         </Button>
-        <div className="flex flex-wrap gap-x-3 gap-y-1 sm:col-span-3">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 sm:col-span-3">
           {WEBHOOK_EVENTS.map((item) => (
-            <label key={item} className="flex items-center gap-1.5 text-[11px] text-slate-500">
+            // The whole label is the click target (at least 24px tall, WCAG 2.5.8), not just the small checkbox.
+            <label key={item} className="flex min-h-6 cursor-pointer items-center gap-1.5 text-[11px] text-slate-500">
               <input
                 type="checkbox"
                 checked={events.includes(item)}
                 onChange={(e) => setEvents((list) => (e.target.checked ? [...list, item] : list.filter((x) => x !== item)))}
-                className="accent-brand-600"
+                className="size-4 accent-brand-600"
               />
               {item}
             </label>
@@ -119,8 +122,35 @@ function WebhookRow({ endpoint, open, onToggle, onSecret }: {
   const test = useTestWebhook();
   const rotate = useRotateWebhookSecret();
   const [confirming, setConfirming] = useState(false);
+  const redeliver = useRedeliverWebhook();
+  const queryClient = useQueryClient();
   const deliveries = useWebhookDeliveries(open ? endpoint.id : null);
   const list = deliveries.data ?? [];
+
+  // When the last in-flight delivery settles, refresh the endpoint too: failures can auto-disable it.
+  const inFlight = list.some(isInFlight);
+  const wasInFlight = useRef(false);
+  useEffect(() => {
+    if (wasInFlight.current && !inFlight) queryClient.invalidateQueries({ queryKey: ["ws"], predicate: (q) => q.queryKey.includes("webhooks") });
+    wasInFlight.current = inFlight;
+  }, [inFlight, queryClient]);
+
+  const sendTest = () =>
+    test.mutate(endpoint.id, {
+      onSuccess: () => {
+        toast.success("Test delivery queued");
+        if (!open) onToggle(); // show the delivery so its status can be followed
+      },
+    });
+
+  const retry = (delivery: WebhookDelivery) =>
+    redeliver.mutate(
+      { endpointId: endpoint.id, deliveryId: delivery.id },
+      {
+        onSuccess: () => toast.success("Redelivery queued"),
+        onError: (error) => toast.error(getErrorMessage(error, "Couldn't redeliver this event.")),
+      },
+    );
 
   return (
     <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
@@ -140,7 +170,7 @@ function WebhookRow({ endpoint, open, onToggle, onSecret }: {
             Events: {endpoint.events.join(", ") || "none"} · Secret <span className="font-mono">{endpoint.secret_hint}</span>
           </p>
           {!endpoint.is_active && (
-            <p className="mt-1 text-[10px] font-medium text-rose-600">Disabled{endpoint.disabled_reason ? `: ${endpoint.disabled_reason}` : ""}</p>
+            <p className="mt-1 text-[10px] font-medium text-rose-700 dark:text-rose-400">Disabled{endpoint.disabled_reason ? `: ${endpoint.disabled_reason}` : ""}</p>
           )}
         </div>
         <IconButton
@@ -159,7 +189,8 @@ function WebhookRow({ endpoint, open, onToggle, onSecret }: {
         </IconButton>
         <IconButton
           label="Send test event"
-          onClick={() => test.mutate(endpoint.id, { onSuccess: () => toast.success("Test delivery queued") })}
+          onClick={sendTest}
+          disabled={!endpoint.is_active || test.isPending}
         >
           <Send className="size-4" />
         </IconButton>
@@ -170,7 +201,7 @@ function WebhookRow({ endpoint, open, onToggle, onSecret }: {
           <Trash className="size-4 text-rose-500" />
         </IconButton>
       </div>
-      <button onClick={onToggle} className="mt-2 cursor-pointer text-[11px] font-medium text-brand-600">
+      <button onClick={onToggle} className="mt-2 cursor-pointer text-[11px] font-medium text-brand-600 dark:text-brand-400">
         {open ? "Hide deliveries" : "View recent deliveries"}
       </button>
       {open && (
@@ -183,7 +214,22 @@ function WebhookRow({ endpoint, open, onToggle, onSecret }: {
               <span className="text-slate-400">
                 {pluralize(delivery.attempts, "attempt")} · HTTP {delivery.response_status ?? "—"}
               </span>
-              {delivery.last_error && <span className="basis-full text-rose-500">{delivery.last_error}</span>}
+              {delivery.state === "failed" && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto h-6 px-2 text-[11px]"
+                  icon={<Redo2 className="size-3.5" />}
+                  loading={redeliver.isPending && redeliver.variables?.deliveryId === delivery.id}
+                  disabled={!endpoint.is_active || redeliver.isPending}
+                  title={endpoint.is_active ? "Send this event again" : "Re-enable the endpoint to redeliver"}
+                  aria-label={`Redeliver ${delivery.event}`}
+                  onClick={() => retry(delivery)}
+                >
+                  Redeliver
+                </Button>
+              )}
+              {delivery.last_error && <span className="basis-full text-rose-600 dark:text-rose-400">{delivery.last_error}</span>}
             </div>
           ))}
         </div>

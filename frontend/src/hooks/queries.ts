@@ -512,7 +512,25 @@ export function useWebhookDeliveries(id: number | null) {
     queryKey: [...ws(w.slug), "webhook-deliveries", id],
     enabled: id !== null,
     queryFn: () => w.get<WebhookDelivery[]>(`/webhooks/${id}/deliveries/`),
-    refetchInterval: (query) => (query.state.data?.some((d) => d.state === "pending") ? 3000 : false),
+    // Poll while any delivery is still in flight ("pending", or "processing" between retries); stop once every
+    // delivery is terminal (delivered / failed).
+    refetchInterval: (query) => (query.state.data?.some(isInFlight) ? 2500 : false),
+  });
+}
+
+export const isInFlight = (d: WebhookDelivery) => d.state === "pending" || d.state === "processing";
+
+/** Redeliver a failed delivery (existing API; admin only, refused for disabled endpoints by the server). */
+export function useRedeliverWebhook() {
+  const w = useWsApi(); const qc = useQueryClient();
+  return useMutation({
+    meta: { silent: true }, // the row shows its own error
+    mutationFn: ({ endpointId, deliveryId }: { endpointId: number; deliveryId: number }) =>
+      w.post<WebhookDelivery>(`/webhooks/${endpointId}/deliveries/${deliveryId}/redeliver/`),
+    onSettled: (_data, _error, { endpointId }) => {
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhook-deliveries", endpointId] });
+      qc.invalidateQueries({ queryKey: [...ws(w.slug), "webhooks"] });
+    },
   });
 }
 
