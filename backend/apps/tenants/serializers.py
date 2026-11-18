@@ -64,7 +64,8 @@ class MemberSerializer(serializers.ModelSerializer):
 
 class InvitationSerializer(serializers.ModelSerializer):
     invited_by = UserMiniSerializer(read_only=True)
-    accept_url = serializers.CharField(read_only=True)
+    # Present only in the create response (and resend's): the stored hash can't be turned back into a link.
+    accept_url = serializers.CharField(read_only=True, allow_null=True)
 
     class Meta:
         model = Invitation
@@ -74,10 +75,10 @@ class InvitationSerializer(serializers.ModelSerializer):
     def validate_email(self, value):
         value = normalize_email(value)
         workspace = self.context["request"].workspace
-        if Membership.objects.filter(workspace=workspace, user__email__iexact=value).exists():
+        if Membership.objects.filter(workspace=workspace, user__email=value).exists():
             raise serializers.ValidationError("This person is already a member.")
         if Invitation.objects.filter(
-            workspace=workspace, email__iexact=value, accepted_at__isnull=True, expires_at__gt=timezone.now()
+            workspace=workspace, email=value, accepted_at__isnull=True, expires_at__gt=timezone.now()
         ).exists():
             raise serializers.ValidationError("An invitation is already pending for this email.")
         return value
@@ -105,4 +106,4 @@ class InvitationPreviewSerializer(serializers.ModelSerializer):
     def get_user_exists(self, obj) -> bool:
         from apps.accounts.models import User
 
-        return User.objects.filter(email__iexact=obj.email).exists()
+        return User.objects.filter(email=normalize_email(obj.email)).exists()

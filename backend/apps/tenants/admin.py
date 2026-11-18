@@ -14,6 +14,7 @@ class MembershipInline(admin.TabularInline):
     model = Membership
     extra = 0
     autocomplete_fields = ["user"]
+    ordering = ["user__email"]
 
 
 @admin.register(Workspace)
@@ -28,6 +29,7 @@ class WorkspaceAdmin(admin.ModelAdmin):
 @admin.register(Membership)
 class MembershipAdmin(admin.ModelAdmin):
     list_display = ["user", "workspace", "role", "created_at"]
+    ordering = ["workspace__name", "user__email"]
     list_filter = ["role", "workspace"]
     search_fields = ["user__email", "workspace__name"]
     autocomplete_fields = ["user", "workspace"]

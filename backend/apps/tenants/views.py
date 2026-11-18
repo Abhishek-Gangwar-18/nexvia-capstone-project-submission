@@ -16,14 +16,15 @@ from rest_framework.views import APIView
 
 from apps.automation.queue import enqueue
 from apps.billing.limits import check_can_add_member
-from apps.billing.services import cancel_for_deleted_workspace
 from apps.automation.tasks import send_invitation_email
 from apps.core.api import WorkspaceScopedMixin
 from apps.issues.activity import record_event
 from apps.issues.models import AuditLog
 from apps.projects.models import Project
 
-from .models import Invitation, Membership, Workspace, default_invite_expiry
+from .models import (
+    Invitation, Membership, Workspace, default_invite_expiry, generate_invite_token, hash_invite_token,
+)
 from .serializers import (
     AcceptInvitationSerializer,
     DeleteWorkspaceSerializer,
@@ -33,6 +34,7 @@ from .serializers import (
     TransferOwnershipSerializer,
     WorkspaceSerializer,
 )
+from .deletion import start_deletion
 from .services import (
     accept_invitation,
     assert_can_change_role,
@@ -46,19 +48,28 @@ Role = Membership.Role
 
 
 def find_invitation(token):
+    """Look an invitation up by its raw token. Only the hash is stored, so hash first; the hash is unique,
+    so .get(). Missing and malformed tokens both come back as None (the caller's invalid/expired answer)."""
     if not isinstance(token, str) or "\x00" in token:
         return None
-    return Invitation.objects.select_related("workspace", "invited_by").filter(token=token).first()
+    if not token:
+        return None
+    try:
+        return Invitation.objects.select_related("workspace", "invited_by").get(
+            token_hash=hash_invite_token(token), workspace__deleting_at__isnull=True)
+    except Invitation.DoesNotExist:
+        return None
 
 
 def annotated_workspaces(user):
-    role = Membership.objects.filter(workspace=OuterRef("pk"), user=user).values("role")[:1]
+    # order_by(): one unique row per (workspace, user), so no ordering (and no JOINs for it) is needed.
+    role = Membership.objects.filter(workspace=OuterRef("pk"), user=user).order_by().values("role")[:1]
     projects = (
         Project.objects.filter(workspace=OuterRef("pk"), is_archived=False)
         .order_by().values("workspace").annotate(c=Count("id")).values("c")
     )
     return (
-        Workspace.objects.filter(memberships__user=user)
+        Workspace.objects.filter(memberships__user=user, deleting_at__isnull=True)
         .select_related("owner")
         .annotate(
             my_role=Subquery(role),
@@ -108,15 +119,15 @@ class CurrentWorkspaceView(WorkspaceScopedMixin, RetrieveUpdateDestroyAPIView):
             record_event(workspace, self.request.user, AuditLog.Action.UPDATED, AuditLog.Entity.WORKSPACE, workspace.name,
                          changes={"name": {"from": old_name, "to": workspace.name}})
 
-    @extend_schema(request=DeleteWorkspaceSerializer, responses={204: None})
+    @extend_schema(request=DeleteWorkspaceSerializer, responses={202: None})
     def delete(self, request, *args, **kwargs):
         # Irreversible: the caller must type the slug and re-enter their password.
         DeleteWorkspaceSerializer(data=request.data, context={"request": request}).is_valid(raise_exception=True)
-        return super().delete(request, *args, **kwargs)
-
-    def perform_destroy(self, instance):
-        cancel_for_deleted_workspace(instance)  # stop charging before the data is gone
-        instance.delete()
+        # Only mark it here. Stripe is cancelled by the durable background purge, AFTER this mark has committed:
+        # cancelling in the request first could leave a live workspace with no subscription if the process
+        # died between the two. The purge retries Stripe and touches no data until the cancellation succeeds.
+        start_deletion(self.workspace)  # hidden from now on; data removed in the background
+        return Response({"detail": "Workspace deletion started."}, status=status.HTTP_202_ACCEPTED)
 
 
 class TransferOwnershipView(WorkspaceScopedMixin, APIView):
@@ -178,24 +189,30 @@ class InvitationViewSet(WorkspaceScopedMixin, mixins.ListModelMixin, mixins.Crea
         try:
             with transaction.atomic():
                 # Lock the workspace: concurrent invites queue here, so the plan limit and duplicate checks hold.
-                Workspace.objects.select_for_update().filter(pk=self.workspace.pk).first()
+                Workspace.objects.select_for_update(no_key=True).filter(pk=self.workspace.pk).first()
                 Invitation.objects.filter(
-                    workspace=self.workspace, email__iexact=email, accepted_at__isnull=True,
+                    workspace=self.workspace, email=email, accepted_at__isnull=True,
                     expires_at__lte=timezone.now(),
                 ).delete()
                 check_can_add_member(self.workspace)
-                invitation = serializer.save(workspace=self.workspace, invited_by=self.request.user)
+                raw_token = generate_invite_token()
+                invitation = serializer.save(
+                    workspace=self.workspace, invited_by=self.request.user, token_hash=hash_invite_token(raw_token)
+                )
+                invitation._raw_token = raw_token  # this response's accept_url; never stored
         except IntegrityError:  # the unique_open_invitation constraint is the last line of defence
             raise exceptions.ValidationError({"email": ["An invitation is already pending for this email."]})
         record_event(self.workspace, self.request.user, AuditLog.Action.INVITED, AuditLog.Entity.INVITATION,
                      invitation.email, changes={"role": invitation.role})
-        transaction.on_commit(lambda: enqueue(send_invitation_email, invitation.pk))
+        # The raw token rides in the task message (the worker can't rebuild it from the hash).
+        transaction.on_commit(lambda: enqueue(send_invitation_email, invitation.pk, raw_token))
 
     def perform_destroy(self, instance):
         record_event(self.workspace, self.request.user, AuditLog.Action.REVOKED, AuditLog.Entity.INVITATION, instance.email)
         instance.delete()
 
-    @extend_schema(request=None, responses=inline_serializer("InvitationResend", {"queued": serializers.BooleanField()}))
+    @extend_schema(request=None, responses=inline_serializer(
+        "InvitationResend", {"queued": serializers.BooleanField(), "accept_url": serializers.URLField()}))
     @action(detail=True, methods=["post"])
     def resend(self, request, pk=None):
         cooldown = timedelta(seconds=settings.INVITATION_RESEND_COOLDOWN)
@@ -211,9 +228,13 @@ class InvitationViewSet(WorkspaceScopedMixin, mixins.ListModelMixin, mixins.Crea
                 raise exceptions.Throttled(wait=wait, detail="This invitation was just sent. Try again in a minute.")
             invitation.email_sent_at = now
             invitation.expires_at = default_invite_expiry()
-            invitation.save(update_fields=["email_sent_at", "expires_at", "updated_at"])
+            # A resend issues a fresh link (the old one stops working): the stored hash can't be turned back into
+            # the previous link, and this is the moment the admin can copy it.
+            raw_token = invitation.issue_token()
+            invitation.save(update_fields=["email_sent_at", "expires_at", "token_hash", "updated_at"])
         # Committed: only now hand the email to the queue.
-        return Response({"queued": enqueue(send_invitation_email, invitation.pk) is None}, status=status.HTTP_202_ACCEPTED)
+        queued = enqueue(send_invitation_email, invitation.pk, raw_token) is None
+        return Response({"queued": queued, "accept_url": invitation.accept_url}, status=status.HTTP_202_ACCEPTED)
 
 
 class InvitationPreviewView(APIView):

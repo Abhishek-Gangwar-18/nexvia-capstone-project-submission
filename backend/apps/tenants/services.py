@@ -22,7 +22,7 @@ def create_workspace(*, name, owner, plan=Workspace.Plan.FREE, slug="", enforce_
         # Lock the owner's row so two concurrent creates can't both slip under the cap.
         get_user_model().objects.select_for_update().filter(pk=owner.pk).first()
         limit = settings.MAX_OWNED_WORKSPACES
-        if Workspace.objects.filter(owner=owner).count() >= limit:
+        if Workspace.objects.filter(owner=owner, deleting_at__isnull=True).count() >= limit:
             raise exceptions.ValidationError({"name": [f"You can own at most {limit} workspaces."]})
     workspace = _insert_workspace(name=name, owner=owner, plan=plan, slug=slug)
     Membership.objects.create(workspace=workspace, user=owner, role=Role.OWNER)
@@ -55,7 +55,14 @@ def accept_invitation(invitation, user):
         workspace=invitation.workspace, user=user, defaults={"role": invitation.role}
     )
     if joined:
-        _audit(invitation.workspace, user, "joined", "member", user.email, changes={"role": invitation.role})
+        # Everything reporting needs about the invite lives here, because accepted invitations are purged
+        # after INVITATION_RETENTION_DAYS: who joined (actor + label), where, when (this row), and who invited.
+        inviter = invitation.invited_by
+        _audit(invitation.workspace, user, "joined", "member", user.email, changes={
+            "role": invitation.role,
+            "invited_by": {"id": inviter.pk, "email": inviter.email} if inviter else None,
+            "invited_at": invitation.created_at.isoformat(),
+        })
     invitation.accepted_at = timezone.now()
     invitation.save(update_fields=["accepted_at", "updated_at"])
     return invitation.workspace
@@ -125,10 +132,12 @@ def transfer_ownership(workspace, actor, target_membership_id):
     permission cache to invalidate: both users' new roles apply from their next call."""
     from apps.issues.models import AuditLog
 
-    workspace = Workspace.objects.select_for_update().get(pk=workspace.pk)
+    workspace = Workspace.objects.select_for_update(no_key=True).get(pk=workspace.pk)
     if workspace.owner_id != actor.pk:
         raise exceptions.PermissionDenied("Only the owner can transfer ownership.")
-    locked = Membership.objects.select_for_update().select_related("user").filter(workspace=workspace)
+    # of=("self",): lock the membership rows only. Without it, FOR UPDATE also locks every joined
+    # accounts_user row, blocking unrelated profile saves and logins (last_login) during a transfer.
+    locked = Membership.objects.select_for_update(of=("self",)).select_related("user").filter(workspace=workspace)
     current = locked.filter(user=actor).first()
     target = locked.filter(pk=target_membership_id).first()
     if target is None:
