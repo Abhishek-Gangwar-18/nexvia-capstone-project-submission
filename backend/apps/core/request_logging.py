@@ -26,6 +26,20 @@ REQUEST_ID_HEADER = "HTTP_X_REQUEST_ID"
 _VALID_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 _log_context = ContextVar("log_context", default=None)
+
+REDACTED = "[REDACTED]"
+# Links that carry a secret in the path: password reset (/reset-password/<uid>/<token>), invitation pages and
+# the invite preview API. The secret is everything after the prefix, so the whole tail is masked. The pattern
+# also matches inside query strings, raw or percent-encoded (e.g. /login?next=%2Finvite%2F<token>).
+_SECRET_PATH = re.compile(r"(?i)(/|%2F)(reset-password|invite|api(?:/|%2F)invitations(?:/|%2F)preview)(/|%2F)[^?&#\s]*")
+# Query parameters whose values are secrets, whatever the path.
+_SECRET_PARAM = re.compile(r"(?i)([?&](?:token|uid|key|secret|password|code|refresh|access)=)[^&#]*")
+
+
+def redact_path(full_path):
+    """The request line as it may be logged: secret path segments and secret query values replaced."""
+    masked = _SECRET_PATH.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{REDACTED}", full_path)
+    return _SECRET_PARAM.sub(lambda m: f"{m.group(1)}{REDACTED}", masked)
 access_logger = logging.getLogger("flowboard.request")
 
 
@@ -123,9 +137,21 @@ class RequestLogMiddleware:
         access_logger.log(
             level,
             "%s %s %s %dms role=%s",
-            request.method, request.get_full_path()[:300], status, duration_ms, role,
+            request.method, redact_path(request.get_full_path())[:300], status, duration_ms, role,
             extra={
                 "request_id": request.request_id, "tenant": tenant, "user_id": user_id,
                 "http_method": request.method, "http_status": status, "duration_ms": round(duration_ms, 1), "role": role,
             },
         )
+
+
+class RedactSecretPaths(logging.Filter):
+    """Last line of defence on the console handler: Django's own lines (e.g. "Internal Server Error: <path>"
+    from django.request) also print request paths. Mask secrets in the message and its string arguments."""
+
+    def filter(self, record):
+        if isinstance(record.msg, str):
+            record.msg = redact_path(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact_path(arg) if isinstance(arg, str) else arg for arg in record.args)
+        return True

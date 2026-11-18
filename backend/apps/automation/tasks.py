@@ -17,7 +17,7 @@ from smtplib import SMTPException
 import certifi
 from celery import shared_task
 from django.conf import settings
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.db.models import Count, F, Q
 from django.utils import timezone
 
@@ -577,3 +577,21 @@ def resume_stalled_deletions():
     for workspace_id in pending:
         enqueue(delete_workspace, workspace_id)
     return pending
+
+
+@shared_task(bind=True, name="apps.automation.tasks.flush_expired_tokens",
+             autoretry_for=(OperationalError,), retry_backoff=True, max_retries=3)
+def flush_expired_tokens(self):
+    """Nightly: SimpleJWT's `flushexpiredtokens`, in bounded batches. Every login and every refresh (rotation)
+    adds an outstanding refresh token, and every rotation/logout a blacklist row; nothing removed them.
+
+    Only tokens past their own expiry go: they can no longer be used, so their blacklist entries (deleted with
+    them by the FK cascade) protect nothing. Revoked tokens that haven't expired stay blacklisted. Each batch is
+    its own short transaction, so a failure keeps the progress made and the next run (or retry) finishes the
+    rest; running it twice does nothing the second time."""
+    from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+    from rest_framework_simplejwt.utils import aware_utcnow
+
+    deleted = _purge(OutstandingToken.objects.filter(expires_at__lte=aware_utcnow()))
+    logger.info("Flushed %s expired refresh tokens (and their blacklist entries)", deleted)
+    return deleted

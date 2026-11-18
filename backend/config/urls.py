@@ -2,7 +2,8 @@ from django.contrib import admin
 from django.db import connection
 from django.http import JsonResponse
 from django.urls import include, path
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
+from apps.core.docs import SchemaView, SwaggerView
 
 
 def health(request):
@@ -23,6 +24,7 @@ urlpatterns = [
     path("api/", include("apps.issues.urls")),
     path("api/", include("apps.automation.urls")),
     path("api/", include("apps.billing.urls")),
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
+    # Gated by settings.API_DOCS (apps/core/docs.py): public in development, 404 in production unless enabled.
+    path("api/schema/", SchemaView.as_view(), name="schema"),
+    path("api/docs/", SwaggerView.as_view(url_name="schema"), name="docs"),
 ]

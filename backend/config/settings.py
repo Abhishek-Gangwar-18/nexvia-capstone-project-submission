@@ -6,6 +6,7 @@ from pathlib import Path
 import dj_database_url
 from celery.schedules import crontab
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -131,10 +132,15 @@ USE_X_FORWARDED_HOST = env_bool("DJANGO_USE_X_FORWARDED_HOST", False)
 if env_bool("DJANGO_BEHIND_PROXY", False):
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT", False)
+# The container health check calls gunicorn over plain HTTP on 127.0.0.1; it must not be redirected to HTTPS.
+SECURE_REDIRECT_EXEMPT = [r"^api/health/$"]
 SESSION_COOKIE_SECURE = env_bool("DJANGO_SECURE_COOKIES", False)
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
+# HSTS only where HTTPS is really enforced (the production compose, behind a TLS proxy). includeSubDomains and
+# preload are separate, explicit opt-ins: they bind every subdomain / browsers' built-in lists, hard to undo.
 SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_HSTS_SECONDS", "0"))
-SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_HSTS_INCLUDE_SUBDOMAINS", False)
+SECURE_HSTS_PRELOAD = env_bool("DJANGO_HSTS_PRELOAD", False)
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 
@@ -147,9 +153,10 @@ LOGGING = {
     "filters": {
         "context": {"()": "apps.core.request_logging.ContextFilter"},
         "skip_client_errors": {"()": "apps.core.request_logging.SkipClientErrorResponses"},
+        "redact_secrets": {"()": "apps.core.request_logging.RedactSecretPaths"},
     },
     "formatters": {"context": {"format": f"%(asctime)s %(levelname)-7s {LOG_CONTEXT_FORMAT} %(name)s: %(message)s"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "context", "filters": ["context"]}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "context", "filters": ["context", "redact_secrets"]}},
     "root": {"handlers": ["console"], "level": os.getenv("DJANGO_LOG_LEVEL", "INFO")},
     "loggers": {
         # Drops Django's default plain console handler, so django.* lines print once, with context, via root.
@@ -238,6 +245,12 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
+# OpenAPI schema + Swagger UI (apps/core/docs.py): "public" (anyone), "staff" (admin session or staff JWT) or "off"
+# (404). Default: public with DEBUG, off otherwise, so production never exposes the API description by accident.
+API_DOCS = os.getenv("API_DOCS", "public" if DEBUG else "off").strip().lower()
+if API_DOCS not in {"public", "staff", "off"}:
+    raise ImproperlyConfigured("API_DOCS must be public, staff or off")
+
 SPECTACULAR_SETTINGS = {
     "TITLE": "FlowBoard API",
     "DESCRIPTION": "Multi-tenant project management API. Send `Authorization: Bearer <access>` and "
@@ -247,7 +260,9 @@ SPECTACULAR_SETTINGS = {
     "COMPONENT_SPLIT_REQUEST": True,
 }
 
-CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+# The SPA and the API share one origin behind nginx, so production needs no CORS at all: the Vite dev-server
+# origins are the default only with DEBUG (local `runserver` + `pnpm dev`). Set the variable to allow others.
+CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173" if DEBUG else "")
 CORS_ALLOW_HEADERS = (*default_headers, "x-workspace")
 
 # Test-mode keys only in development. The secret stays on the server; checkout happens on Stripe's own pages.
@@ -285,6 +300,7 @@ CELERY_BEAT_SCHEDULE = {
     "daily-purge-expired-invitations": {"task": "apps.automation.tasks.purge_expired_invitations", "schedule": crontab(hour=3, minute=0)},
     "nightly-retention-purge": {"task": "apps.automation.tasks.purge_old_records", "schedule": crontab(hour=3, minute=15)},
     "nightly-attachment-file-sweep": {"task": "apps.automation.tasks.sweep_attachment_files", "schedule": crontab(hour=3, minute=30)},
+    "nightly-flush-expired-tokens": {"task": "apps.automation.tasks.flush_expired_tokens", "schedule": crontab(hour=3, minute=45)},
     "resume-stalled-workspace-deletions": {"task": "apps.automation.tasks.resume_stalled_deletions", "schedule": crontab(minute="*/10")},
     "recover-stalled-webhooks": {"task": "apps.automation.tasks.recover_stalled_deliveries", "schedule": crontab(minute="*/5")},
 }
