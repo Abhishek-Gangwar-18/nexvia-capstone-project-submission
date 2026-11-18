@@ -277,10 +277,14 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {"socket_connect_timeout": 2, "socket_timeout"
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_TIME_LIMIT = 300
 CELERY_TASK_SOFT_TIME_LIMIT = 240
+WORKSPACE_DELETE_BATCH = int(os.getenv("WORKSPACE_DELETE_BATCH", "500"))  # rows per short transaction
+
 CELERY_BEAT_SCHEDULE = {
     "daily-overdue-reminders": {"task": "apps.automation.tasks.create_overdue_reminders", "schedule": crontab(hour=8, minute=0)},
     "daily-workspace-digests": {"task": "apps.automation.tasks.create_daily_digests", "schedule": crontab(hour=8, minute=5)},
     "daily-purge-expired-invitations": {"task": "apps.automation.tasks.purge_expired_invitations", "schedule": crontab(hour=3, minute=0)},
     "nightly-retention-purge": {"task": "apps.automation.tasks.purge_old_records", "schedule": crontab(hour=3, minute=15)},
+    "nightly-attachment-file-sweep": {"task": "apps.automation.tasks.sweep_attachment_files", "schedule": crontab(hour=3, minute=30)},
+    "resume-stalled-workspace-deletions": {"task": "apps.automation.tasks.resume_stalled_deletions", "schedule": crontab(minute="*/10")},
     "recover-stalled-webhooks": {"task": "apps.automation.tasks.recover_stalled_deliveries", "schedule": crontab(minute="*/5")},
 }

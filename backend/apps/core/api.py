@@ -31,12 +31,11 @@ class WorkspaceScopedMixin:
             raise exceptions.ValidationError({"workspace": "The X-Workspace header is required."})
         if "\x00" in slug:  # PostgreSQL can't store NUL, so no workspace can match it
             raise exceptions.NotFound("Workspace not found.")
-        membership = (
-            Membership.objects.select_related("workspace")
-            .filter(user=request.user, workspace__slug=slug)
-            .first()
-        )
-        if membership is None:
+        # (user, workspace) is unique, so .get(): at most one row, no ORDER BY, no extra JOIN.
+        try:
+            membership = Membership.objects.select_related("workspace").get(
+                user=request.user, workspace__slug=slug, workspace__deleting_at__isnull=True)  # deleting: gone
+        except Membership.DoesNotExist:
             # Same response whether the workspace doesn't exist or the user isn't in it.
             raise exceptions.NotFound("Workspace not found.")
         for target in (request, request._request):

@@ -10,8 +10,22 @@ Three layers keep tenants apart:
 """
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 
 from .context import TenantContextMissing, get_current_workspace
+
+HEX_COLOR_REGEX = r"^#[0-9a-fA-F]{6}$"
+
+
+def choices_check(field, choices, name):
+    """Django `choices` are only checked in Python; this makes PostgreSQL enforce them too, so raw SQL,
+    bulk_create() and QuerySet.update() can't store a value the app doesn't know."""
+    return models.CheckConstraint(condition=Q(**{f"{field}__in": [value for value, _ in choices]}), name=name)
+
+
+def hex_color_check(field, name):
+    """#RRGGBB only: colours are rendered as inline CSS."""
+    return models.CheckConstraint(condition=Q(**{f"{field}__regex": HEX_COLOR_REGEX}), name=name)
 
 
 class TimeStampedModel(models.Model):
@@ -38,6 +52,11 @@ class TenantQuerySet(models.QuerySet):
 
 
 TenantManager = models.Manager.from_queryset(TenantQuerySet)
+
+
+def workspace_fk_without_index():
+    """The tenant FK, for models whose composite indexes already lead with workspace_id."""
+    return models.ForeignKey("tenants.Workspace", on_delete=models.CASCADE, related_name="+", db_index=False)
 
 
 class TenantModel(TimeStampedModel):
