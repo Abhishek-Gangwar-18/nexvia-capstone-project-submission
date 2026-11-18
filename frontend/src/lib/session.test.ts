@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "@/store/auth";
 import type { Me } from "@/types";
 import { api } from "./api";
-import { canAutoRefresh, logoutSession, refreshAccessToken, restoreSession } from "./session";
+import { RateLimited, canAutoRefresh, logoutSession, refreshAccessToken, restoreSession, retryAfterSeconds } from "./session";
 
 const user = { id: 1, email: "a@b.com" } as unknown as Me;
 
-function httpError(status: number, config: object = { headers: new AxiosHeaders(), url: "/x" }) {
-  return new AxiosError("fail", String(status), config as never, null, { status, data: {}, statusText: "", headers: {}, config } as never);
+function httpError(status: number, config: object = { headers: new AxiosHeaders(), url: "/x" }, headers: object = {}) {
+  return new AxiosError("fail", String(status), config as never, null, { status, data: {}, statusText: "", headers, config } as never);
 }
+const tooMany = (retryAfter = "12") => httpError(429, undefined, { "retry-after": retryAfter });
 /** Adapter answer: a 401 carrying the real request config (as axios does), so the interceptor can retry it. */
 const reject401 = (config: object) => Promise.reject(httpError(401, config));
 
@@ -92,6 +93,35 @@ describe("session", () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
+  it("a 429 during restore keeps the session and remembers Retry-After (not logged out)", async () => {
+    vi.spyOn(axios, "post").mockRejectedValue(tooMany("12"));
+    await restoreSession();
+    expect(useAuth.getState()).toMatchObject({ status: "rate_limited", retryAfter: 12 });
+  });
+
+  it("retrying after the limit resets restores the session", async () => {
+    const post = vi.spyOn(axios, "post").mockRejectedValueOnce(tooMany("1")).mockResolvedValueOnce({ data: { access: "a2" } });
+    vi.spyOn(axios, "get").mockResolvedValue({ data: user });
+    await restoreSession();
+    expect(useAuth.getState().status).toBe("rate_limited");
+    await restoreSession();
+    expect(useAuth.getState()).toMatchObject({ status: "authenticated", access: "a2", retryAfter: null });
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 429 inside the cross-tab lock releases it, so the next tab's refresh still runs", async () => {
+    const request = installLocks();
+    const post = vi.spyOn(axios, "post").mockRejectedValueOnce(tooMany()).mockResolvedValueOnce({ data: { access: "next" } });
+    await expect(refreshAccessToken()).rejects.toBeInstanceOf(RateLimited);
+    await expect(refreshAccessToken()).resolves.toBe("next"); // e.g. another tab, after the wait
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([["12", 12], ["0", 30], ["", 30], ["abc", 30], ["99999", 3600]])("Retry-After %j -> %i s", (header, seconds) => {
+    expect(retryAfterSeconds(header)).toBe(seconds);
+  });
+
   it("disables automatic refresh without Web Locks", async () => {
     Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
     expect(canAutoRefresh()).toBe(false);
@@ -136,7 +166,14 @@ describe("api client", () => {
     expect(useAuth.getState().status).toBe("anonymous");
   });
 
-  it("a network error during refresh keeps the session", async () => {
+  it("a 429 on refresh keeps the session (rate limited is not logged out)", async () => {
+    vi.spyOn(axios, "post").mockRejectedValue(tooMany());
+    const adapter = vi.fn().mockRejectedValue(httpError(401));
+    await expect(api.get("/workspaces/", { adapter })).rejects.toBeTruthy(); // that request fails…
+    expect(useAuth.getState()).toMatchObject({ status: "authenticated", access: "old" }); // …but nobody is logged out
+  });
+
+    it("a network error during refresh keeps the session", async () => {
     vi.spyOn(axios, "post").mockRejectedValue(new AxiosError("Network Error", "ERR_NETWORK"));
     const adapter = vi.fn().mockRejectedValue(httpError(401));
     await expect(api.get("/workspaces/", { adapter })).rejects.toBeTruthy();
