@@ -18,9 +18,19 @@ export const priorityOptions: Option<Priority>[] = PRIORITY_ORDER.map((p) => ({
 export const statusOptions = (statuses: WorkflowStatus[]): Option<number>[] =>
   statuses.map((s) => ({ value: s.id, label: s.name, icon: <StatusDot color={s.color} /> }));
 
-export const memberOptions = (members: Member[], unassignedLabel = "Unassigned"): Option<number | null>[] => [
+/** Active members only (the API refuses to newly assign deactivated people), plus `currentId` so a value
+ * that is already set still displays. */
+export const memberOptions = (
+  members: Member[], unassignedLabel = "Unassigned", currentId: number | null = null,
+): Option<number | null>[] => [
   { value: null, label: unassignedLabel, icon: <Avatar user={null} size="xs" /> },
-  ...members.map((m) => ({ value: m.user.id, label: m.user.display_name, icon: <Avatar user={m.user} size="xs" /> })),
+  ...members
+    .filter((m) => m.user.is_active || m.user.id === currentId)
+    .map((m) => ({
+      value: m.user.id,
+      label: m.user.is_active ? m.user.display_name : `${m.user.display_name} (deactivated)`,
+      icon: <Avatar user={m.user} size="xs" />,
+    })),
 ];
 
 export const sprintOptions = (sprints: Sprint[]): Option<number | null>[] => [

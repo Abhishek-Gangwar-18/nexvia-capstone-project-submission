@@ -575,7 +575,8 @@ export function useResendInvitation() {
   const w = useWsApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => w.post<{ queued: boolean }>(`/invitations/${id}/resend/`),
+    // Every resend issues a new link (only a hash is stored, so old links can't be shown again).
+    mutationFn: (id: number) => w.post<{ queued: boolean; accept_url: string }>(`/invitations/${id}/resend/`),
     onSuccess: () => qc.invalidateQueries({ queryKey: [...ws(w.slug), "invitations"] }),
   });
 }

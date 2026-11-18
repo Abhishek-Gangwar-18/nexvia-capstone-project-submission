@@ -232,7 +232,7 @@ function IssueEditor({ issue, onClose }: { issue: IssueDetail; onClose: () => vo
                 size="sm"
                 value={issue.assignee}
                 onChange={(assignee) => save({ assignee })}
-                options={memberOptions(members)}
+                options={memberOptions(members, "Unassigned", issue.assignee)}
                 disabled={!canEdit}
               />
             </DetailRow>

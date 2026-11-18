@@ -156,7 +156,12 @@ export default function BillingPage() {
               label="Members"
               used={data.usage.members + data.usage.pending_invitations}
               limit={current.members}
-              note={data.usage.pending_invitations ? `Includes ${data.usage.pending_invitations} pending invitations.` : undefined}
+              note={
+                [
+                  data.usage.pending_invitations && `${data.usage.pending_invitations} pending invitations`,
+                  data.usage.deactivated_members && `${data.usage.deactivated_members} deactivated members (remove them to free seats)`,
+                ].filter(Boolean).join(" · ").replace(/^(.)/, "Includes $1") || undefined
+              }
             />
             <p className="text-sm text-slate-500">Files up to {current.file_mb} MB each.</p>
           </div>

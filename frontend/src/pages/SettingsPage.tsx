@@ -204,7 +204,7 @@ export default function SettingsPage() {
         open={confirming}
         onClose={() => { setConfirming(false); setConfirmText(""); setConfirmPassword(""); remove.reset(); }}
         title={`Delete ${workspace.name}?`}
-        description="Every project, issue, sprint, label and membership will be permanently deleted."
+        description="Every project, issue, sprint, label and membership will be permanently deleted. The workspace disappears for everyone right away; its data is removed in the background."
         confirmLabel="Delete forever"
         loading={remove.isPending}
         onConfirm={() => {
@@ -216,7 +216,8 @@ export default function SettingsPage() {
             onSuccess: async () => {
               setLastWorkspace(null);
               await qc.invalidateQueries({ queryKey: ["workspaces"] });
-              toast.success("Workspace deleted");
+              // 202: the workspace is already gone for everyone; its data is removed in the background.
+              toast.success("Workspace deleted. Its data is being removed in the background.");
               navigate("/", { replace: true });
             },
           });

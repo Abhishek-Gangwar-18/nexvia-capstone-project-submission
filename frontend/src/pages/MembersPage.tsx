@@ -103,6 +103,11 @@ export default function MembersPage() {
                       <p className="truncate text-xs text-slate-500">
                         {member.user.email}
                         {member.user.job_title && ` · ${member.user.job_title}`}
+                        {!member.user.is_active && (
+                          <span className="ml-1.5 text-amber-600 dark:text-amber-400" title="Can't sign in, but still uses a seat until removed">
+                            · Deactivated, still uses a seat
+                          </span>
+                        )}
                       </p>
                     </div>
                     <span className="hidden text-xs text-slate-400 md:inline">Joined {formatDate(member.joined_at)}</span>
@@ -192,17 +197,18 @@ function InviteRow({ invite, onRevoke }: { invite: Invitation; onRevoke: () => v
         loading={resend.isPending}
         onClick={() =>
           resend.mutate(invite.id, {
-            onSuccess: ({ queued }) => {
-              if (queued) toast.success("Invitation email queued");
-              else toast.error("Couldn't queue the email. Copy the link instead.");
+            onSuccess: ({ queued, accept_url }) => {
+              navigator.clipboard.writeText(accept_url);
+              resend.reset(); // don't keep the link in the mutation cache
+              const note = "New link copied. The previous link no longer works.";
+              if (queued) toast.success("Invitation email resent", { description: note });
+              else toast.error("Couldn't queue the email", { description: `${note} Share it yourself.` });
             },
           })
         }
+        title="Email a new link and copy it (the previous link stops working)"
       >
         Resend
-      </Button>
-      <Button size="sm" variant="ghost" icon={<Copy className="size-3.5" />} onClick={() => copy(invite.accept_url)}>
-        Copy link
       </Button>
       <IconButton label="Revoke invitation" onClick={onRevoke}>
         <Trash className="size-4" />
@@ -247,11 +253,12 @@ function InviteModal({ open, onClose }: { open: boolean; onClose: () => void }) 
       {created ? (
         <div className="space-y-4">
           <div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
-            We're emailing an invitation to <strong>{created.email}</strong>. You can also share this link with them:
+            We're emailing an invitation to <strong>{created.email}</strong>. You can also share this link with them.
+            Copy it now: for security it can't be shown again (Resend issues a new one).
           </div>
           <div className="flex gap-2">
-            <Input readOnly value={created.accept_url} onFocus={(e) => e.target.select()} className="font-mono text-xs" />
-            <Button icon={<Copy className="size-4" />} onClick={() => copy(created.accept_url)}>Copy</Button>
+            <Input readOnly value={created.accept_url ?? ""} onFocus={(e) => e.target.select()} className="font-mono text-xs" />
+            <Button icon={<Copy className="size-4" />} onClick={() => copy(created.accept_url ?? "")}>Copy</Button>
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => { setCreated(null); setEmail(""); create.reset(); }}>Invite another</Button>

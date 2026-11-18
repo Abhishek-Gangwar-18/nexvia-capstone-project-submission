@@ -13,6 +13,8 @@ export interface UserMini {
   initials: string;
   avatar_color: string;
   job_title: string;
+  /** Deactivated accounts stay in member lists but are hidden from pickers. */
+  is_active: boolean;
 }
 
 export interface Me extends UserMini {
@@ -54,7 +56,8 @@ export interface Invitation {
   role: Role;
   invited_by: UserMini | null;
   expires_at: string;
-  accept_url: string;
+  /** Only in the create/resend response; null in lists, because only a hash of the token is stored. */
+  accept_url: string | null;
   email_sent_at: string | null;
   created_at: string;
 }
@@ -376,7 +379,8 @@ export interface BillingPlan {
 export interface BillingState {
   plan: Plan;
   plans: BillingPlan[];
-  usage: { projects: number; members: number; pending_invitations: number };
+  /** members includes deactivated_members: deactivated people still hold a seat until removed. */
+  usage: { projects: number; members: number; deactivated_members: number; pending_invitations: number };
   /** Set per resource only while the workspace is above its plan (e.g. after a downgrade); otherwise null. */
   over_limit: Record<"projects" | "members", { used: number; limit: number } | null>;
   can_manage: boolean;

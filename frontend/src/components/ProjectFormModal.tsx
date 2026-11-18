@@ -117,7 +117,7 @@ export function ProjectFormModal({ open, onClose, project }: { open: boolean; on
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Project lead">
-            <Select value={lead} onChange={setLead} options={memberOptions(members, "No lead")} />
+            <Select value={lead} onChange={setLead} options={memberOptions(members, "No lead", project?.lead ?? null)} />
           </Field>
           <Field label="Colour">
             <div className="flex h-9 flex-wrap items-center gap-1.5">
