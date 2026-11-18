@@ -3,9 +3,11 @@ import secrets
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
+from django.db.models.functions import Length, Trim
+from django.db.models.lookups import GreaterThan
 
-from apps.core.models import TenantModel
+from apps.core.models import TenantModel, choices_check, workspace_fk_without_index
 from apps.tenants.models import Membership
 
 
@@ -31,6 +33,17 @@ class WebhookEndpoint(TenantModel):
 
     class Meta:
         ordering = ["name", "id"]
+        constraints = [
+            models.CheckConstraint(condition=GreaterThan(Length(Trim("name")), 0), name="ck_webhook_name_not_blank"),
+            # disabled_at / disabled_reason record an AUTOMATIC disable; an active endpoint can't carry one. (A
+            # manual disable leaves them empty, so is_active=false alone stays valid.)
+            models.CheckConstraint(
+                condition=Q(is_active=False) | (Q(disabled_at__isnull=True) & Q(disabled_reason="")),
+                name="ck_webhook_active_not_disabled",
+            ),
+            # events must be a JSON array (raw CHECK in automation migration 0009: jsonb_typeof isn't expressible
+            # here); the allowed names are the serializer's job, since they change with features.
+        ]
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
@@ -38,16 +51,25 @@ class WebhookEndpoint(TenantModel):
             raise ValidationError({"created_by": "Creator is not a workspace member."})
 
 
-class WebhookDelivery(TenantModel):
-    class State(models.TextChoices):
-        PENDING = "pending", "Pending"
-        PROCESSING = "processing", "Processing"
-        DELIVERED = "delivered", "Delivered"
-        FAILED = "failed", "Failed"
 
-    endpoint = models.ForeignKey(WebhookEndpoint, on_delete=models.CASCADE, related_name="deliveries")
+class WebhookDeliveryState(models.TextChoices):
+    PENDING = "pending", "Pending"
+    PROCESSING = "processing", "Processing"
+    DELIVERED = "delivered", "Delivered"
+    FAILED = "failed", "Failed"
+
+
+class WebhookDelivery(TenantModel):
+    State = WebhookDeliveryState
+
+    # delivery_endpoint_newest (endpoint, -created_at, -id) serves the endpoint filter and the cascade.
+    endpoint = models.ForeignKey(WebhookEndpoint, on_delete=models.CASCADE, related_name="deliveries", db_index=False)
     # Manual redeliveries are new rows pointing at the original, so history is never overwritten.
     redelivery_of = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="redeliveries")
+    # Fixed at creation (a DB trigger rejects changes). The unique index below keys on THIS, not on
+    # redelivery_of: deleting an original (retention, workspace purge) sets redelivery_of to NULL on its
+    # redeliveries, which used to turn them into "originals" and collide on (endpoint, event_id).
+    is_redelivery = models.BooleanField(default=False, editable=False)
     event_id = models.UUIDField()
     event = models.CharField(max_length=80)
     payload = models.JSONField()
@@ -68,13 +90,35 @@ class WebhookDelivery(TenantModel):
         constraints = [
             # One original delivery per event and endpoint; redeliveries reuse the event_id on purpose.
             models.UniqueConstraint(
-                fields=["endpoint", "event_id"], condition=Q(redelivery_of__isnull=True), name="unique_webhook_event_delivery"
+                fields=["endpoint", "event_id"], condition=Q(is_redelivery=False), name="unique_webhook_event_delivery"
             ),
+            models.CheckConstraint(condition=Q(redelivery_of__isnull=True) | Q(is_redelivery=True),
+                                   name="ck_delivery_redelivery_flag"),
+            choices_check("state", WebhookDeliveryState.choices, "ck_delivery_state"),
+            models.CheckConstraint(condition=~Q(state="delivered") | Q(delivered_at__isnull=False),
+                                   name="ck_delivery_delivered_at"),
+            models.CheckConstraint(
+                condition=~Q(state="processing") | (Q(claimed_at__isnull=False) & Q(lease_expires_at__isnull=False)),
+                name="ck_delivery_processing_lease",
+            ),
+            models.CheckConstraint(condition=~Q(state__in=["delivered", "failed"]) | Q(lease_expires_at__isnull=True),
+                                   name="ck_delivery_finished_no_lease"),
         ]
-        indexes = [models.Index(fields=["state", "lease_expires_at"], name="delivery_state_lease")]
+        indexes = [
+            # The per-endpoint history, newest first: reads only the rows returned.
+            models.Index(F("endpoint"), F("created_at").desc(), F("id").desc(), name="delivery_endpoint_newest"),
+            # Nightly retention scans finished rows by age only.
+            models.Index(fields=["created_at"], condition=Q(state__in=["delivered", "failed"]),
+                         name="delivery_finished_created"),
+            # Stalled-lease recovery: only the (few) rows being processed.
+            models.Index(fields=["lease_expires_at"], condition=Q(state="processing"), name="delivery_processing_lease"),
+        ]
 
 
 class Notification(TenantModel):
+    # Composite indexes below start with workspace_id, so a separate single-column index is redundant
+    # (benchmarked at 100k rows: the planner uses the composite at equal or better speed).
+    workspace = workspace_fk_without_index()
     recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="flowboard_notifications")
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="flowboard_actions")
     event_key = models.CharField(max_length=180)
@@ -87,7 +131,16 @@ class Notification(TenantModel):
     class Meta:
         ordering = ["-created_at", "-id"]
         constraints = [models.UniqueConstraint(fields=["workspace", "recipient", "event_key"], name="unique_workspace_notification_event")]
-        indexes = [models.Index(fields=["workspace", "recipient", "read_at"])]
+        indexes = [
+            # The bell's "newest 100" (and ?page=) read straight from the index, without sorting a user's history.
+            models.Index(F("workspace"), F("recipient"), F("created_at").desc(), F("id").desc(),
+                         name="notification_inbox_newest"),
+            # Unread count and mark-all-read touch only the unread entries.
+            models.Index(fields=["workspace", "recipient"], condition=Q(read_at__isnull=True),
+                         name="notification_unread"),
+            # Retention (read after 90 days, unread after 180) scans by age, in bounded batches.
+            models.Index(fields=["created_at"], name="notification_created"),
+        ]
 
     def check_tenant_integrity(self):
         super().check_tenant_integrity()
@@ -100,16 +153,24 @@ class Notification(TenantModel):
             raise ValidationError({"actor": "Actor is not a workspace member."})
 
 
-class WorkspaceReport(TenantModel):
-    class State(models.TextChoices):
-        PENDING = "pending", "Pending"
-        READY = "ready", "Ready"
-        FAILED = "failed", "Failed"
 
-    class ReportType(models.TextChoices):
-        SUMMARY = "workspace_summary", "Workspace summary"
-        BURNDOWN = "sprint_burndown", "Sprint burndown"
-        VELOCITY = "velocity", "Velocity"
+class WorkspaceReportState(models.TextChoices):
+    PENDING = "pending", "Pending"
+    READY = "ready", "Ready"
+    FAILED = "failed", "Failed"
+
+
+
+class WorkspaceReportReportType(models.TextChoices):
+    SUMMARY = "workspace_summary", "Workspace summary"
+    BURNDOWN = "sprint_burndown", "Sprint burndown"
+    VELOCITY = "velocity", "Velocity"
+
+
+class WorkspaceReport(TenantModel):
+    State = WorkspaceReportState
+
+    ReportType = WorkspaceReportReportType
 
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="flowboard_reports")
     report_type = models.CharField(max_length=30, choices=ReportType.choices, default=ReportType.SUMMARY)
@@ -123,11 +184,23 @@ class WorkspaceReport(TenantModel):
     class Meta:
         ordering = ["-created_at", "-id"]
         constraints = [
-            # At most one pending build per identical request; NULL project/sprint count as equal.
+            # At most one pending build per identical request; NULL project/sprint count as equal. A pending
+            # report whose source was deleted (SET NULL) leaves the rule: its build can only fail, and two such
+            # reports turning into the same (type, NULL, NULL) used to block deleting the project or sprint.
             models.UniqueConstraint(
-                fields=["workspace", "report_type", "project", "sprint"], condition=Q(state="pending"),
+                fields=["workspace", "report_type", "project", "sprint"],
+                condition=Q(state="pending") & (
+                    Q(report_type="workspace_summary")
+                    | Q(report_type="velocity", project__isnull=False)
+                    | Q(report_type="sprint_burndown", sprint__isnull=False)
+                ),
                 nulls_distinct=False, name="one_pending_identical_report",
             ),
+            choices_check("state", WorkspaceReportState.choices, "ck_report_state"),
+            # Failed reports explain why; pending and ready ones carry no error.
+            models.CheckConstraint(condition=(Q(state="failed") & ~Q(error="")) | (~Q(state="failed") & Q(error="")),
+                                   name="ck_report_error_iff_failed"),
+            choices_check("report_type", WorkspaceReportReportType.choices, "ck_report_type"),
         ]
 
     def check_tenant_integrity(self):

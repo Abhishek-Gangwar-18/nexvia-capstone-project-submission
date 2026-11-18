@@ -26,6 +26,14 @@ class WebhookEndpointSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "secret_hint", "consecutive_failures", "disabled_at", "disabled_reason",
                             "created_by", "created_at", "updated_at"]
 
+    def update(self, instance, validated_data):
+        """Only the submitted fields (plus the view's re-enable reset), never the whole row: a full-row save
+        would put back a stale is_active / consecutive_failures written by the delivery worker meanwhile."""
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save(update_fields=sorted({*validated_data, "updated_at"}))
+        return instance
+
     def validate_events(self, values):
         if not isinstance(values, list) or len(values) > 8 or any(not isinstance(event, str) for event in values):
             raise serializers.ValidationError("Select a unique list of up to 8 event names.")

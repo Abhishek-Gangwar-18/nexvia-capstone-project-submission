@@ -29,10 +29,9 @@ from .serializers import (
     NotificationSerializer, ReportRequestSerializer, WebhookDeliverySerializer, WebhookEndpointSerializer,
     WorkspaceReportSerializer,
 )
-from .tasks import deliver_webhook, generate_workspace_report
+from .tasks import STALE_REPORT_AFTER, deliver_webhook, generate_workspace_report
 
 Role = Membership.Role
-STALE_REPORT_AFTER = timedelta(minutes=15)  # a pending build older than this is treated as lost
 
 
 def _with_secret(data, endpoint):
@@ -70,7 +69,7 @@ class WebhookEndpointViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             # Same convention as projects and invitations: lock the workspace row, then check the cap.
-            Workspace.objects.select_for_update().filter(pk=self.workspace.pk).first()
+            Workspace.objects.select_for_update(no_key=True).filter(pk=self.workspace.pk).first()
             limit = settings.MAX_WEBHOOKS_PER_WORKSPACE
             if WebhookEndpoint.objects.for_workspace(self.workspace).count() >= limit:
                 raise exceptions.ValidationError({"detail": f"A workspace can have at most {limit} webhooks."})
@@ -80,11 +79,22 @@ class WebhookEndpointViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         tracked = ("name", "url", "events", "is_active")
-        before = {field: getattr(serializer.instance, field) for field in tracked}
-        extra = {}
-        if serializer.validated_data.get("is_active") and not serializer.instance.is_active:
-            extra = {"consecutive_failures": 0, "disabled_at": None, "disabled_reason": ""}  # re-enabled by hand
-        endpoint = serializer.save(**extra)
+        with transaction.atomic():
+            # Lock and RE-READ: the copy validated so far was loaded without a lock, and the delivery worker may
+            # have counted a failure or auto-disabled the endpoint since. The worker's own updates are atomic;
+            # this row lock is what serializes them against the PATCH.
+            current = WebhookEndpoint.objects.select_for_update(of=("self",)).select_related("created_by").get(
+                pk=serializer.instance.pk)
+            fresh = self.get_serializer(current, data=self.request.data, partial=True)
+            fresh.is_valid(raise_exception=True)
+            before = {field: getattr(current, field) for field in tracked}
+            extra = {}
+            # Only an explicit re-enable of a row that is disabled NOW clears the failure bookkeeping; a rename
+            # or URL change never touches it.
+            if fresh.validated_data.get("is_active") is True and not current.is_active:
+                extra = {"consecutive_failures": 0, "disabled_at": None, "disabled_reason": ""}
+            endpoint = fresh.save(**extra)  # writes only these fields (WebhookEndpointSerializer.update)
+        serializer.instance = endpoint
         changes = field_changes(endpoint, before, tracked)
         if changes:
             self._audit(AuditLog.Action.UPDATED, endpoint, changes)
@@ -129,7 +139,7 @@ class WebhookEndpointViewSet(WorkspaceScopedMixin, viewsets.ModelViewSet):
         self._require_active(endpoint)  # redelivery can't bypass a disabled endpoint or the SSRF checks
         delivery = WebhookDelivery.objects.create(
             workspace=self.workspace, endpoint=endpoint, event_id=original.event_id, event=original.event,
-            payload=original.payload, redelivery_of=original,
+            payload=original.payload, redelivery_of=original, is_redelivery=True,
         )
         return self._queue(delivery)
 
@@ -229,7 +239,7 @@ class WorkspaceReportViewSet(WorkspaceScopedMixin, viewsets.GenericViewSet):
         try:
             with transaction.atomic():
                 # Serialize identical requests on the workspace row; the partial unique constraint is the backstop.
-                Workspace.objects.select_for_update().filter(pk=self.workspace.pk).first()
+                Workspace.objects.select_for_update(no_key=True).filter(pk=self.workspace.pk).first()
                 pending = WorkspaceReport.objects.for_workspace(self.workspace).filter(
                     state=WorkspaceReport.State.PENDING, **identity
                 ).first()

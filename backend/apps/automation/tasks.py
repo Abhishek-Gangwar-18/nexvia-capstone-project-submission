@@ -22,7 +22,7 @@ from django.db.models import Count, F, Q
 from django.utils import timezone
 
 from apps.issues.models import Issue, AuditLog, IssueComment
-from apps.tenants.models import Invitation, Membership
+from apps.tenants.models import Invitation, Membership, Workspace
 
 from .emails import absolute_url, send_templated_email
 from .models import Notification, WebhookDelivery, WebhookEndpoint, WorkspaceReport
@@ -222,10 +222,23 @@ def _within_deadline(call, sockets):
     return outcome["value"]
 
 
+def _finish(delivery, **fields):
+    """Write this attempt's result ONLY if this worker still holds the claim (fencing token). A worker that
+    stalled past its lease may have been replaced by another that claimed the row with a new token; its late
+    write must not overwrite the newer result. Returns False if the claim was lost (nothing written)."""
+    fields.setdefault("lease_expires_at", None)
+    updated = WebhookDelivery.objects.filter(
+        pk=delivery.pk, claim_token=delivery.claim_token, state=WebhookDelivery.State.PROCESSING,
+    ).update(attempts=delivery.attempts, response_status=delivery.response_status,
+             response_body=delivery.response_body, updated_at=timezone.now(), **fields)
+    if not updated:
+        logger.warning("Webhook delivery %s: claim lost (lease expired and reclaimed); result discarded", delivery.pk)
+    return bool(updated)
+
+
 def _record_final_failure(delivery, message):
-    delivery.state, delivery.last_error = WebhookDelivery.State.FAILED, message[:2000]
-    delivery.next_attempt_at = delivery.lease_expires_at = None
-    delivery.save()
+    if not _finish(delivery, state=WebhookDelivery.State.FAILED, last_error=message[:2000], next_attempt_at=None):
+        return  # another worker owns the row now: no endpoint bookkeeping from a stale attempt
     endpoint = delivery.endpoint
     WebhookEndpoint.objects.filter(pk=endpoint.pk).update(consecutive_failures=F("consecutive_failures") + 1)
     limit = settings.WEBHOOK_AUTO_DISABLE_AFTER
@@ -246,10 +259,11 @@ def deliver_webhook(self, delivery_id):
     if delivery is None:
         return  # already delivered, failed, or being handled by another worker
     endpoint = delivery.endpoint
+    if Workspace.objects.filter(pk=delivery.workspace_id, deleting_at__isnull=False).exists():
+        _finish(delivery, state=WebhookDelivery.State.FAILED, last_error="Workspace is being deleted.")
+        return
     if not endpoint.is_active:
-        delivery.state, delivery.last_error = WebhookDelivery.State.FAILED, "Webhook endpoint is disabled."
-        delivery.lease_expires_at = None
-        delivery.save()
+        _finish(delivery, state=WebhookDelivery.State.FAILED, last_error="Webhook endpoint is disabled.")
         return
     delivery.attempts += 1
     try:
@@ -262,15 +276,14 @@ def deliver_webhook(self, delivery_id):
             _record_final_failure(delivery, str(exc))
             return
         delay = exc.delay or min(2 ** (self.request.retries + 1), MAX_RETRY_DELAY)
-        delivery.state, delivery.last_error = WebhookDelivery.State.PENDING, str(exc)[:2000]
-        delivery.next_attempt_at, delivery.lease_expires_at = timezone.now() + timedelta(seconds=delay), None
-        delivery.save()
+        if not _finish(delivery, state=WebhookDelivery.State.PENDING, last_error=str(exc)[:2000],
+                       next_attempt_at=timezone.now() + timedelta(seconds=delay)):
+            return  # claim lost: the new owner decides about retries, a stale worker never schedules one
         raise self.retry(exc=exc, countdown=delay)
-    delivery.state, delivery.response_status, delivery.response_body = WebhookDelivery.State.DELIVERED, status, response_body
-    delivery.last_error, delivery.delivered_at = "", timezone.now()
-    delivery.next_attempt_at = delivery.lease_expires_at = None
-    delivery.save()
-    WebhookEndpoint.objects.filter(pk=endpoint.pk).update(consecutive_failures=0)
+    delivery.response_status, delivery.response_body = status, response_body
+    if _finish(delivery, state=WebhookDelivery.State.DELIVERED, last_error="", delivered_at=timezone.now(),
+               next_attempt_at=None):
+        WebhookEndpoint.objects.filter(pk=endpoint.pk).update(consecutive_failures=0)
 
 
 @shared_task(name="apps.automation.tasks.recover_stalled_deliveries")
@@ -286,9 +299,9 @@ def recover_stalled_deliveries():
 
 @shared_task(name="apps.automation.tasks.process_issue_event")
 def process_issue_event(audit_id):
-    audit = AuditLog.objects.select_related("workspace", "project", "actor").filter(pk=audit_id).first()
-    if audit is None or audit.entity_type != AuditLog.Entity.ISSUE:
-        return
+    audit = AuditLog.objects.select_related("workspace", "actor").filter(pk=audit_id).first()
+    if audit is None or audit.entity_type != AuditLog.Entity.ISSUE or audit.workspace.deleting_at is not None:
+        return  # a workspace being deleted sends no more webhooks
     event = f"issue.{audit.action}"
     payload = {
         "issue": {"key": audit.issue_key, "title": audit.issue_title, "project": audit.project_key},
@@ -346,7 +359,7 @@ def process_issue_event(audit_id):
 @shared_task(name="apps.automation.tasks.create_overdue_reminders")
 def create_overdue_reminders():
     today = timezone.localdate()
-    for issue in Issue.objects.filter(due_date__lt=today, project__is_archived=False).exclude(status__category="done").exclude(assignee=None).select_related("workspace", "assignee", "project"):
+    for issue in Issue.objects.filter(due_date__lt=today, project__is_archived=False, workspace__deleting_at__isnull=True).exclude(status__category="done").exclude(assignee=None).select_related("workspace", "assignee", "project"):
         notify(
             issue.workspace, issue.assignee_id, f"overdue:{issue.pk}:{today.isoformat()}", email=True,
             title=f"Overdue: {issue.key}", body=issue.title,
@@ -360,10 +373,10 @@ def create_daily_digests():
     since = timezone.now() - timedelta(days=1)
     # One grouped query for every workspace, then memberships are matched in memory (was one COUNT each).
     counts = dict(
-        AuditLog.objects.filter(created_at__gte=since).order_by()
+        AuditLog.objects.filter(created_at__gte=since, workspace__deleting_at__isnull=True).order_by()
         .values_list("workspace_id").annotate(n=Count("id"))
     )
-    for membership in Membership.objects.select_related("workspace", "user").iterator():
+    for membership in Membership.objects.filter(workspace__deleting_at__isnull=True).select_related("workspace", "user").iterator():
         count = counts.get(membership.workspace_id, 0)  # zero-activity workspaces are counted, not dropped
         if count:  # ...but nobody gets a daily "0 updates" message
             notify(
@@ -376,6 +389,23 @@ def create_daily_digests():
 
 
 REPORT_FAILED_MESSAGE = "Report generation failed. Try again."
+STALE_REPORT_AFTER = timedelta(minutes=15)  # a pending build older than this is treated as lost
+
+
+def fail_stale_reports(now=None):
+    """Pending builds whose worker was lost would otherwise stay "generating" forever (and retention skips
+    pending rows). Mark them failed in bounded batches; the update is conditional on state='pending', so if
+    the original worker finishes at the same moment exactly one transition wins (its own write is conditional
+    too). Afterwards they age out with normal retention."""
+    cutoff = (now or timezone.now()) - STALE_REPORT_AFTER
+    total = 0
+    while True:
+        ids = list(WorkspaceReport.objects.filter(state=WorkspaceReport.State.PENDING, created_at__lt=cutoff)
+                   .order_by().values_list("pk", flat=True)[:PURGE_BATCH])
+        if not ids:
+            return total
+        total += WorkspaceReport.objects.filter(pk__in=ids, state=WorkspaceReport.State.PENDING).update(
+            state=WorkspaceReport.State.FAILED, error=REPORT_FAILED_MESSAGE, updated_at=timezone.now())
 
 
 @shared_task(name="apps.automation.tasks.generate_workspace_report")
@@ -417,10 +447,18 @@ def send_notification_email(notification_id):
 
 
 @shared_task(name="apps.automation.tasks.send_invitation_email", **EMAIL_RETRY)
-def send_invitation_email(invitation_id):
+def send_invitation_email(invitation_id, raw_token=None):
+    """raw_token comes from the request that created or rotated the link; only its hash is stored."""
+    from apps.tenants.models import hash_invite_token
+
     invitation = Invitation.objects.select_related("workspace", "invited_by").filter(pk=invitation_id).first()
     if invitation is None or not invitation.is_pending:
         return
+    if not raw_token or hash_invite_token(raw_token) != invitation.token_hash:
+        # A newer resend rotated the token: this queued message holds a dead link, so don't send it.
+        logger.info("Skipped invitation email %s: its link was superseded", invitation_id)
+        return
+    invitation._raw_token = raw_token
     inviter = invitation.invited_by.display_name if invitation.invited_by else "A teammate"
     send_templated_email(f"{inviter} invited you to {invitation.workspace.name} on FlowBoard", "invitation", {
         "workspace": invitation.workspace.name, "inviter": inviter, "role": invitation.get_role_display().lower(),
@@ -452,9 +490,13 @@ def send_password_reset_email(user_id):
 
 @shared_task(name="apps.automation.tasks.purge_expired_invitations")
 def purge_expired_invitations():
-    """Delete unaccepted invitations that expired more than INVITATION_RETENTION_DAYS ago. Accepted ones stay."""
+    """Delete invitations INVITATION_RETENTION_DAYS after they stop mattering: unaccepted ones after they
+    expire, accepted ones after acceptance. Their personal data isn't needed any more, and the "joined" audit
+    event keeps who joined, where, when and who invited them (see tenants.services.accept_invitation)."""
     cutoff = timezone.now() - timedelta(days=settings.INVITATION_RETENTION_DAYS)
-    deleted, _ = Invitation.objects.filter(accepted_at__isnull=True, expires_at__lt=cutoff).delete()
+    deleted, _ = Invitation.objects.filter(
+        Q(accepted_at__isnull=True, expires_at__lt=cutoff) | Q(accepted_at__lt=cutoff)
+    ).delete()
     return deleted
 
 
@@ -484,7 +526,9 @@ def purge_old_records():
     Reports are stored as JSON in the database, so there are no files to clean up."""
     now = timezone.now()
     days = settings.RETENTION_DAYS
+    stale_reports = fail_stale_reports(now)
     counts = {
+        "stale_reports_failed": stale_reports,
         "webhook_deliveries": _purge(WebhookDelivery.objects.filter(
             created_at__lt=now - timedelta(days=days["webhook_deliveries"]),
             state__in=[WebhookDelivery.State.DELIVERED, WebhookDelivery.State.FAILED],
@@ -501,3 +545,35 @@ def purge_old_records():
     }
     logger.info("Retention purge: %s", counts)
     return counts
+
+
+@shared_task(name="apps.automation.tasks.sweep_attachment_files")
+def sweep_attachment_files():
+    """Nightly: delete attachment files with no row (older than 24 h) and report rows whose file is missing."""
+    from apps.issues.maintenance import sweep_attachment_files as sweep
+
+    return sweep()
+
+
+@shared_task(bind=True, max_retries=8, name="apps.automation.tasks.delete_workspace")
+def delete_workspace(self, workspace_id):
+    """Remove a workspace marked as deleting, in batches (apps/tenants/deletion.py). Stripe trouble is retried
+    with backoff before any data is touched; anything else is resumed later by resume_stalled_deletions."""
+    from apps.billing.services import BillingUnavailable
+    from apps.tenants.deletion import purge_workspace
+
+    try:
+        return purge_workspace(workspace_id)
+    except BillingUnavailable as exc:
+        raise self.retry(exc=exc, countdown=min(60 * 2 ** self.request.retries, 3600))
+
+
+@shared_task(name="apps.automation.tasks.resume_stalled_deletions")
+def resume_stalled_deletions():
+    """Re-queue deletions pending for a while: a lost enqueue, a crashed worker, exhausted Stripe retries."""
+    from apps.tenants.deletion import stalled_deletions
+
+    pending = stalled_deletions()
+    for workspace_id in pending:
+        enqueue(delete_workspace, workspace_id)
+    return pending
