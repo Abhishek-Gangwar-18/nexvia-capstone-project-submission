@@ -117,7 +117,21 @@ Invoke-RestMethod -Method Post -Uri "$base/issues/" -Headers $h -ContentType "ap
 | refresh | 7 days | **rotates**: every `/auth/refresh/` returns a new refresh token and blacklists the old one |
 
 Changing or resetting your password revokes **every** refresh token you hold; change-password returns a new pair
-for the current session. `POST /auth/logout-all/` revokes them all on demand.
+for the current session. `POST /auth/logout-all/` revokes them all on demand. Expired tokens are deleted by a
+nightly job; deactivated users can't refresh.
+
+**Browser (cookie) mode.** Send `X-Auth-Mode: cookie` and the refresh token moves out of the JSON body into the
+`fb_refresh` cookie (HttpOnly, SameSite=Strict, `Path=/api/auth/`). Refresh and logout then read it only from the
+cookie; a body `refresh` is ignored and a missing cookie is a **401**. Without the header everything below works
+as written (tokens in the body). The SPA always uses cookie mode.
+
+```bash
+curl -s -c jar.txt -X POST $API/auth/login/ -H "X-Auth-Mode: cookie" -H "Content-Type: application/json" \
+  -d '{"email":"owner@acme.test","password":"Demo@1234"}'          # → 200 {"access": "…", "user": …}  (no "refresh")
+curl -s -b jar.txt -c jar.txt -X POST $API/auth/refresh/ -H "X-Auth-Mode: cookie"   # → 200 {"access": "…"}, cookie rotated
+curl -s -b jar.txt -c jar.txt -X POST $API/auth/logout/ -H "X-Auth-Mode: cookie" -o /dev/null -w "%{http_code}\n"  # 204, cookie cleared
+curl -s -X POST $API/auth/refresh/ -H "X-Auth-Mode: cookie" -o /dev/null -w "%{http_code}\n"   # 401: no cookie
+```
 
 ### Lookups
 
@@ -942,6 +956,10 @@ GLOBEX="Authorization: Bearer $(login owner@globex.test)"
 | 27 | Another tenant's webhook or delivery | their id on any `/webhooks/{id}/…` route, including redeliver | **404** |
 | 28 | Read a webhook secret | `GET /webhooks/{id}/` | only `secret_hint` (`••••a1b2`) |
 | 29 | Delete without confirming | `DELETE /projects/{key}/` or `/workspace/` without `confirm` (and `password`) | **400** |
+| 30 | Refresh token in the body in cookie mode | `X-Auth-Mode: cookie` + `{"refresh": "…"}`, no cookie | **401** (the body is never used in cookie mode) |
+| 31 | Admin from an unlisted IP | `GET /admin/` through nginx from an IP not in `ADMIN_ALLOWLIST` | **404** |
+| 32 | Swagger in production | `GET /api/docs/` with `API_DOCS=off` | **404** |
+| 33 | Secret in a logged URL | open `/reset-password/<uid>/<token>` or `/api/invitations/preview/<token>/` | the nginx and Django log lines show `[REDACTED]` instead of the token |
 | 20 | Non-owner starts a payment | admin or viewer → `POST /billing/checkout/` (or `/portal/`, `/sync/`) | **403** |
 | 21 | Exceed a plan limit | 4th project on Free, invite past the member cap, file over the plan size | **402** `plan_limit_reached` |
 | 22 | Forged Stripe webhook | `POST /billing/webhook/` without a valid `Stripe-Signature` | **400** `Invalid signature.` (503 when no webhook secret is set) |
@@ -1013,7 +1031,7 @@ through M2M) are converted to the same `400` format. Database constraint races b
 
 ```bash
 cd backend
-pytest                                   # all 924 tests (Postgres and Redis must be running; Stripe isn't needed)
+pytest                                   # all 983 tests (Postgres and Redis must be running; Stripe isn't needed)
 pytest -k Isolation                      # just the tenant-isolation tests
 pytest apps/core/tests/test_api.py::TestSprints -v
 pytest --create-db                       # rebuild the test DB after a migration
@@ -1051,13 +1069,17 @@ test. Celery tasks run eagerly in tests, so no worker is needed.
 | `issues/tests/test_group4_hardening.py` | author-only comment edit, archived guard on comments/files/deletes, parent hierarchy and cycles under the lock, file signature checks, upload cleanup on failure, list caps and `X-Truncated`, audit always paged, trigram index used, label rules, story points and due-date bounds |
 | `automation/tests/test_group5_hardening.py` | one-time webhook secret, timestamped signatures, SSRF and redirects, test/redelivery throttles, endpoint cap under concurrency, retry policy and `Retry-After`, auto-disable once, delivery claims and lease recovery, 20 s attempt deadline, redelivery rules, retention purge, grouped digest, report dedupe under concurrency, stale report runs, pagination, no actor email, tenant isolation |
 | `*/tests/test_<table>_table.py` (21 files, the schema review) | one file per table, e.g. `tenants/tests/test_workspace_table.py`, `projects/tests/test_sprint_table.py`, `automation/tests/test_delivery_table.py`, `billing/tests/test_stripeevent_table.py`: lost-update races (a stale PATCH against start/complete, auto-disable, pruning, issue numbering), every CHECK / trigger / composite FK hit through raw SQL and bulk writes, async workspace deletion (partial purge + retry, Stripe retry, concurrent writes, lock orderings), index plans, and each migration's "report and stop" path |
+| `core/tests/test_security_hardening.py` | production settings: API docs gate, CORS, SSL redirect exemption, HSTS opt-ins, the shared admin/API login lockout |
+| `accounts/tests/test_cookie_auth.py` | cookie mode: cookie attributes, no refresh in bodies, cookie-only refresh/logout, matching clear on logout/401, logout-all, body mode unchanged |
+| `automation/tests/test_token_cleanup.py` | nightly expired-token cleanup: only expired rows, revoked live tokens stay revoked, batches, resumes after a failure, retries |
+| `core/tests/test_log_redaction.py` | reset, invite and invite-preview tokens (in paths, encoded query strings and secret query parameters) never reach the logs; ordinary paths, status and timing stay |
 | `billing/tests/test_group6_hardening.py` | concurrent checkout opens one session, session reuse rules, customer idempotency, duplicate subscriptions cancelled and audited, lock order, stale and overlapping snapshots, owner-email task, throttles, webhook transaction boundary and 500 handling, StripeEvent purge, `over_limit`, cancel-then-failed-delete retry |
 
 Frontend checks:
 
 ```bash
 cd frontend
-pnpm test             # Vitest unit + component tests (29 tests, ~5 s, no backend needed)
+pnpm test             # Vitest unit + component tests (47 tests, ~5 s, no backend needed)
 pnpm test:watch       # re-run tests on file change
 pnpm typecheck        # strict TypeScript
 pnpm build            # type-check + production bundle
@@ -1070,7 +1092,8 @@ block of `vite.config.ts`, setup in `src/test/setup.ts`). The API is mocked, so 
 |---|---|
 | `src/lib/utils.test.ts` | Kanban rank math (`rankBetween`) for empty column, top, bottom and between cards; API error → message mapping (network, 5xx, DRF `detail`, field errors, `non_field_errors`); 402 plan-limit detection; field-error map; pluralize, percent, overdue dates |
 | `src/components/ui/Button.test.tsx` | default `type="button"`, click handler, disabled while loading, accessible label on `IconButton` |
-| `src/store/auth.test.ts` | sign-in persists tokens to localStorage, token rotation, logout clears state |
+| `src/store/auth.test.ts` | the auth store stays in memory (nothing in localStorage), starts as `restoring`, removes the legacy persisted tokens |
+| `src/lib/session.test.ts` | cookie-mode refresh, single-flight and Web Locks serialisation, session restore (401 → login, network error → retry), no auto-refresh without Web Locks, logout only after a 204, no tokens in cross-tab messages |
 | `src/pages/auth/LoginPage.test.tsx` | `safeNext` open-redirect guard (external, protocol-relative and auth-page targets), submit → redirect to `next`, error message on failed login, signed-in users skip the form |
 
 End-to-end check of the whole Docker stack (stdlib only, no installs needed):
@@ -1099,6 +1122,7 @@ a report and audit entries to Acme; `seed_demo --reset` clears them.
 | `400 {"workspace": …}` | add `-H "X-Workspace: acme"` |
 | `404 Workspace not found.` with the right slug | the logged-in user isn't a member of it: log in as that workspace's user |
 | `401 … token_not_valid` | access tokens last 30 min: log in again or call `/auth/refresh/` |
+| `401 no_refresh_cookie` on refresh | you sent `X-Auth-Mode: cookie` without the cookie; drop the header to use a body token |
 | `429` on login | wait a minute (5 logins/min per IP), or 15 minutes after 10 failed attempts for that email |
 | `429` everywhere in tests or after a restart | counters live in Redis: `python manage.py shell -c "from django.core.cache import cache; cache.clear()"` |
 | `ConnectionError` mentioning Redis or port 6380 | start Redis (`docker compose up -d redis`): rate limits need the shared cache |

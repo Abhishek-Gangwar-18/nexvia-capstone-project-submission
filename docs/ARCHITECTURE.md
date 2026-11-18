@@ -446,12 +446,48 @@ were dropped)
 | | Value | Notes |
 |---|---|---|
 | Access token | 30 min | `Authorization: Bearer …` |
-| Refresh token | 7 days | rotated on every refresh; the old one is blacklisted (`token_blacklist` app) |
+| Refresh token | 7 days | rotated on every refresh; the old one is blacklisted (`token_blacklist` app). Browser: httpOnly cookie only (see [7.1](#71-browser-sessions-refresh-token-in-an-httponly-cookie)); scripts: JSON body |
+| Expired-token cleanup | nightly at 03:45 | Celery beat `flush_expired_tokens` deletes expired `OutstandingToken` rows (and their blacklist rows) in batches; revoked tokens that haven't expired stay revoked |
 | Logout | blacklists that refresh token (204, idempotent) | `logout-all` blacklists every outstanding one; the access token expires naturally |
 | Password change / reset | revokes every refresh token | change returns a fresh pair; reset uses Django's single-use `PasswordResetTokenGenerator` (1 hour) and always answers 204 |
 | Brute-force protection | per-endpoint scopes (login 5/min, register 10/h, refresh 30/min, change-password 5/h, reset 5/h) | plus a per-email lockout: 10 failures in 15 min. Counters are in the shared Redis cache |
 | Passwords | Django validators | length, common, numeric, similarity; errors are reported on the password field |
-| Session auth | not used by the API | JWT only; Django admin keeps its own session login |
+| Session auth | not used by the API | JWT only; Django admin keeps its own session login (shares the Redis login lockout; nginx limits it to `ADMIN_ALLOWLIST`) |
+| Deactivated users | refused | access tokens fail authentication and refresh is refused (SimpleJWT checks `is_active`) |
+
+### 7.1 Browser sessions: refresh token in an httpOnly cookie
+
+The SPA sends `X-Auth-Mode: cookie` on every request (`apps/accounts/cookie_auth.py`). In that mode:
+
+- login, register, change-password and refresh put the refresh token **only** in the `fb_refresh` cookie
+  (HttpOnly, `SameSite=Strict`, `Path=/api/auth/`, Secure wherever `SESSION_COOKIE_SECURE` is on, 7-day
+  `Max-Age`) and leave it out of the JSON body;
+- refresh and logout read it **only** from that cookie. A body token is ignored, and a missing or invalid cookie
+  is a 401 that also clears the cookie. Clearing uses the same attributes as setting;
+- logout always clears the cookie and returns 204; logout-all also clears it.
+
+Without the header (curl, scripts, tests) the API is unchanged: tokens in the body, cookie never read or set.
+**CSRF:** `SameSite=Strict` keeps the cookie off cross-site requests, and the custom header forces a CORS
+preflight that production (no allowed origins) never grants. This depends on CORS staying closed.
+
+The access token lives **only in memory** (`store/auth.ts`); nothing is persisted, and the old
+`flowboard-auth` localStorage entry is removed on load. See [9.3](#93-api-client) for restore and refresh.
+
+### 7.2 Security hardening (production configuration and logging)
+
+| Area | What's in place |
+|---|---|
+| Admin | nginx serves `/admin/` only to `ADMIN_ALLOWLIST` (comma-separated IPs/CIDRs; empty = closed, a plain 404); admin login rate limited per IP; a malformed allowlist stops the container |
+| Proxy trust | the real client IP comes from `X-Forwarded-For` only when the TCP peer is in `TRUSTED_PROXY_CIDRS` |
+| Headers | `server_tokens off`, `X-Frame-Options DENY`, `nosniff`, `Referrer-Policy same-origin`, `Permissions-Policy`, and a strict CSP without `unsafe-inline`/`unsafe-eval`: the theme script's hash is computed at container start, the toast library's style hash at build time. `CSP_HEADER` can switch to report-only while checking a change |
+| HTTPS | production: SSL redirect (except `/api/health/`), HSTS for one year; `includeSubDomains`/`preload` are opt-in (`DJANGO_HSTS_INCLUDE_SUBDOMAINS`, `DJANGO_HSTS_PRELOAD`) |
+| API docs | `API_DOCS` = `public`, `staff` or `off` (404). Default: public with DEBUG, off otherwise |
+| CORS | allowed origins default to the Vite dev server only with DEBUG; production is empty (same origin through nginx) |
+| Login lockout | `apps/accounts/lockout.py`: 10 failures in 15 min per email, in Redis, shared by the API login and the Django admin |
+| Secrets in logs | Reset (`/reset-password/…`), invite (`/invite/…`) and invite-preview paths, the same paths inside query strings (raw or `%2F`-encoded), and the values of `token`, `uid`, `key`, `secret`, `password`, `code`, `refresh` and `access` query parameters are logged as `[REDACTED]`. Django: `redact_path()` in the `flowboard.request` line, plus a `RedactSecretPaths` filter on the console handler. nginx: the `fb_redacted` access-log format, which keeps status, `rt=`, `ups=` and `urt=`. nginx error lines can't be reformatted, so only the token routes (and API requests with secret query parameters, through an internal location) log critical errors only; everything else keeps normal error logging |
+| Uploads | allowlisted extensions and content types (DB CHECK); downloads are `application/octet-stream` attachments with `nosniff` |
+| Outgoing webhooks | HTTPS only, every resolved IP must be public, the connection is pinned to the checked IP (no DNS rebinding), redirects are refused, hard deadline |
+| Stripe webhooks | signature verified (5-minute tolerance), each event id processed once |
 
 ### Roles
 
@@ -661,7 +697,7 @@ deep-linkable from any page.
 | Kind | Tool | Notes |
 |---|---|---|
 | Server data | TanStack Query | Every key is namespaced `["ws", slug, …]`: two workspaces never share cache entries, and switching tenants can't flash the other tenant's data |
-| Auth | Zustand `useAuth` (persisted) | access, refresh, user |
+| Auth | Zustand `useAuth` (**memory only**) | access token, user, `status`: restoring / authenticated / anonymous / error. The refresh token is in the httpOnly cookie, never visible to JavaScript |
 | UI prefs | Zustand `useUI` (persisted: theme, sidebar, last workspace) | also drives the create-issue modal and the command palette |
 | URL | React Router | workspace, project, tab, open issue |
 
@@ -674,11 +710,19 @@ Mutations invalidate the related keys (issues, sprints, projects, dashboard). A 
 
 `lib/api.ts` (axios):
 
-- attaches the access token to every request;
-- on a 401 it runs a **single-flight refresh**: concurrent failing requests wait on one `/auth/refresh/`
-  call. This matters because refresh tokens rotate, and two parallel refreshes would invalidate each
-  other. The original requests are then replayed;
-- if the refresh fails it clears the auth state, and `RequireAuth` redirects to `/login?next=…`.
+- attaches the access token and `X-Auth-Mode: cookie` to every request;
+- on a 401 it refreshes once and replays the request. Refreshes (`lib/session.ts`) are single-flight in a tab
+  and serialised **across tabs with the Web Locks API**: refresh tokens rotate, so two tabs rotating the same
+  cookie would revoke each other. After getting the lock, a tab first checks whether it already has a newer token.
+  Browsers without Web Locks don't auto-refresh: an expired access token sends the user to log in again;
+- a 400/401 from refresh means the session ended (auth cleared, then `/login?next=…`); a network or 5xx error
+  keeps the session.
+
+**Page load:** `SessionGate` (`App.tsx`) calls `restoreSession()`: refresh through the cookie, then
+`/auth/me/`, then render the protected routes. An ended session shows login; a network error shows a retry
+screen. **Logout** counts only after the server answers 204 (a page can't delete an httpOnly cookie); otherwise
+the user stays signed in and sees a toast. **Other tabs** hear about login and logout through a BroadcastChannel
+that carries only `{type}`, never a token.
 
 ### 9.4 Drag and drop
 
@@ -794,7 +838,7 @@ flowchart LR
 | Image | Build | Runs |
 |---|---|---|
 | `flowboard-backend` | `python:3.13-slim`; installs `requirements.txt`, runs `collectstatic` at build time, non-root user `flowboard` | `docker-entrypoint.sh` with `web` (wait for DB → `migrate` → optional `seed_demo` → gunicorn), `worker` or `beat`. Health check: `GET /api/health/` |
-| `flowboard-frontend` | stage 1 `node:24-alpine` + corepack pnpm → `pnpm install --frozen-lockfile` + `pnpm build`; stage 2 `nginx:1.29-alpine` | nginx from `nginx.conf.template`: SPA fallback to `index.html`, immutable caching for `/assets/`, gzip, 110 MB upload cap, `/healthz` |
+| `flowboard-frontend` | stage 1 `node:24-alpine` + corepack pnpm → `pnpm install --frozen-lockfile` + `pnpm build`; stage 2 `nginx:1.29-alpine` | nginx from `nginx.conf.template`: SPA fallback to `index.html`, immutable caching for `/assets/`, gzip, 110 MB upload cap, `/healthz`, plus the hardening in [7.2](#72-security-hardening-production-configuration-and-logging): admin allowlist, trusted proxies, security headers and CSP (generated at start by `docker/40-security-snippets.sh`), redacted access log |
 
 - **Start order:** `backend` waits for healthy `db` and `redis`; `worker`, `beat` and `frontend` wait for a
   healthy `backend`, so migrations finish before anything else touches the database.
@@ -804,7 +848,9 @@ flowchart LR
   storage, media root), so local dev and the backend tests run on unchanged defaults.
 - **Production** (`docker-compose.prod.yml`) uses the GHCR images, requires `DJANGO_SECRET_KEY`,
   `POSTGRES_PASSWORD`, `APP_DOMAIN` and `IMAGE_PREFIX`, doesn't publish the database or Redis ports, defaults
-  `SEED_DEMO_DATA` to false and turns on secure cookies. TLS is terminated by a proxy in front; nginx keeps
+  `SEED_DEMO_DATA` to false and turns on secure cookies, the SSL redirect, HSTS, an enforced CSP, `API_DOCS=off`,
+  empty CORS origins and a closed admin unless `ADMIN_ALLOWLIST` is set. Redis has no password but is reachable only
+  on the internal network. TLS is terminated by a proxy in front; nginx keeps
   its `X-Forwarded-Proto`.
 - **Migrations and index locking (production risk):** the schema-review migrations create their indexes
   (the trigram GIN on the audit log, the delivery/notification composites, the retention indexes) **without
@@ -839,9 +885,10 @@ Image pushes use the workflow's own `GITHUB_TOKEN` (`packages: write`); no perso
 
 | Level | Tooling | Scope |
 |---|---|---|
-| Backend (924 tests) | pytest-django on **real PostgreSQL** and **Redis** (the shared throttle cache), DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input, plus the review hardening: race tests with real threads and connections (checkout, webhook cap, report dedupe, `skip_locked` claims), lock-order and query-count checks, `EXPLAIN` on the trigram index, a trickling socket for the webhook deadline; and the schema review: one `test_<table>_table.py` per table with lost-update races (stale PATCH vs concurrent writes), raw-SQL and bulk writes against every CHECK, trigger and composite FK, index plans, and each migration's "report and stop" path. Celery tasks run eagerly and never touch the broker; Stripe calls are mocked |
-| Frontend (29 tests) | **Vitest** + React Testing Library + user-event on `jsdom`; API hooks mocked | Kanban rank math, API error mapping and plan-limit detection, `Button` behaviour and accessibility, auth store persistence and logout, login page (submit, redirect, error, open-redirect guard). Runs in CI before the build |
+| Backend (983 tests) | pytest-django on **real PostgreSQL** and **Redis** (the shared throttle cache), DRF `APIClient` | tenancy, roles, cross-tenant attacks, workflows, collaboration, tasks, reports, audit, email, billing (limits, checkout/portal, webhook signatures, idempotency, plan sync), malformed input, plus the review hardening: race tests with real threads and connections (checkout, webhook cap, report dedupe, `skip_locked` claims), lock-order and query-count checks, `EXPLAIN` on the trigram index, a trickling socket for the webhook deadline; and the schema review: one `test_<table>_table.py` per table with lost-update races (stale PATCH vs concurrent writes), raw-SQL and bulk writes against every CHECK, trigger and composite FK, index plans, and each migration's "report and stop" path; and the security hardening: production settings, the shared admin/API lockout, cookie-mode auth, expired-token cleanup and log redaction. Celery tasks run eagerly and never touch the broker; Stripe calls are mocked |
+| Frontend (47 tests) | **Vitest** + React Testing Library + user-event on `jsdom`; API hooks mocked | Kanban rank math, API error mapping and plan-limit detection, `Button` behaviour and accessibility, the in-memory auth store and legacy-token removal, session restore, refresh, Web Locks and logout (`lib/session.test.ts`), login page (submit, redirect, error, open-redirect guard). Runs in CI before the build |
 | Types | `tsc -b` (strict, `noUnused*`) | the whole frontend, including the test files |
+| nginx security | `scripts/nginx_security_test.sh` against the built frontend image on an isolated Docker network | 33 checks: admin allowlist and trusted proxies, admin login rate limit, headers and CSP, access- and error-log redaction, config validation |
 | Stack smoke test | `scripts/smoke_test.py` (stdlib only), run in CI against the Docker stack | 26 checks through nginx: login, projects/issues/boards/sprints/dashboard, tenant isolation, role blocks, comments, upload + download, worker-built report + CSV, notifications, webhooks, billing, unsigned Stripe webhook rejected, OpenAPI schema |
 | Browser checks | headless Chromium during development | demo login, dashboard, board drag → persisted status, backlog drag → persisted sprint, create via `C`, palette search, viewer read-only, workspace switching, dark mode, billing, a real Stripe test payment, the home page (desktop + mobile, light + dark, no horizontal overflow, signed-in redirect) |
 
@@ -864,6 +911,7 @@ row-locking behaviour are part of what's being tested.
 | + | Public home page at `/` with features, pricing and FAQ ([9.1](#91-routing)) | ✅ |
 | + | API hardening review of all 88 endpoints, group by group: auth, tenants, projects, issues, automation, billing (sections [6](#6-domain-rules)–[8a](#8a-billing-stripe)) | ✅ |
 | + | Frontend unit and component tests with Vitest + React Testing Library, run in CI ([11](#11-testing-strategy)) | ✅ |
+| + | Security hardening: production configuration, refresh token in an httpOnly cookie, expired-token cleanup, and a security audit that removed secrets from the logs ([7.1](#71-browser-sessions-refresh-token-in-an-httponly-cookie), [7.2](#72-security-hardening-production-configuration-and-logging)) | ✅ |
 | + | Schema review of all 21 tables: DB-enforced integrity, lost-update fixes, async workspace deletion, measured indexes ([5](#5-data-model), [6](#6-domain-rules)) | ✅ |
 
 Possible next steps: more frontend tests (board drag-and-drop, issue drawer) and a linter in CI, splitting the

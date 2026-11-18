@@ -1,7 +1,8 @@
 # FlowBoard: Test Results
 
 Measured on **18 November 2026** on the local development machine (Windows 11, 20 logical CPUs). All numbers
-below come from real runs. The backend and frontend suites were re-run after the schema review (all 21 tables);
+below come from real runs. The backend and frontend suites were re-run after the security hardening (production
+configuration, httpOnly refresh cookie, token cleanup, log redaction);
 the end-to-end smoke test (§4) and the API timings (§5) are from the earlier run with the full Docker stack and
 haven't been re-measured since. How each suite works is described in
 [API_TEST.md §8](API_TEST.md#8-automated-tests) and [ARCHITECTURE.md §11](ARCHITECTURE.md#11-testing-strategy).
@@ -10,14 +11,15 @@ haven't been re-measured since. How each suite works is described in
 
 | Suite | Tool | Tests | Result | Run time |
 |---|---|---|---|---|
-| Backend unit + API + concurrency + schema integrity | pytest-django on PostgreSQL 16 + Redis 7 | **924** | ✅ 924 passed, 0 failed | 12 min 6 s (726 s, last full run; runs ranged 11–16 min, including real-thread race and migration tests) |
-| Frontend unit + component | Vitest 3.2 + React Testing Library (jsdom) | **29** | ✅ 29 passed, 0 failed | ~5 s |
+| Backend unit + API + concurrency + schema integrity + security | pytest-django on PostgreSQL 16 + Redis 7 | **983** | ✅ 983 passed, 0 failed | 19 min 18 s (1158 s, last full run, serial; includes real-thread race and migration tests) |
+| Frontend unit + component | Vitest 3.2 + React Testing Library (jsdom) | **47** | ✅ 47 passed, 0 failed | ~5 s |
 | End-to-end smoke (full Docker stack) | `scripts/smoke_test.py` through nginx | **26 checks** | ✅ 26/26 passed | a few seconds |
+| nginx security (built frontend image) | `scripts/nginx_security_test.sh` | **33 checks** | ✅ 33/33 passed | ~30 s |
 | Django system check | `manage.py check` | n/a | ✅ no issues | n/a |
 | Migration drift | `makemigrations --check --dry-run` | n/a | ✅ no changes detected | n/a |
 | Type check + production build | `tsc -b` + `vite build` | n/a | ✅ no errors | ~6 s |
 
-**Total automated tests: 953 (924 backend + 29 frontend), plus 26 end-to-end checks. All passing.**
+**Total automated tests: 1,030 (983 backend + 47 frontend), plus 26 end-to-end and 33 nginx security checks. All passing.**
 
 The same suites run in GitHub Actions on every push and pull request (`.github/workflows/ci.yml`).
 
@@ -25,14 +27,14 @@ The same suites run in GitHub Actions on every push and pull request (`.github/w
 
 | App | Tests | Main areas covered |
 |---|---|---|
-| `core` | 299 | tenant isolation (query + write), API for projects/issues/sprints/boards, roles, invitations, dashboard, reports, audit, email, robustness against malformed input |
+| `core` | 331 | tenant isolation (query + write), API for projects/issues/sprints/boards, roles, invitations, dashboard, reports, audit, email, robustness against malformed input; production settings and log redaction |
 | `issues` | 130 | comments, attachments (file signatures, cleanup), hierarchy and cycles, label rules, list caps, trigram search index, audit paging |
 | `tenants` | 101 | owner/admin role matrix, ownership transfer, workspace delete, slug races, invitations, throttles |
 | `projects` | 166 | project delete rules, archived read-only, key races, sprint lock order, workflows, WIP limits; schema review: issue-counter and sprint lost-update races, project-workflow triggers, transition composite FKs, board WIP JSON checks |
-| `automation` | 120 | webhook signing, SSRF protection, retries and auto-disable, delivery claims, notifications digest, report dedupe; schema review: claim-token fencing, redelivery retention, endpoint PATCH races, report lifecycle, notification indexes |
+| `automation` | 127 | webhook signing, SSRF protection, retries and auto-disable, delivery claims, notifications digest, report dedupe; schema review: claim-token fencing, redelivery retention, endpoint PATCH races, report lifecycle, notification indexes; nightly expired-token cleanup |
 | `billing` | 99 | plan limits, Checkout/Portal, Stripe webhook signatures, idempotency, concurrent checkout, plan sync; schema review: subscription integrity, apply-time webhook failures returned as 500 |
-| `accounts` | 9 | user model integrity, password reset |
-| **Total** | **924** | |
+| `accounts` | 29 | user model integrity, password reset, refresh token in an httpOnly cookie (cookie mode) |
+| **Total** | **983** | |
 
 Notable test types:
 - **Cross-tenant attacks:** a user in workspace A tries to read or write workspace B's data by id, by header switching and through foreign ids in payloads. All are rejected with 404/400.
@@ -47,7 +49,8 @@ Notable test types:
 | `src/lib/utils.test.ts` | 15 | Kanban rank math for drag and drop, API error → message mapping, 402 plan-limit detection, date/overdue helpers |
 | `src/pages/auth/LoginPage.test.tsx` | 9 | open-redirect guard (6 cases), login submit → redirect, error display, signed-in users skip the form |
 | `src/components/ui/Button.test.tsx` | 3 | click handling, disabled while loading, accessible labels |
-| `src/store/auth.test.ts` | 2 | token persistence, rotation and logout |
+| `src/lib/session.test.ts` | 16 | cookie refresh, Web Locks across tabs, session restore, logout only after a 204, no tokens broadcast |
+| `src/store/auth.test.ts` | 4 | in-memory store, nothing persisted, legacy tokens removed |
 
 ## 4. End-to-end smoke test (26/26)
 
@@ -89,8 +92,9 @@ route-level code splitting is a listed next step.
 ## 7. How to reproduce
 
 ```bash
-cd backend && pytest                       # 924 tests (Postgres + Redis running)
-cd frontend && pnpm test                   # 29 tests
+cd backend && pytest                       # 983 tests (Postgres + Redis running)
+cd frontend && pnpm test                   # 47 tests
 docker compose up -d --build --wait
 python scripts/smoke_test.py               # 26/26
+sh scripts/nginx_security_test.sh          # 33/33
 ```

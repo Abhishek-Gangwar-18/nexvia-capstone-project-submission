@@ -52,12 +52,14 @@ Pick the 3 you can explain best:
 | Race conditions (double checkout, duplicate reports, webhook caps) | Row locks with a consistent lock order, unique constraints, `skip_locked` claims, tested with real threads |
 | Webhook security | HMAC signatures with timestamps, a show-once secret, SSRF blocking with IP pinning, retries and auto-disable |
 | Stripe in test mode without public webhooks locally | Signed webhooks in production plus a `/billing/sync/` endpoint for local development; idempotent event handling |
+| Keeping login sessions safe from page scripts | Refresh token in an httpOnly SameSite=Strict cookie, access token in memory only, Web Locks so tabs don't revoke each other's rotating tokens, and reset/invite tokens redacted from logs |
 | Keeping the UI honest about permissions | The UI shows only actions the API allows for the role; the API enforces it anyway |
 
 ## 5. Results (1 min)
 
 - All **7 milestones** delivered.
-- **924 backend tests**, **29 frontend tests**, **26/26** end-to-end checks: all passing, run in CI on every push.
+- **983 backend tests**, **47 frontend tests**, **26/26** end-to-end checks: all passing, run in CI on every push.
+- Production hardening: admin IP allowlist, strict CSP, HSTS, API docs off, and a security audit with no open findings.
 - API medians **6–56 ms**, p95 under **75 ms** on the demo data (see [TEST_RESULTS.md](TEST_RESULTS.md)).
 - Dockerized stack (Postgres, Redis, Django, Celery worker + beat, nginx) with a deploy job on `main`.
 
@@ -76,4 +78,5 @@ Pick the 3 you can explain best:
 | Why shared schema and not schema-per-tenant? | Simplest to operate and migrate, works with one connection pool; isolation is enforced in code and tested |
 | Why Django instead of Express/Prisma? | The milestones ask for DRF and Celery |
 | What happens if Redis is down? | Rate limits need it; background jobs fail gracefully and are tested for broker outages |
+| Where are the tokens stored in the browser? | Refresh token in an httpOnly cookie scoped to `/api/auth/`, access token in memory; nothing in localStorage |
 | How do you know tenants are isolated? | Dedicated tests try to read and write across workspaces through every route |

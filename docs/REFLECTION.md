@@ -19,7 +19,8 @@ _List what you personally designed and built. If you worked alone, say so._
 - Webhooks and background jobs (notifications, reports, email) with Celery
 - Stripe Billing in test mode with plan limits
 - Docker setup and the GitHub Actions pipeline
-- The test suites (924 backend, 29 frontend, 26-check smoke test) and the documentation
+- Security hardening: production configuration, the httpOnly refresh cookie, token cleanup and a security audit
+- The test suites (983 backend, 47 frontend, 26-check smoke test, 33 nginx security checks) and the documentation
 
 ## 2. What I learned
 

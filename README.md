@@ -11,7 +11,7 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 | **README.md** (this file) | What it is, how to run it (Docker or local), demo accounts, project status |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, multi-tenancy, data model, auth & roles, billing, frontend, Docker and CI/CD |
 | [docs/API_TEST.md](docs/API_TEST.md) | Testing the API with Swagger / curl / PowerShell, endpoint reference, security scenarios, automated tests |
-| [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (924 backend, 29 frontend, 26/26 smoke) and measured API response times |
+| [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (983 backend, 47 frontend, 26/26 smoke, 33/33 nginx security) and measured API response times |
 | [docs/DEMO.md](docs/DEMO.md) | Step-by-step demo script with accounts, timings and fallbacks |
 | [docs/PRESENTATION.md](docs/PRESENTATION.md) | 10-minute presentation outline: problem, design, challenges, results, next steps |
 | [docs/REFLECTION.md](docs/REFLECTION.md) | Individual reflection (draft to personalise) |
@@ -30,6 +30,7 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 | 6 | Stripe Billing (test mode) + plan limits | ✅ done |
 | 7 | Docker images + GitHub Actions CI/CD | ✅ done |
 | + | API hardening review (88 endpoints) and schema review (all 21 tables) | ✅ done |
+| + | Security hardening: production config, httpOnly refresh cookie, token cleanup, security audit | ✅ done |
 
 ## Features
 
@@ -45,9 +46,14 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 - Other tenants' data is invisible: their workspaces and records return **404**, and foreign ids in
   payloads are rejected.
 - **JWT** auth with rotating refresh tokens, logout (one session or all), forgot/reset password, and a password
-  change that signs out every other session.
-- **Rate limits** on every sensitive endpoint, plus a per-account login lockout. Counters live in Redis, so they
-  hold across all API processes.
+  change that signs out every other session. In the browser the refresh token lives only in an **httpOnly,
+  SameSite=Strict cookie** and the access token only in memory, so page scripts can't read either from storage;
+  tabs coordinate refreshes with Web Locks. Expired tokens are cleaned up nightly.
+- **Production hardening**: Django admin limited to an IP allowlist, strict Content-Security-Policy and security
+  headers, HTTPS redirect and HSTS, API docs and CORS off by default in production, and reset/invite tokens
+  redacted from the nginx and Django logs ([details](docs/ARCHITECTURE.md#72-security-hardening-production-configuration-and-logging)).
+- **Rate limits** on every sensitive endpoint, plus a per-account login lockout shared by the API and the Django
+  admin. Counters live in Redis, so they hold across all API processes.
 - **Roles**: owner › admin › member › viewer. Only the owner manages admins; ownership moves through an explicit
   transfer. The UI mirrors what each role can do, and the API enforces it in services, not just views.
 - Invitations by email or link (7-day expiry, one open invite per email), and one user can belong to several
@@ -147,7 +153,7 @@ docker compose up -d --build         # db, redis, backend, worker, beat, fronten
 Open **http://localhost:8080** to see the home page, then **Log in** (or **Try the live demo**) and pick a
 one-click demo account. On first start the backend runs migrations and loads the demo data (it skips
 companies that already exist). Swagger is at http://localhost:8080/api/docs/ and the Django admin at
-http://localhost:8080/admin/.
+http://localhost:8080/admin/ (the dev compose file allows every IP; in production set `ADMIN_ALLOWLIST`, and `API_DOCS` is off).
 
 | Command | What it does |
 |---|---|
@@ -156,6 +162,7 @@ http://localhost:8080/admin/.
 | `docker compose exec backend python manage.py seed_demo --reset` | Reset the demo data |
 | `docker compose exec backend python manage.py stripe_setup` | Create the Stripe test products and prices |
 | `python scripts/smoke_test.py` | 26 end-to-end checks against http://localhost:8080 |
+| `sh scripts/nginx_security_test.sh` | 33 nginx security checks against the built frontend image (`docker build -t flowboard-frontend:local frontend` first) |
 | `docker compose down` | Stop everything (add `-v` to also delete the database) |
 
 The Docker stack and the local setup below share the same Postgres container and data.
@@ -285,15 +292,18 @@ curl "http://127.0.0.1:8000/api/issues/?project=WEB&sprint=active" \
 ```
 
 Every workspace-scoped call needs `Authorization: Bearer <access>` **and** `X-Workspace: <slug>`.
+Scripts get both tokens in the JSON body; the browser app sends `X-Auth-Mode: cookie` and gets the refresh token
+as an httpOnly cookie instead.
 The full walkthrough, endpoint table and security scenarios are in [docs/API_TEST.md](docs/API_TEST.md).
 
 ## Tests
 
 ```bash
-cd backend && pytest                 # 924 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing, schema integrity
-cd frontend && pnpm test             # 29 Vitest + React Testing Library tests (utils, Kanban rank math, auth store, login page)
+cd backend && pytest                 # 983 tests on PostgreSQL + Redis: tenancy, permissions, API, races, workflows, jobs, reports, audit, email, billing, schema integrity, security hardening
+cd frontend && pnpm test             # 47 Vitest + React Testing Library tests (utils, Kanban rank math, auth store, session/refresh/logout, login page)
 cd frontend && pnpm build            # strict TypeScript check + production build
 python scripts/smoke_test.py         # 26 end-to-end checks against the running Docker stack (http://localhost:8080)
+sh scripts/nginx_security_test.sh    # 33 nginx checks: admin allowlist, proxy trust, headers/CSP, log redaction
 ```
 
 ## CI/CD (GitHub Actions)
@@ -311,7 +321,8 @@ To turn on deploys, add the repository secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DE
 `DEPLOY_PATH`, default `~/flowboard`). On the server, install Docker, run `docker login ghcr.io` once (the
 images are private by default), and create a `.env` next to the compose file with at least `IMAGE_PREFIX`,
 `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD` and `APP_DOMAIN`. Put a TLS proxy in front of it; see the comments in
-`docker-compose.prod.yml`.
+`docker-compose.prod.yml`. Set `ADMIN_ALLOWLIST` (IPs allowed to open `/admin/`; empty keeps it closed) and `TRUSTED_PROXY_CIDRS` (the TLS
+proxy's address, so client IPs are real); `API_DOCS`, `CSP_HEADER` and the HSTS options are documented there too.
 
 ## Troubleshooting
 
@@ -326,7 +337,10 @@ images are private by default), and create a `.env` next to the compose file wit
 | `429 Too Many Requests` while testing | Rate limits (see `docs/API_TEST.md` §3); clear the counters with `python manage.py shell -c "from django.core.cache import cache; cache.clear()"` |
 | Webhook receiver rejects every signature | Since the API review, sign `"<X-FlowBoard-Timestamp>.<raw body>"`, not the body alone |
 | Demo login stopped working | Re-run `python manage.py seed_demo --reset` |
-| Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again |
+| Logged out unexpectedly | Refresh tokens last 7 days, and every refresh rotates them; just log in again. Browsers without the Web Locks API don't refresh automatically, so they ask for a login when the 30-minute access token expires |
+| "Couldn't log out" toast | The logout request didn't reach the server, so the session cookie is still valid; check the connection and try again |
+| `/admin/` returns 404 | nginx only serves the admin to `ADMIN_ALLOWLIST`; add your IP (or `*` in development) |
+| `/api/docs/` returns 404 | `API_DOCS` is `off` (the default when `DJANGO_DEBUG=False`); set it to `staff` or `public` |
 | Billing page says billing isn't configured | Add `STRIPE_SECRET_KEY` (test key) to `.env` and restart Django / `docker compose up -d` |
 | Upgrade says prices aren't set up | Run `python manage.py stripe_setup` (Docker: `docker compose exec backend python manage.py stripe_setup`) |
 | Paid in Checkout but the plan didn't change | Webhooks aren't reaching you: run `stripe listen …`. Returning from Checkout also syncs from Stripe, as does `POST /api/billing/sync/` |
