@@ -19,6 +19,8 @@ export const test = base.extend<{ consoleErrors: string[] }>({
         // The browser logs every non-2xx fetch; the specs assert on what the UI shows instead.
         if (/Failed to load resource: the server responded with a status of 4\d\d/.test(text)) return;
         if (/status of 4\d\d|40[0-9] \(|409|401|403|404/.test(text) && /Failed to load resource|fetch/i.test(text)) return;
+        // Firefox reports a web font download cancelled by a page navigation (NS_BINDING_ABORTED) as an error.
+        if (/downloadable font: download failed .*status=2152398850/.test(text)) return;
         errors.push(`console: ${text}`);
       });
       await use(errors);
