@@ -3,6 +3,7 @@ import { isListed, LISTED, Product } from '../models/Product.ts';
 import { Category } from '../models/Category.ts';
 import { Vendor } from '../models/Vendor.ts';
 import { Coupon } from '../models/Coupon.ts';
+import { CouponRedemption } from '../models/CouponRedemption.ts';
 import { cache } from '../services/cache.ts';
 import { searchProducts, suggest } from '../services/search.ts';
 import { approvedVendorIds, CARD_FIELDS, categoriesWithCounts, listVendors, rankedVendors, storeListParams, toCard } from '../services/catalog.ts';
@@ -137,15 +138,26 @@ export async function publicCoupons(req, res) {
       { $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] },
     ],
   })
-    .select('code description type value minOrder maxDiscount vendor expiresAt usageLimit usedCount')
+    .select('code description type value minOrder maxDiscount vendor expiresAt usageLimit usedCount perUserLimit')
     .populate('vendor', 'storeName')
     .sort({ minOrder: 1 })
     .limit(12)
     .lean();
+  // A signed-in shopper doesn't see coupons they have already used up (each has a per-customer limit).
+  const usedByMe = new Map();
+  if (req.user && coupons.length) {
+    const mine = await CouponRedemption.aggregate([
+      // Aggregations don't cast: the cached session user's id may be a string.
+      { $match: { user: new mongoose.Types.ObjectId(String(req.user._id)), live: true, coupon: { $in: coupons.map((c) => c._id) } } },
+      { $group: { _id: '$coupon', count: { $sum: 1 } } },
+    ]);
+    mine.forEach((r) => usedByMe.set(String(r._id), r.count));
+  }
   res.json({
     coupons: coupons
       .filter((c) => !c.usageLimit || c.usedCount < c.usageLimit)
-      .map(({ usageLimit: _limit, usedCount: _used, ...c }) => c),
+      .filter((c) => (usedByMe.get(String(c._id)) || 0) < (c.perUserLimit || 1))
+      .map(({ usageLimit: _limit, usedCount: _used, perUserLimit: _perUser, ...c }) => c),
   });
 }
 

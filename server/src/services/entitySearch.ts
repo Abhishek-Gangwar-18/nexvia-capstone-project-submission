@@ -14,7 +14,7 @@ import { logger } from '../utils/logger.ts';
  * MongoDB stays the source of truth: change streams re-index every write, startup and recovery rebuild.
  */
 // Bumped when phone and GSTIN fields were removed from indexed entity documents.
-const VERSION = 2;
+const VERSION = 3;
 
 const ANALYSIS = {
   analysis: {
@@ -28,11 +28,14 @@ const exact = { type: 'keyword', normalizer: 'lower' };
 const ENTITIES = {
   vendors: {
     model: Vendor,
-    load: (filter) => Vendor.find(filter).populate('user', 'name email').select('storeName tagline email address user').lean(),
+    load: (filter) => Vendor.find(filter).populate('user', 'name email').select('storeName tagline email phone gstin address user').lean(),
     toDoc: (v) => ({
       storeName: v.storeName,
       tagline: v.tagline || '',
       email: v.email || '',
+      // Admin-only exact matches; the public store search below never looks at them.
+      phone: v.phone || '',
+      gstin: v.gstin || '',
       place: [v.address?.city, v.address?.state].filter(Boolean).join(' '),
       ownerName: v.user?.name || '',
       ownerEmail: v.user?.email || '',
@@ -42,6 +45,8 @@ const ENTITIES = {
         storeName: { ...text, fields: { keyword: exact } },
         tagline: text,
         email: { ...exact, fields: { text } },
+        phone: exact,
+        gstin: exact,
         place: text,
         ownerName: text,
         ownerEmail: { ...exact, fields: { text } },
@@ -49,7 +54,7 @@ const ENTITIES = {
     },
     fuzzyFields: ['storeName^4', 'ownerName^2', 'tagline', 'place', 'email.text', 'ownerEmail.text'],
     prefixField: 'storeName',
-    exactFields: ['email', 'ownerEmail', 'storeName.keyword'],
+    exactFields: ['email', 'ownerEmail', 'storeName.keyword', 'phone', 'gstin'],
     /** Shoppers' store search: only what a store page shows, so an owner's email or phone can't be probed. */
     public: { fuzzyFields: ['storeName^4', 'tagline', 'place'], exactFields: ['storeName.keyword'] },
   },

@@ -291,7 +291,10 @@ async function switchAlias(name) {
   else current?.names.forEach((index) => actions.push({ remove: { index, alias: ALIAS } }));
   actions.push({ add: { index: name, alias: ALIAS } });
   await es.indices.updateAliases({ actions });
-  const builds = Object.keys(await es.indices.get({ index: `${ALIAS}-v*` })).filter((index) => index !== name);
+  // Only old product builds (`<alias>-v<version>-...`): the store and user indices share the prefix
+  // (`<alias>-vendors`, `<alias>-users`) and must survive a product rebuild.
+  const build = new RegExp(`^${ALIAS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-v\\d+-`);
+  const builds = Object.keys(await es.indices.get({ index: `${ALIAS}-v*` })).filter((index) => index !== name && build.test(index));
   if (builds.length) await es.indices.delete({ index: builds.join(',') });
 }
 

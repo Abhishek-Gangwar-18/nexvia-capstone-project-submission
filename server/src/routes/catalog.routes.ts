@@ -37,7 +37,7 @@ router.delete('/products/:productId/reviews/:reviewId', protect, asyncHandler(re
 router.post('/products/:productId/reviews/:reviewId/helpful', protect, asyncHandler(reviews.voteHelpful));
 router.delete('/products/:productId/reviews/:reviewId/helpful', protect, asyncHandler(reviews.unvoteHelpful));
 
-router.get('/coupons', asyncHandler(catalog.publicCoupons));
+router.get('/coupons', optionalAuth, asyncHandler(catalog.publicCoupons));
 
 router.get('/stores', asyncHandler(catalog.listStores));
 router.get('/stores/:storeId', asyncHandler(catalog.getStore));

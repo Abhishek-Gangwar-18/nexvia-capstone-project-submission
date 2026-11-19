@@ -192,7 +192,7 @@ export async function listVendors(req, res) {
   if (hits) match._id = { $in: toObjectIds(hits) };
   else if (req.query.q) {
     const rx = new RegExp(escapeRegex(req.query.q), 'i');
-    match.$or = [{ storeName: rx }, { email: rx }, { tagline: rx }];
+    match.$or = [{ storeName: rx }, { email: rx }, { tagline: rx }, { phone: rx }, { gstin: rx }];
   }
   const order: mongoose.PipelineStage[] = hits ? [{ $set: { _rank: { $indexOfArray: [toObjectIds(hits), '$_id'] } } }, { $sort: { _rank: 1 } }] : [{ $sort: { createdAt: -1 } }];
 
