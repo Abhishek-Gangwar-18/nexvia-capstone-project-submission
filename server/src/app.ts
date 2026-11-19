@@ -32,7 +32,9 @@ export function createApp() {
         if (!origin || env.clientUrls.includes(origin) || (!isProd && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin))) {
           return callback(null, true);
         }
-        return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+        // Refuse quietly: no CORS headers, so the browser blocks the page from reading the answer.
+        // (Passing an Error here would turn every such request into a 500.)
+        return callback(null, false);
       },
       credentials: true,
       exposedHeaders: ['X-Session'], // read by the client to skip redundant session checks (lib/api.ts)
