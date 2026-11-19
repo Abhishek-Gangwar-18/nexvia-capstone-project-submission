@@ -17,6 +17,7 @@ is at the end. Bugs the audit found were fixed and re-tested; the few open items
 | Live services (`redis:check`, `es:check`, `s3:check`) | all pass |
 | Fresh clone from GitHub, README only, Docker | runs with one command; 12 / 12 browser flows pass on it |
 | Production config guards | **7 / 7** unsafe configurations refused at startup |
+| Live deployment (Vercel + Render) | frontend and API deployed separately; health, HTTPS, headers, CORS and webhook signatures checked; a real Stripe test-card order paid on the live site |
 | Load test (100 concurrent users) | **0 errors** in ~40,000 requests |
 | Lighthouse (desktop) | performance 97–98, accessibility 91–100, best practices 100, SEO 100 |
 
@@ -124,6 +125,30 @@ data seeded itself, and 12 / 12 browser flows passed against it.
 **Production guards** (`NODE_ENV=production`), each refused at startup with a clear message: weak `JWT_SECRET`, the
 template's placeholder secret, missing Stripe keys without `ALLOW_TEST_GATEWAY`, `http://` Elasticsearch, missing
 Redis, `AUTO_SEED=true`, and a deployed host without `NODE_ENV=production`. A valid configuration starts normally.
+
+### Live deployment
+
+The frontend and the API are deployed separately, as the brief asks:
+
+| Part | Where | Address |
+|---|---|---|
+| Web app | Vercel (static build, global CDN) | https://nexvia-e-commerce.vercel.app |
+| API | Render, Singapore, free plan (Node 24) | https://vendora-api-i3wm.onrender.com |
+| Services | MongoDB Atlas, Upstash Redis (TLS), AWS S3 (ap-south-1), Stripe test mode | — |
+
+Checked against the live addresses (read-only requests, plus one manual test order):
+
+| Check | Result |
+|---|---|
+| API `/health` | database connected, cache `redis`, storage `s3`, payments `stripe`; search `mongodb` (Elasticsearch deliberately not hosted) |
+| Data | 184 products and 5 stores served from Atlas |
+| HTTPS | `http://` redirects to `https://`; HSTS on both sites |
+| Security headers | CSP, `X-Frame-Options`, `nosniff`, referrer and permissions policy on the web app; helmet headers on the API |
+| Web app | home and deep links (e.g. `/product/…`) load; `robots.txt` served; the build points at the live API |
+| CORS | the Vercel site is allowed with credentials (login cookie across the two domains); any other origin is refused |
+| Stripe webhook | an unsigned request is refused with `Invalid webhook signature`, so only Stripe's signed events are accepted |
+| Speed | ~0.3 s for a 24-product list from India once awake; the free plan sleeps when idle (first request up to ~50 s) |
+| End to end (manual) | signed in, checked out and paid with card 4242 → order *Placed*, payment *Paid* via Stripe (card), invoice downloaded; the order appears in the seller hub |
 
 ---
 

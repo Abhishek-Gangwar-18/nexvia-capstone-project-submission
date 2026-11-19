@@ -21,7 +21,7 @@ Run the sections **in order**. A few cases change data; they are marked ⚠ and 
 | `customerToken` | 2.6 login `customer@vendora.dev` / `Customer@123` → response `accessToken` |
 | `customer2Token` | 2.9 login `ananya.gupta@example.com` / `Customer@123` → `accessToken` |
 | `vendorToken` | 2.10 login `technova@vendora.dev` / `Vendor@123` → `accessToken` |
-| `adminToken` | 2.11 login `abhishek@admin.com` / `admin123` → `accessToken` |
+| `adminToken` | 2.11 login with your admin account (no admin is seeded; see the README) → `accessToken` |
 | `newUserEmail` | the email you used in 2.1 |
 | `newUserToken` | 2.1 register → `accessToken` |
 | `storeId` | 3.10 `GET /stores?q=TechNova` → `items[0]._id` (TechNova's vendor id) |
@@ -148,7 +148,7 @@ curl -i -X POST "{{baseUrl}}/auth/login" -H "Content-Type: application/json" -d 
 # 2.10
 curl -i -X POST "{{baseUrl}}/auth/login" -H "Content-Type: application/json" -d '{"email":"technova@vendora.dev","password":"Vendor@123"}'
 # 2.11
-curl -i -X POST "{{baseUrl}}/auth/login" -H "Content-Type: application/json" -d '{"email":"abhishek@admin.com","password":"admin123"}'
+curl -i -X POST "{{baseUrl}}/auth/login" -H "Content-Type: application/json" -d '{"email":"YOUR_ADMIN_EMAIL","password":"YOUR_ADMIN_PASSWORD"}'
 # 2.12
 curl -i "{{baseUrl}}/auth/me" -H "Authorization: Bearer {{customerToken}}"
 # 2.13

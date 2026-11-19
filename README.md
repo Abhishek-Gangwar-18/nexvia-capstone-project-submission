@@ -3,6 +3,12 @@
 An Amazon-style marketplace where many sellers list products, customers buy from several stores in one checkout, and
 the platform splits each payment between the sellers and its own commission.
 
+**Live demo:** **[nexvia-e-commerce.vercel.app](https://nexvia-e-commerce.vercel.app)** (frontend on Vercel) · API on Render:
+[vendora-api-i3wm.onrender.com/health](https://vendora-api-i3wm.onrender.com/health). Sign in with the
+[seeded accounts](#seeded-accounts) (e.g. `customer@vendora.dev` / `Customer@123`) and pay with Stripe's test card
+`4242 4242 4242 4242` (any future date and CVC): no real money moves. The free API plan sleeps when idle, so the first
+request can take about a minute.
+
 **Stack:** TypeScript throughout · React 19 (Vite, Tailwind CSS v4, Framer Motion, TanStack Query, Zustand, Recharts) ·
 Node.js + Express · MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Element + Connect)
 
@@ -220,12 +226,23 @@ error and shows in Admin → Payments.
 
 ## Deploying (frontend and backend separately)
 
+The live demo runs exactly this way: the API on Render (Singapore region, free plan) with MongoDB Atlas, Upstash Redis,
+S3 and Stripe test mode, and the web app on Vercel. Elasticsearch is left off there, so search runs on MongoDB (no typo
+tolerance); everything else is the same as locally.
+
 **Backend → Render** (`render.yaml` included) or any Node host
-- Root directory: `server`, build command `pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/health`
+- **Without a card:** create a **Web Service** by hand (free instance type). A Render Blueprint (`render.yaml`) asks for
+  payment details even for free services. Settings: root directory `server`, build command
+  `corepack enable && pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/health`, region
+  Singapore (closest to India), plus the environment below with `NODE_VERSION=24` and `AUTO_SEED=false`
+- **With the Blueprint or any other Node host:** root directory `server`, build command `pnpm install --prod --frozen-lockfile`, start command `pnpm start`, health check `/health`
 - Node 22.18 or newer (`render.yaml` sets `NODE_VERSION=24`): the API is TypeScript that Node runs directly, so there is no build step
 - Or deploy the container: `server/Dockerfile` builds a ready-to-run API image
 - Environment: `NODE_ENV=production`, `MONGO_URI` (Atlas), `JWT_SECRET`, `CLIENT_URL=https://<your-vercel-app>`,
   `SERVER_URL=https://<your-api>`, plus Redis (Upstash), Elasticsearch (Elastic Cloud), S3 and Stripe keys.
+  Upstash only accepts TLS: `REDIS_URL` must start with `rediss://` (two s; the Redis/TCP URL, not the REST URL or token).
+  For Stripe webhooks add an endpoint `https://<your-api>/payments/webhook` (see *Stripe setup* step 5) and put its
+  signing secret in `STRIPE_WEBHOOK_SECRET`.
   In production the refresh cookie defaults to `SameSite=None; Secure`, which an API on a separate domain needs (HTTPS only).
   Use S3 in production, because the host's local disk is wiped on every deploy.
   Deployed environments must set `NODE_ENV=production` and a random `JWT_SECRET` of at least 32 bytes. The API
@@ -234,9 +251,11 @@ error and shows in Admin → Payments.
   HTTPS endpoint and API key or username/password, and keep the cluster on a private network.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
-- Root directory: `client`, build `pnpm build` (type-checks, then builds), output `dist`
+- Root directory: `client`, build `pnpm build` (type-checks, then builds), output `dist`. `client/vercel.json` installs
+  with pnpm 12 explicitly (`npx pnpm@12 install`), because Vercel's built-in pnpm can't read this lockfile
 - Or deploy the container: `client/Dockerfile` builds the app and serves it with nginx, forwarding API calls to the `api` host
-- Environment: `VITE_API_URL=https://<your-api>` (the API's origin, no `/api` suffix)
+- Environment: `VITE_API_URL=https://<your-api>` (the API's origin, no `/api` suffix). Then set the API's `CLIENT_URL` to
+  the Vercel address, so the API accepts the site (CORS) and the login cookie works across the two domains
 
 **Security checklist before going live**
 - Atlas → Network Access: allow only the API host's outbound IPs, not `0.0.0.0/0`.

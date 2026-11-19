@@ -63,11 +63,13 @@ Show the payment flow diagram.
 
 ## 6. Live demo (2:30)
 
-Practise this path; have it open in tabs before you start. Use card `4242 4242 4242 4242`.
+Live site: **https://nexvia-e-commerce.vercel.app**. Open it a minute early: the free API plan sleeps when idle and takes
+about 50 s to wake. Practise this path; have it open in tabs before you start. Use card `4242 4242 4242 4242`.
 
-1. **Search** "iphnoe" → typo corrected, results appear (Elasticsearch). *(20 s)*
+1. **Search** "iphone" → results appear. Typo correction ("iphnoe" → iPhone) needs Elasticsearch, which is off on the
+   live site: show it on the local Docker stack, or just mention it. *(20 s)*
 2. **Add two products from two different stores** → cart shows two packages. *(20 s)*
-3. **Checkout and pay** with the Stripe test card → order placed. *(40 s)*
+3. **Checkout and pay** with the Stripe test card → the "Payment successful — order placed!" card appears. *(40 s)*
 4. **Seller view (TechNova):** order appears → mark *packed* → *shipped*. *(30 s)*
 5. **Customer view:** timeline updates; download the **PDF invoice**. *(20 s)*
 6. **Admin:** analytics dashboard with GMV and commission. *(20 s)*
@@ -107,7 +109,7 @@ Pick three:
 
 ## 10. Thank you / questions (0:20)
 
-Repo link, live demo link, and your contact.
+Repo link, live demo **https://nexvia-e-commerce.vercel.app**, and your contact.
 
 ---
 
@@ -119,5 +121,6 @@ Repo link, live demo link, and your contact.
 | Why pay sellers after 7 days? | So a refunded return never has to claw money back from a seller |
 | What if Stripe's webhook never arrives? | Reconciliation job every 6 hours, plus the client confirms the payment on return |
 | How do you stop two buyers taking the last item? | Atomic conditional stock decrement; the second checkout gets a clear "out of stock" error |
+| Why is search less forgiving on the live site? | Elasticsearch isn't hosted for the demo (it would need a paid Elastic Cloud cluster); the API falls back to MongoDB search automatically, which works but has no typo tolerance |
 | Why is `strict` TypeScript off? | Turning it on reports ~1,900 errors; done safely it's a multi-day job, planned next |
 | How is the API secured? | Short-lived tokens, rotating refresh cookie, server-side sessions, rate limits, role checks on every route, startup refuses unsafe production config |
