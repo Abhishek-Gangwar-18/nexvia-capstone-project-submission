@@ -182,6 +182,19 @@ these files gzip-compressed with a one-year cache (file names change with every 
 
 ---
 
+## Known limitations
+
+### Dependency audit (`pnpm audit`, 19 November 2026)
+
+The client has no known vulnerabilities. The server has two, both left as they are on purpose:
+
+| Package | Severity | Issue | Why it stays for now |
+|---|---|---|---|
+| `zod` 3.25.x | High ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)) | Validating an oversized constrained collection can use up memory | Fixed only in zod 4.6.6+, a major version with breaking API changes to every validation schema. The API's request body-size limit caps how large an input can be. Planned: upgrade to zod 4 after submission. |
+| `minimatch` 10.2.x (via `nodemon`) | Moderate | Denial of service through glob pattern amplification | Development-only dependency (`nodemon` file watcher); never installed in the production image. |
+
+---
+
 ## How to repeat
 
 ```bash
