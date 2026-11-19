@@ -14,6 +14,8 @@ Stripe Billing · pytest + Vitest · Docker · GitHub Actions
 | [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Test results (995 backend, 68 frontend, 7 browser E2E, 26/26 smoke, 33/33 nginx security), load test, Lighthouse and API response times |
 | [docs/DEMO.md](docs/DEMO.md) | Step-by-step demo script with accounts, timings and fallbacks |
 | [docs/PRESENTATION.md](docs/PRESENTATION.md) | 10-minute presentation outline: problem, design, challenges, results, next steps |
+| [docs/FlowBoard-Presentation.pptx](docs/FlowBoard-Presentation.pptx) | The 11-slide PowerPoint deck for that presentation, with speaker notes |
+| [docs/scripts/PRESENTATION_SCRIPT.md](docs/scripts/PRESENTATION_SCRIPT.md) | Word-for-word recording script for each slide, with timings, demo clicks and likely questions |
 | [docs/REFLECTION.md](docs/REFLECTION.md) | Individual reflection (draft to personalise) |
 
 ---
@@ -299,7 +301,8 @@ The demo workspaces are set to these plans directly and aren't billed through St
 backend/                  Django project (config/) + apps: core, accounts, tenants, projects, issues,
                           automation, billing · Dockerfile · docker-entrypoint.sh
 frontend/                 React + TypeScript SPA (Vite, pnpm): public home page + the app · Dockerfile · nginx.conf.template
-docs/                     ARCHITECTURE.md, API_TEST.md, TEST_RESULTS.md, DEMO.md, PRESENTATION.md, REFLECTION.md, screenshots/
+docs/                     ARCHITECTURE.md, API_TEST.md, TEST_RESULTS.md, DEMO.md, PRESENTATION.md, FlowBoard-Presentation.pptx,
+                          REFLECTION.md, scripts/PRESENTATION_SCRIPT.md, screenshots/
 scripts/                  smoke_test.py (end-to-end checks against a running stack), nginx_security_test.sh (nginx hardening checks)
 e2e/                      Playwright browser tests of the main user flows
 load/                     k6 load test (k6-api.js)

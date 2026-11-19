@@ -1,6 +1,8 @@
 # FlowBoard: Demo Script
 
-A script for the working demo (live or screen-recorded). Target length: **6–7 minutes**, so it fits inside the
+A script for the working demo (live or screen-recorded). For the full 10-minute talk with slides, use
+[FlowBoard-Presentation.pptx](FlowBoard-Presentation.pptx) and the word-for-word
+[scripts/PRESENTATION_SCRIPT.md](scripts/PRESENTATION_SCRIPT.md); its slide 6 is a 4-minute version of this demo. Target length: **6–7 minutes**, so it fits inside the
 10-minute presentation ([PRESENTATION.md](PRESENTATION.md)).
 
 **Demo video:** _add link here after recording_

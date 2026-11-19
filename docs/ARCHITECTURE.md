@@ -115,6 +115,8 @@ flowchart LR
 │   ├── TEST_RESULTS.md         measured test results and API response times
 │   ├── DEMO.md                 demo script
 │   ├── PRESENTATION.md         final presentation outline
+│   ├── FlowBoard-Presentation.pptx  presentation slides with speaker notes
+│   ├── scripts/PRESENTATION_SCRIPT.md  word-for-word recording script
 │   ├── REFLECTION.md           individual reflection
 │   └── screenshots/            14 app screenshots used in the README
 ├── backend/
