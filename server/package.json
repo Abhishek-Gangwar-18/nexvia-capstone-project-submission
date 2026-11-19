@@ -14,6 +14,8 @@
     "redis:check": "node scripts/redis-check.ts",
     "s3:check": "node scripts/s3-check.ts",
     "es:check": "node scripts/es-check.ts",
+    "test:integration": "node --test --test-concurrency=1 test/integration/api.integration.ts",
+    "test:security": "node --test --test-concurrency=1 test/integration/security.integration.ts",
     "typecheck": "tsc -p ."
   },
   "engines": {
