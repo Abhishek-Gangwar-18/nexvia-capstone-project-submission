@@ -3,6 +3,8 @@ services:
   - type: web
     name: vendora-api
     runtime: node
+    # Closest Render region to India, near the Atlas cluster and the hosted Redis.
+    region: singapore
     rootDir: server
     buildCommand: corepack enable && pnpm install --prod --frozen-lockfile
     startCommand: pnpm start
