@@ -325,8 +325,6 @@ pnpm --dir client typecheck
 ├── docs/API_TESTS.md        Postman/curl test plan for every endpoint
 ├── docs/TEST_RESULTS.md     test results, end-to-end check, latency/throughput, Elasticsearch vs fallback
 ├── docs/DECISIONS.md        design decisions and trade-offs
-├── docs/PRESENTATION.md     10-minute final presentation outline
-├── docs/REFLECTION.md       individual reflection (template)
 ├── docs/diagrams/           Mermaid sources of the architecture diagrams (incl. the live deployment)
 ├── docs/screenshots/        21 screenshots: customer, seller, admin, mobile, dark mode
 ├── docker-compose.yml       full stack (api, web, Redis, Elasticsearch; optional MongoDB)
