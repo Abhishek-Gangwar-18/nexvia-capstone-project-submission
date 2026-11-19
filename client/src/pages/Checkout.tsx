@@ -9,7 +9,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../lib/api';
 import { useCart } from '../lib/cart';
 import { refreshMe } from '../lib/session';
-import { cn, deliveryEstimate, money } from '../lib/format';
+import { cn, deliveryEstimate, money, plural } from '../lib/format';
 import { useAuth } from '../store/auth';
 import { useCartStore } from '../store/cart';
 import AddressForm from '../components/account/AddressForm';
@@ -166,7 +166,7 @@ export default function Checkout() {
       </Link>
       <h1 className="mt-2 font-display text-3xl font-bold tracking-tight">Checkout</h1>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_380px]">
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_380px] [&>*]:min-w-0">
         <div className="space-y-4">
           <Stepper step={step} />
 
@@ -285,7 +285,7 @@ export default function Checkout() {
           <div className="card space-y-5 p-5">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-lg font-bold">Order summary</h2>
-              <span className="text-sm muted">{summary.itemCount} items</span>
+              <span className="text-sm muted">{plural(summary.itemCount, 'item')}</span>
             </div>
             <div className="flex -space-x-3">
               {items.slice(0, 6).map((i) => (

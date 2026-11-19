@@ -103,7 +103,7 @@
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold whitespace-nowrap transition-all duration-200 select-none focus-visible:ring-2 focus-visible:ring-brand-500/60 focus-visible:outline-none active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold whitespace-nowrap transition-all duration-200 select-none focus-visible:ring-2 focus-visible:ring-brand-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white focus-visible:outline-none active:scale-[0.97] dark:focus-visible:ring-offset-surface-dark disabled:pointer-events-none disabled:opacity-50;
   }
   .btn-sm {
     @apply rounded-lg px-3 py-1.5 text-xs;

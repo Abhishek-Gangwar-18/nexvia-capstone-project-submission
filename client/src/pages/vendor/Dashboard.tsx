@@ -46,7 +46,7 @@ export default function VendorDashboard() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
+      <div className="grid gap-6 xl:grid-cols-[1fr_340px] [&>*]:min-w-0">
         {isLoading ? (
           <Skeleton className="h-[420px]" />
         ) : (
@@ -72,7 +72,7 @@ export default function VendorDashboard() {
               <div className="flex items-center gap-3 rounded-2xl bg-amber-50 p-4 dark:bg-amber-400/[0.07]">
                 <Lock className="h-5 w-5 text-amber-600" />
                 <div className="flex-1">
-                  <p className="text-xs text-amber-800 dark:text-amber-300">On hold · until delivery</p>
+                  <p className="text-xs text-amber-800 dark:text-amber-300">On hold · until the return window ends</p>
                   <p className="font-display text-xl font-bold">{money(data.payouts.onHold)}</p>
                 </div>
               </div>
@@ -94,7 +94,7 @@ export default function VendorDashboard() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <div className="card p-5">
           <p className="font-semibold">Top products</p>
           <p className="mb-4 text-xs muted">By lifetime revenue</p>

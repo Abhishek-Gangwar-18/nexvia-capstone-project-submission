@@ -45,7 +45,7 @@ export default function AdminProducts() {
         <div className="flex flex-col gap-3 border-b border-zinc-100 p-4 lg:flex-row lg:items-center lg:justify-between dark:border-white/5">
           <Segmented size="sm" value={status} onChange={(v) => { setStatus(v); setPage(1); }} options={[{ value: '', label: 'All' }, { value: 'active', label: 'Live' }, { value: 'inactive', label: 'Hidden' }, { value: 'deleted', label: 'Deleted' }]} />
           <div className="flex gap-2">
-            <select value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} className="input w-auto py-2">
+            <select aria-label="Filter by category" value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} className="input w-auto py-2">
               <option value="">All categories</option>
               {categories.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
             </select>

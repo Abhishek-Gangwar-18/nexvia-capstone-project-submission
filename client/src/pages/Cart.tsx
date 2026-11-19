@@ -7,7 +7,7 @@ import { useAuth } from '../store/auth';
 import { useAuthModal } from '../store/authModal';
 import { useCart, useCartActions } from '../lib/cart';
 import { useWishlist } from '../lib/hooks';
-import { money } from '../lib/format';
+import { money, plural } from '../lib/format';
 import QuantityStepper from '../components/ui/QuantityStepper';
 import Price from '../components/ui/Price';
 import { EmptyState, PageLoader } from '../components/ui/Feedback';
@@ -71,7 +71,7 @@ export default function Cart() {
     <div className="container-page py-8">
       <h1 className="font-display text-3xl font-bold tracking-tight">Shopping cart</h1>
       <p className="mt-1 text-sm muted">
-        {summary.itemCount} items from {groups.length} seller{groups.length > 1 ? 's' : ''} · ships as {groups.length} package{groups.length > 1 ? 's' : ''}
+        {plural(summary.itemCount, 'item')} from {plural(groups.length, 'seller')} · ships as {plural(groups.length, 'package')}
       </p>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_380px]">

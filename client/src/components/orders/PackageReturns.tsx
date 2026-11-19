@@ -67,13 +67,13 @@ function ReturnForm({ order, pkg, returns, onDone }: ReturnFormProps) {
           <li key={l.product} className="flex items-center gap-3 rounded-xl border border-zinc-200 p-2 dark:border-white/10">
             <img src={l.image} alt="" className="h-10 w-10 rounded-lg object-contain" />
             <p className="min-w-0 flex-1 truncate text-sm">{l.title}</p>
-            <select value={qty[l.product]} onChange={(e) => setQty({ ...qty, [l.product]: Number(e.target.value) })} className="input w-auto py-1.5 text-sm">
+            <select aria-label="Quantity to return" value={qty[l.product]} onChange={(e) => setQty({ ...qty, [l.product]: Number(e.target.value) })} className="input w-auto py-1.5 text-sm">
               {Array.from({ length: l.left + 1 }, (_, n) => <option key={n} value={n}>{n === 0 ? 'Keep' : `Return ${n}`}</option>)}
             </select>
           </li>
         ))}
       </ul>
-      <select value={reasonCode} onChange={(e) => setReasonCode(e.target.value)} className="input">
+      <select aria-label="Return reason" value={reasonCode} onChange={(e) => setReasonCode(e.target.value)} className="input">
         <option value="">Why are you returning it?</option>
         {Object.entries(RETURN_REASON_LABELS).map(([code, label]) => <option key={code} value={code}>{label}</option>)}
       </select>

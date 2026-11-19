@@ -36,7 +36,7 @@ export function WishlistButton({ productId, className, hoverOnly = false }: Wish
       }}
       className={cn(
         'flex h-9 w-9 items-center justify-center rounded-full bg-white/90 shadow-md ring-1 ring-black/5 backdrop-blur transition hover:scale-110 dark:bg-zinc-900/80 dark:ring-white/10',
-        hoverOnly && !active && 'md:opacity-0 md:group-hover:opacity-100',
+        hoverOnly && !active && 'md:pointer-fine:opacity-0 md:pointer-fine:group-hover:opacity-100 md:pointer-fine:group-focus-within:opacity-100',
         className,
       )}
       aria-label={active ? 'Remove from wishlist' : 'Add to wishlist'}
@@ -147,7 +147,7 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
               whileTap={{ scale: 0.92 }}
               className={cn(
                 'absolute right-3 bottom-3 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold shadow-lg transition-all duration-300',
-                'translate-y-0 opacity-100 md:translate-y-3 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100',
+                'translate-y-0 opacity-100 md:pointer-fine:translate-y-3 md:pointer-fine:opacity-0 md:pointer-fine:group-hover:translate-y-0 md:pointer-fine:group-hover:opacity-100 md:pointer-fine:group-focus-within:translate-y-0 md:pointer-fine:group-focus-within:opacity-100',
                 added ? 'bg-emerald-500 text-white' : 'bg-zinc-900 text-white hover:bg-brand-600 dark:bg-white dark:text-zinc-900 dark:hover:bg-brand-300',
               )}
               aria-label="Add to cart"

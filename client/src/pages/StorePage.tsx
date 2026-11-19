@@ -102,7 +102,7 @@ export default function StorePage() {
               </button>
             ))}
           </div>
-          <select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }} className="input w-auto py-2">
+          <select aria-label="Sort products" value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }} className="input w-auto py-2">
             {SORT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>Sort: {o.label}</option>
             ))}

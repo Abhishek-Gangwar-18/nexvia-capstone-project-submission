@@ -1,5 +1,6 @@
 import type * as React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { useFocusTrap } from '../../lib/useFocusTrap';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, X } from 'lucide-react';
@@ -19,6 +20,9 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, description, children, footer, size = 'md', bare = false }: ModalProps) {
+  const panel = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useFocusTrap(panel, Boolean(open));
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => e.key === 'Escape' && onClose?.();
@@ -45,8 +49,11 @@ export function Modal({ open, onClose, title, description, children, footer, siz
             onClick={onClose}
           />
           <motion.div
+            ref={panel}
             role="dialog"
             aria-modal="true"
+            aria-labelledby={!bare && title ? titleId : undefined}
+            tabIndex={-1}
             initial={{ opacity: 0, y: 40, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 30, scale: 0.97 }}
@@ -64,7 +71,7 @@ export function Modal({ open, onClose, title, description, children, footer, siz
             {!bare && (title || onClose) && (
               <div className="flex items-start justify-between gap-4 border-b border-zinc-100 px-6 py-4 dark:border-white/[0.06]">
                 <div>
-                  {title && <h2 className="font-display text-lg font-bold">{title}</h2>}
+                  {title && <h2 id={titleId} className="font-display text-lg font-bold">{title}</h2>}
                   {description && <p className="mt-0.5 text-sm muted">{description}</p>}
                 </div>
                 {onClose && (

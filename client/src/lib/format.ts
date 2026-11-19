@@ -77,3 +77,6 @@ export const gradientFor = (text = '') => {
   for (const ch of text) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   return GRADIENTS[hash % GRADIENTS.length];
 };
+
+/** "1 item", "3 items". */
+export const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;

@@ -59,7 +59,7 @@ function AvatarEditor({ user, value, onChange }: AvatarEditorProps) {
       <div
         className={cn(
           'absolute inset-0 flex items-center justify-center gap-1.5 rounded-full bg-black/50 transition',
-          busy ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100',
+          busy ? 'opacity-100' : 'opacity-100 md:pointer-fine:opacity-0 md:pointer-fine:group-hover:opacity-100 md:pointer-fine:group-focus-within:opacity-100',
         )}
       >
         {busy ? (

@@ -115,7 +115,7 @@ export default function Search() {
           <button type="button" onClick={() => setDrawer(true)} className="btn btn-secondary lg:hidden">
             <SlidersHorizontal className="h-4 w-4" /> Filters {chips.length > 0 && <span className="rounded-full bg-brand-600 px-1.5 text-[10px] text-white">{chips.length}</span>}
           </button>
-          <select value={filters.sort} onChange={(e) => update({ sort: e.target.value })} className="input w-auto cursor-pointer py-2 pr-8 font-medium">
+          <select aria-label="Sort products" value={filters.sort} onChange={(e) => update({ sort: e.target.value })} className="input w-auto cursor-pointer py-2 pr-8 font-medium">
             {SORT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 Sort: {o.label}

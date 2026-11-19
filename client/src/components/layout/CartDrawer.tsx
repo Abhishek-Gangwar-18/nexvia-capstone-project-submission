@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { useFocusTrap } from '../../lib/useFocusTrap';
 import { Link, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowRight, ShoppingBag, Sparkles, Truck, X } from 'lucide-react';
@@ -46,6 +47,9 @@ export default function CartDrawer() {
   const { update, remove } = useCartActions();
   const navigate = useNavigate();
 
+  const panel = useRef<HTMLElement>(null);
+  useFocusTrap(panel, Boolean(open));
+
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => e.key === 'Escape' && close();
@@ -66,6 +70,11 @@ export default function CartDrawer() {
         <div className="fixed inset-0 z-[75]">
           <motion.div className="absolute inset-0 bg-zinc-950/40 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={close} />
           <motion.aside
+            ref={panel}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Your cart"
+            tabIndex={-1}
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}

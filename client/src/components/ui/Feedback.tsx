@@ -24,7 +24,8 @@ interface PageLoaderProps {
 
 export function PageLoader({ label = 'Loading…' }: PageLoaderProps) {
   return (
-    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-3 text-zinc-500">
+    // At least a screen tall: the footer stays below the fold until the page arrives, so it doesn't jump (CLS).
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 text-zinc-500">
       <Spinner className="h-8 w-8 text-brand-600" />
       <p className="text-sm">{label}</p>
     </div>

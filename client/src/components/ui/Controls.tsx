@@ -1,5 +1,5 @@
 import type * as React from 'react';
-import { useId, useState } from 'react';
+import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff } from 'lucide-react';
 import { cn } from '../../lib/format';
@@ -61,7 +61,7 @@ export function Segmented({ options, value, onChange, className, size = 'md' }: 
             className={cn(
               'relative rounded-xl font-semibold whitespace-nowrap transition-colors',
               size === 'sm' ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm',
-              active ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200',
+              active ? 'text-zinc-900 dark:text-white' : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white',
             )}
           >
             {active && (
@@ -125,15 +125,31 @@ interface FieldProps {
 }
 
 export function Field({ label, error, hint, children, className, required }: FieldProps) {
+  const id = useId();
+  const wrapper = useRef<HTMLDivElement>(null);
+  const messageId = `${id}-message`;
+  // Links the label (and the error or hint) to the first control inside, whatever wraps it (icons,
+  // show-password buttons...), so screen readers announce the field name and clicking the label focuses it.
+  useLayoutEffect(() => {
+    const control = wrapper.current?.querySelector<HTMLElement>('input:not([type=hidden]), select, textarea');
+    const labelEl = wrapper.current?.querySelector<HTMLLabelElement>(':scope > label');
+    if (!control) return;
+    if (!control.id) control.id = `${id}-control`;
+    if (labelEl) labelEl.htmlFor = control.id;
+    if (error || hint) control.setAttribute('aria-describedby', messageId);
+    else control.removeAttribute('aria-describedby');
+    if (error) control.setAttribute('aria-invalid', 'true');
+    else control.removeAttribute('aria-invalid');
+  });
   return (
-    <div className={className}>
+    <div className={className} ref={wrapper}>
       {label && (
         <label className="label">
           {label} {required && <span className="text-rose-500">*</span>}
         </label>
       )}
       {children}
-      {error ? <p className="field-error">{error}</p> : hint ? <p className="mt-1 text-xs muted">{hint}</p> : null}
+      {error ? <p id={messageId} className="field-error">{error}</p> : hint ? <p id={messageId} className="mt-1 text-xs muted">{hint}</p> : null}
     </div>
   );
 }

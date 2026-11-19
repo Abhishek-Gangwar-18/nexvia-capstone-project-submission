@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useFocusTrap } from '../../lib/useFocusTrap';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Building2, CheckCircle2, CreditCard, Lock, ShieldCheck, Smartphone, Wallet, X, XCircle } from 'lucide-react';
 import { cn, money } from '../../lib/format';
@@ -25,8 +26,19 @@ interface MockPaymentModalProps {
 }
 
 export default function MockPaymentModal({ open, amount, orderNumber, onResult, onClose }: MockPaymentModalProps) {
+  const panel = useRef<HTMLDivElement>(null);
+  useFocusTrap(panel, Boolean(open));
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && stageRef.current === 'idle' && onClose?.();
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
   const [method, setMethod] = useState('upi');
   const [stage, setStage] = useState('idle');
+  // Escape closes only while nothing is being processed.
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
 
   const pay = async (outcome) => {
     setStage('processing');
@@ -42,6 +54,11 @@ export default function MockPaymentModal({ open, amount, orderNumber, onResult, 
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <motion.div className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
           <motion.div
+            ref={panel}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Pay for order ${orderNumber}`}
+            tabIndex={-1}
             initial={{ opacity: 0, scale: 0.92, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.92 }}

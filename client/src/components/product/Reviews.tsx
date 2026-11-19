@@ -224,7 +224,7 @@ export default function Reviews({ product }: ReviewsProps) {
                 </button>
               )}
             </p>
-            <select value={sort} onChange={(e) => setSort(e.target.value)} className="input w-auto py-1.5 text-xs">
+            <select aria-label="Sort reviews" value={sort} onChange={(e) => setSort(e.target.value)} className="input w-auto py-1.5 text-xs">
               <option value="recent">Most recent</option>
               <option value="top">Highest rated</option>
               <option value="low">Lowest rated</option>

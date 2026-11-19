@@ -61,7 +61,7 @@ export function AdminPackageActions({ order, pkg, onDone }: AdminPackageActionsP
         description={paid ? `Stock is restocked and ${money(pkg.total)} (plus shipping if this is the last package) is refunded to the customer.` : 'Stock is restocked. The order is unpaid, so nothing is refunded.'}
         confirmLabel="Cancel package"
       >
-<select value={cancel.reasonCode} onChange={(e) => setCancel({ ...cancel, reasonCode: e.target.value })} className="input mt-3">
+<select aria-label="Cancellation reason" value={cancel.reasonCode} onChange={(e) => setCancel({ ...cancel, reasonCode: e.target.value })} className="input mt-3">
           <option value="">Choose a reason…</option>
           {CANCEL_REASONS.admin.map((c) => <option key={c} value={c}>{CANCEL_REASON_LABELS[c]}</option>)}
         </select>

@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, MapPin, PackageCheck, Search, Truck, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../../lib/api';
-import { cn, formatDateTime, money } from '../../lib/format';
+import { cn, formatDateTime, money, plural } from '../../lib/format';
 import { CANCEL_REASON_LABELS, CANCEL_REASONS, cancelReasonValid, NEXT_ACTION } from '../../lib/status';
 import { useDebounce } from '../../lib/hooks';
 import { PageHeader } from '../../components/layout/DashboardLayout';
@@ -34,7 +34,7 @@ function PackageCard({ row, onUpdate }: PackageCardProps) {
     setBusy(true);
     try {
       await api.patch(`/vendor/orders/${row._id}/status`, { status, ...extra });
-      toast.success(status === 'delivered' ? 'Delivered! Your payout has been released 💸' : `Package marked ${status}`);
+      toast.success(status === 'delivered' ? 'Delivered! Your payout is released once the return window ends 💸' : `Package marked ${status}`);
       setShipModal(false);
       setConfirmCancel(false);
       onUpdate();
@@ -55,7 +55,7 @@ function PackageCard({ row, onUpdate }: PackageCardProps) {
         </div>
         <div className="min-w-[150px] flex-1">
           <p className="font-mono text-sm font-semibold">{row.orderNumber}</p>
-          <p className="text-xs muted">{formatDateTime(row.createdAt)} · {pkg.items.reduce((s, i) => s + i.quantity, 0)} units</p>
+          <p className="text-xs muted">{formatDateTime(row.createdAt)} · {plural(pkg.items.reduce((s, i) => s + i.quantity, 0), 'unit')}</p>
         </div>
         <div className="text-sm">
           <p className="muted text-xs">Customer</p>
@@ -149,7 +149,7 @@ function PackageCard({ row, onUpdate }: PackageCardProps) {
         description={`Stock is restored and the customer is refunded ${money(pkg.total)}. Your payout for this package is reversed.`}
         confirmLabel="Cancel package"
       >
-        <select value={cancel.reasonCode} onChange={(e) => setCancel({ ...cancel, reasonCode: e.target.value })} className="input mt-3">
+        <select aria-label="Cancellation reason" value={cancel.reasonCode} onChange={(e) => setCancel({ ...cancel, reasonCode: e.target.value })} className="input mt-3">
           <option value="">Choose a reason…</option>
           {CANCEL_REASONS.vendor.map((c) => <option key={c} value={c}>{CANCEL_REASON_LABELS[c]}</option>)}
         </select>
@@ -189,7 +189,7 @@ export default function VendorOrders() {
 
   return (
     <div>
-      <PageHeader title="Orders" description="Pack, ship and deliver your packages. Payouts are released when a package is delivered." />
+      <PageHeader title="Orders" description="Pack, ship and deliver your packages. Each payout is held through the return window after delivery, then released to you." />
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="overflow-x-auto scrollbar-none">
           <Segmented size="sm" value={status} onChange={(v) => { setStatus(v); setPage(1); }} options={tabs} />

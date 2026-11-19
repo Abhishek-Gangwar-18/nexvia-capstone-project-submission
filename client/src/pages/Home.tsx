@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../lib/api';
-import { cn, compactNumber, gradientFor, money } from '../lib/format';
+import { cn, compactNumber, gradientFor, money, plural } from '../lib/format';
 import { readRecentlyViewed, useNow } from '../lib/hooks';
 import ProductRail from '../components/product/ProductRail';
 import { Segmented } from '../components/ui/Controls';
@@ -159,7 +159,7 @@ function Categories({ categories, loading }: CategoriesProps) {
                   </div>
                   <div>
                     <p className="line-clamp-1 text-xs font-semibold sm:text-[13px]">{c.name}</p>
-                    <p className="text-[11px] muted">{c.productCount} items</p>
+                    <p className="text-[11px] muted">{plural(c.productCount, 'item')}</p>
                   </div>
                 </Link>
               </motion.div>

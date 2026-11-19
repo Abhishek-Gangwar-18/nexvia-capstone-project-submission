@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Boxes, IndianRupee, Percent, Receipt, ShoppingCart, Store, Users } from 'lucide-react';
 import { api } from '../../lib/api';
-import { cn, compactMoney, formatDate, money, number } from '../../lib/format';
+import { cn, compactMoney, formatDate, money, number, plural } from '../../lib/format';
 import { STATUS } from '../../lib/status';
 import { PageHeader } from '../../components/layout/DashboardLayout';
 import { BarList, StatCard, TrendChart } from '../../components/dashboard/Charts';
@@ -114,7 +114,7 @@ export default function Analytics() {
           {isLoading ? (
             <Skeleton className="m-5 h-56" />
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
               <table className="table-base">
                 <thead>
                   <tr><th>Store</th><th className="text-right">Orders</th><th className="text-right">GMV</th><th className="text-right">Commission</th></tr>
@@ -153,7 +153,7 @@ export default function Analytics() {
                   <img src={p.image} alt="" className="h-11 w-11 rounded-xl bg-zinc-50 object-contain p-1 dark:bg-white/5" />
                   <div className="min-w-0 flex-1">
                     <Link to={`/product/${p._id}`} className="block truncate text-sm font-semibold hover:text-brand-600">{p.title}</Link>
-                    <p className="text-xs muted">{p.store} · {p.units} units</p>
+                    <p className="text-xs muted">{p.store} · {plural(p.units, 'unit')}</p>
                   </div>
                   <span className="text-sm font-semibold tabular-nums">{compactMoney(p.revenue)}</span>
                 </li>
@@ -169,7 +169,7 @@ export default function Analytics() {
           {isLoading ? (
             <Skeleton className="m-5 h-56" />
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
               <table className="table-base">
                 <tbody>
                   {data.recentOrders.map((o) => (

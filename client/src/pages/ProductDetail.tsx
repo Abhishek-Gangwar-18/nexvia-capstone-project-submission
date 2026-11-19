@@ -49,6 +49,8 @@ function Gallery({ images, title, discount }: GalleryProps) {
           <button
             key={img.url}
             type="button"
+            aria-label={`Show image ${i + 1} of ${images.length}`}
+            aria-pressed={i === active}
             onMouseEnter={() => setActive(i)}
             onClick={() => setActive(i)}
             className={cn(

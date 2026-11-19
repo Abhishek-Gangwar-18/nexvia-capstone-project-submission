@@ -5,7 +5,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, ChevronDown, Download, Search, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, downloadFile, errorMessage } from '../../lib/api';
-import { cn, formatDateTime, money, number } from '../../lib/format';
+import { cn, formatDateTime, money, number, plural } from '../../lib/format';
 import { useDebounce } from '../../lib/hooks';
 import { PageHeader } from '../../components/layout/DashboardLayout';
 import { Segmented } from '../../components/ui/Controls';
@@ -117,7 +117,7 @@ function ItemCell({ items }: ItemCellProps) {
   return (
     <div className="text-sm">
       <button type="button" onClick={(e) => { e.stopPropagation(); setOpen(!open); }} className="flex items-center gap-1 font-medium">
-        {items.count} items <ChevronDown className={cn('h-3.5 w-3.5 transition', open && 'rotate-180')} />
+        {plural(items.count, 'item')} <ChevronDown className={cn('h-3.5 w-3.5 transition', open && 'rotate-180')} />
       </button>
       {open && <ul className="mt-1 space-y-0.5 text-xs muted">{items.lines.map((l, i) => <li key={i} className="max-w-[220px] truncate">{l.quantity} × {l.title}</li>)}</ul>}
     </div>

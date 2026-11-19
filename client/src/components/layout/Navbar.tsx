@@ -11,7 +11,7 @@ import { useTheme } from '../../store/theme';
 import { useCart } from '../../lib/cart';
 import { useCategories, useClickOutside } from '../../lib/hooks';
 import { logout } from '../../lib/session';
-import { cn } from '../../lib/format';
+import { cn, plural } from '../../lib/format';
 import { Logo, UserAvatar } from '../ui/Brand';
 import SearchBar from './SearchBar';
 
@@ -37,7 +37,7 @@ function CartButton() {
   const openDrawer = useCartStore((s) => s.openDrawer);
   const count = summary.itemCount;
   return (
-    <button type="button" onClick={openDrawer} className="btn-icon relative" aria-label={`Cart, ${count} items`}>
+    <button type="button" onClick={openDrawer} className="btn-icon relative" aria-label={`Cart, ${plural(count, 'item')}`}>
       <ShoppingBag className="h-5 w-5" />
       <AnimatePresence>
         {count > 0 && (
@@ -61,7 +61,7 @@ function CartButton() {
 function WishlistLink() {
   const count = useAuth((s) => s.user?.wishlist?.length || 0);
   return (
-    <Link to="/account?tab=wishlist" className="btn-icon relative hidden sm:inline-flex" aria-label={`Wishlist, ${count} items`}>
+    <Link to="/account?tab=wishlist" className="btn-icon relative hidden sm:inline-flex" aria-label={`Wishlist, ${plural(count, 'item')}`}>
       <Heart className="h-5 w-5" />
       <AnimatePresence>
         {count > 0 && (

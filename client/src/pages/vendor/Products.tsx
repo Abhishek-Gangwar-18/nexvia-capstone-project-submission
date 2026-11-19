@@ -90,7 +90,7 @@ export default function VendorProducts() {
               <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400" />
               <input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} placeholder="Search title, SKU, brand" className="input py-2 pl-9" />
             </div>
-            <select value={sort} onChange={(e) => setSort(e.target.value)} className="input w-auto py-2">
+            <select aria-label="Sort products" value={sort} onChange={(e) => setSort(e.target.value)} className="input w-auto py-2">
               <option value="newest">Newest</option>
               <option value="best_selling">Best selling</option>
               <option value="stock">Lowest stock</option>
