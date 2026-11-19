@@ -88,11 +88,15 @@ Pick three:
 
 ## 8. Results: tests and performance (1:00)
 
-- **75 / 78** unit tests pass (the 3 failures are a known test-setup issue, explained in TEST_RESULTS.md).
-- **0** TypeScript errors on both apps; production build passes.
-- **Latency:** every read endpoint under 10 ms p95 (single request), invoice PDF 12.5 ms.
-- **Throughput:** one API process serves 600–2,300 requests/second at p95 under 40 ms with 20 concurrent clients.
-- **Search quality:** typo queries find results with Elasticsearch; the MongoDB fallback returns none.
+- **Tests:** 133 / 133 unit tests, 232 / 232 API integration checks, 24 / 24 security checks, and 14 browser flows
+  passing in Chrome, Firefox and Safari's engine (plus real Stripe test-card payments).
+- **Quality:** 0 TypeScript errors; every page fits phone, tablet and desktop; 19 / 19 pages pass an automated
+  WCAG 2.1 AA accessibility scan; Lighthouse desktop performance 97–98, SEO 100.
+- **Latency:** every read endpoint under 8 ms p95 for a single request; invoice PDF 11 ms.
+- **Load:** 100 concurrent users, ~40,000 requests, **0 errors**; product pages at 3,300 requests/second.
+- **Resilience:** Redis, Elasticsearch or MongoDB can go down without a crash; Redis makes the home page 12× faster.
+- **Audit:** a pre-submission audit found and fixed 13 issues, the biggest being store search breaking after a
+  reindex (details in TEST_RESULTS.md).
 
 ## 9. What I'd do next (0:30)
 

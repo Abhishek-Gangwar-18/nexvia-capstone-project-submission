@@ -6,6 +6,9 @@ environment with the variables below and fill each one when its section tells yo
 
 Run the sections **in order**. A few cases change data; they are marked ⚠ and say how to undo them.
 
+**Automated version:** every case below also runs as `pnpm --dir server test:integration` (232 checks, see
+[TEST_RESULTS.md](TEST_RESULTS.md)). It changes data, so point it at a throwaway database, never Atlas.
+
 ---
 
 ## 0. Setup
@@ -60,9 +63,9 @@ Run the sections **in order**. A few cases change data; they are marked ⚠ and 
 |---|---|---|
 | 1.1 | Root | 200 `{ name: "Vendora API", docs: "/health", client }` |
 | 1.2 | Health | 200 `{ status: "ok", uptime, services: { database: "connected", cache, search, storage, payments } }` |
-| 1.3 | Old `/api` prefix | 404 `Route not found: GET /api/health` |
-| 1.4 | Unknown route | 404 `Route not found: GET /nope` |
-| 1.5 | Webhook with a bad signature | 400 `Invalid webhook signature` |
+| 1.3 | Old `/api` prefix | 404 `Route not found: GET /api/health` (API port only: through Docker's port 8080, nginx serves the web app for paths that aren't API routes) |
+| 1.4 | Unknown route | 404 `Route not found: GET /nope` (API port only, as 1.3) |
+| 1.5 | Webhook with a bad signature | 400 `Invalid webhook signature`; without `STRIPE_WEBHOOK_SECRET` set: 400 `Stripe webhooks are not configured` |
 
 ```bash
 # 1.1
@@ -90,7 +93,7 @@ curl -i -X POST "{{baseUrl}}/payments/webhook" -H "Content-Type: application/jso
 | 2.5 | `role: "admin"` | 400 `role: Invalid enum value...` |
 | 2.6 | Login (customer) | 200 `{ accessToken, user }` + `Set-Cookie: vendora_rt=...; Path=/auth; HttpOnly` → save `customerToken` |
 | 2.7 | Wrong password | 401 `Incorrect email or password` |
-| 2.8 | Missing password | 400 `password: Password is required` |
+| 2.8 | Missing password | 400 `password: Required` (an empty password `""` gives `password: Password is required`) |
 | 2.9–2.11 | Login customer2, vendor, admin | 200 → save `customer2Token`, `vendorToken`, `adminToken` |
 | 2.12 | `GET /auth/me` | 200 `{ user }` (vendor users also get `user.vendor`) |
 | 2.13 | `/auth/me` without a token | 401 `Please log in to continue` |
@@ -229,7 +232,7 @@ curl -i -X DELETE "{{baseUrl}}/auth/me/addresses/{{addressId}}" -H "Authorizatio
 | 3.9b | Product `abc` / unknown id | 400 `Invalid product id` / 404 `Product not found` |
 | 3.10 | Stores search | 200 paginated → save `storeId` |
 | 3.11 | Store detail / `abc` / unknown | 200 `{ store }` / 400 `Invalid store id` / 404 `Store not found` |
-| 3.12 | Public coupons (+ a store's coupons) | 200 `{ coupons }`, private and expired ones left out → save `couponCode` |
+| 3.12 | Public coupons (+ a store's coupons) | 200 `{ coupons }`, private and expired ones left out; with a token, coupons that customer has used up are left out too → save `couponCode` |
 | 3.13 | Upload an image (Postman: Body → form-data, key `images`, type File) | 201 `{ files: [{ url, key }] }`, key `avatars/{date}/{your user id}/{uuid}.jpg` |
 | 3.14 | Upload with no file | 400 `Choose at least one image to upload` |
 | 3.15 | Upload with `folder=bad` | 400 `folder must be one of: products, stores, avatars, reviews, returns` |
@@ -296,7 +299,7 @@ Only a customer with a **delivered** order of the product can rate or review it.
 
 | # | Case | Expected |
 |---|---|---|
-| 4.1 | List reviews (logged in) | 200 `{ items, total, ..., breakdown, myRating, myReviews/myReviewIds, canReview: true }` |
+| 4.1 | List reviews (logged in) | 200 `{ items, total, ..., distribution, myRating, myReviewIds, myVotes, canReview: true, reviewsLeft }` |
 | 4.2 | List reviews, `sort=helpful&rating=5`, no token | 200, only 5-star authors, `canReview: false` |
 | 4.3 | Reviews of product `abc` | 400 `Invalid product id` |
 | 4.4 | Rate 4 stars | 200 `{ rating: 4 }` |
@@ -449,7 +452,7 @@ instead (card `4242 4242 4242 4242`), and `outcome` is ignored.
 | 6.4 | Empty cart | 400 `Your cart is empty` |
 | 6.5 | No address in the body (cart not empty: run 5.2 first) | 400 `address: Choose a delivery address` |
 | 6.6 | Unknown `addressId` | 404 `Delivery address not found` |
-| 6.7 | **Order A**: run 5.2, then checkout with key `order-a-0001` | 201 `{ order: { _id, orderNumber, pricing }, payment, prefill }` → save `orderA`; cart is now empty |
+| 6.7 | **Order A**: run 5.2, then checkout with key `order-a-0001` | 201 `{ order: { _id, orderNumber, pricing }, payment, prefill }` → save `orderA`. The cart is kept until the order is paid (6.12 empties it), so an abandoned payment doesn't lose it |
 | 6.8 | Same key again | 201 with the **same** `order._id` (no second order) |
 | 6.9 | Payment config for A | 200 payment details (test gateway; with Stripe: `publishableKey` and `clientSecret`) |
 | 6.10 | **Order B**: run 5.2, checkout with key `order-b-0001` | 201 → save `orderB` |
@@ -861,7 +864,7 @@ Restore what you change afterwards (stock, coupon, visibility).
 | 9.13 | `openOrders: "maybe"` | 400 `openOrders: Invalid enum value. Expected 'cancel' \| 'keep'...` |
 | 9.14 | Vendor or admin token on `GET /cart` | 403 `You do not have permission to perform this action` |
 | 9.15 | Open `GET /cart/events` 6 times at once with the same customer token | five 200 streams, the 6th 429 `Too many open live connections...` |
-| 9.16 | Shopper store search by a seller's phone or GSTIN (`GET /stores?q=<phone>`); the same as admin (`GET /admin/vendors?q=<phone>`) | shoppers: `total: 0` (private fields aren't searchable); admin: the store |
+| 9.16 | Shopper store search by a seller's phone or GSTIN (`GET /stores?q=<phone>`); the same as admin (`GET /admin/vendors?q=<phone>`) | shoppers: `total: 0` (private fields aren't searchable); admin: the store (by phone or GSTIN, any letter case) |
 | 9.17 | `GET /auth/status` with a token / without / after "log out of all devices" | 200 `{ ok: true }` / 401 / 401 (the app then shows the signed-out home page) |
 | 9.18 | Typos in every search box: `GET /stores?q=teknova`, `/admin/vendors?q=frescart`, `/admin/users?q=anaya`, `/admin/products?q=iphon`, `/vendor/products?q=samsng` | the right store, user or products first (Elasticsearch); with Elasticsearch stopped the same lists still answer (MongoDB text match) |
 

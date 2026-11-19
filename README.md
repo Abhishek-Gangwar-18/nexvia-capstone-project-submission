@@ -102,7 +102,9 @@ Open **http://localhost:5180**.
   about 1,180 ratings and reviews, 210 historical orders and coupons. Run `pnpm --dir server seed` to reset to that data at any time.
   `pnpm --dir server seed:fresh --yes` wipes the database, the app's S3 images and Redis and reseeds with every image
   uploaded to S3 (stop the API first). Demo seeding and resets are development-only.
-- **Tests:** `pnpm --dir server test` runs the API unit tests (no database or services needed).
+- **Tests:** `pnpm --dir server test` runs the API unit tests (no database or services needed). The API integration
+  and security suites (`test:integration`, `test:security`), the load test and the Playwright browser tests in `e2e/`
+  change data, so run them against a throwaway stack: see [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md#how-to-repeat).
 - **Type checks:** `pnpm --dir server typecheck` and `pnpm --dir client typecheck` (see *TypeScript* below).
 - **Live service checks:** `pnpm --dir server redis:check`, `s3:check` and `es:check` test the real Redis, S3 bucket and
   Elasticsearch from `server/.env`. Each touches only its own service (temporary keys, one test image, a temporary
@@ -124,7 +126,7 @@ the `users` collection.
 
 All 5 sellers use the password `Vendor@123`. There are 20 customers, all with the password `Customer@123`: the demo
 customer `customer@vendora.dev` (who has orders, a cart and a wishlist) plus 19 others such as
-`ananya.gupta@example.com`. The login page has one-click buttons for the demo customer and the TechNova seller.
+`ananya.gupta@example.com`. Sign in with **Sign in** in the header (on phones: **Join**, then *Sign in*).
 
 **Test coupons:** `WELCOME10`, `FLAT250`, `FESTIVE20`, `TECHNOVA5` (TechNova only), `GLOW15` (Glow & Co. only),
 `MONSOON30` (expired).
@@ -137,17 +139,28 @@ The whole stack runs in containers: the API (`server/Dockerfile`, Node 24 runnin
 (`client/Dockerfile`, a Vite build served by nginx, which also forwards API calls to the API container),
 Redis and Elasticsearch.
 
+**Quick start, no accounts or keys needed** (bundled MongoDB, test payment gateway, local image storage):
+
 ```bash
-cp server/.env.example server/.env   # fill in MONGO_URI (Atlas), JWT_SECRET, AWS and Stripe keys
-docker compose up -d --build         # open http://localhost:8080
-docker compose logs -f api           # API logs
-docker compose down                  # stop everything
+cp server/.env.example server/.env
+# in server/.env set these two lines:
+#   MONGO_URI=mongodb://mongo:27017/vendora
+#   ALLOW_TEST_GATEWAY=true
+docker compose --profile local-db up -d --build   # first build takes a few minutes; open http://localhost:8080
+docker compose logs -f api                        # API logs ("Vendora API ready", demo data seeded on first start)
+docker compose --profile local-db down            # stop everything (add -v to also delete the data)
 ```
+
+`ALLOW_TEST_GATEWAY=true` is required when no Stripe keys are set: without it the API refuses to start, so orders can
+never be marked paid without money by accident. Sign in with the [seeded accounts](#seeded-accounts) above.
+
+**With the real services:** fill in `MONGO_URI` (Atlas), `JWT_SECRET`, AWS and Stripe keys in `server/.env` instead,
+set `ALLOW_TEST_GATEWAY=false`, and run `docker compose up -d --build` (the bundled MongoDB is then not needed).
 
 Compose reads `server/.env` and points the API at the `redis` and `elasticsearch` containers
 (`REDIS_URL`, `ELASTICSEARCH_NODE`, `CLIENT_URL` and `SERVER_URL` are set in `docker-compose.yml`).
-Without Atlas, start the bundled MongoDB with `docker compose --profile local-db up -d mongo` and set
-`MONGO_URI=mongodb://mongo:27017/vendora`. Locally stored uploads go in the `api-uploads` volume.
+Locally stored uploads go in the `api-uploads` volume. The web app uses port 8080, Redis 6379, Elasticsearch 9200 and
+the bundled MongoDB 27017 on this machine; stop anything else using them first.
 For Stripe webhooks, forward them to the web port: `stripe listen --forward-to localhost:8080/payments/webhook`.
 
 ## Switching on the real services
@@ -280,7 +293,8 @@ pnpm --dir client typecheck
 │   │   ├── middleware/      auth/RBAC, validation, uploads, errors
 │   │   └── seed/            seed script + DummyJSON snapshot
 │   ├── scripts/             redis-check, s3-check, es-check (live service checks), seed-fresh
-│   └── test/                node:test unit tests
+│   └── test/                node:test unit tests; integration/ holds the API and security suites
+├── e2e/                     Playwright browser tests (flows, Stripe, responsive, accessibility)
 ├── docs/ARCHITECTURE.md     roles, schema, concurrency, auth, lifecycle, payments, cache, search, API list
 ├── docs/API_TESTS.md        Postman/curl test plan for every endpoint
 ├── docs/TEST_RESULTS.md     test results, end-to-end check, latency/throughput, Elasticsearch vs fallback

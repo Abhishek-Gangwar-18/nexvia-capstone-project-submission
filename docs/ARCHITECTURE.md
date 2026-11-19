@@ -78,7 +78,9 @@ flowchart LR
 
 nginx serves the app and forwards the API paths (`/auth`, `/products`, `/cart`, …) to the `api` container, so the
 browser talks to one origin, as with the Vite dev proxy. A page load of a path that is also an API prefix (`/cart`,
-`/orders`, `/vendor/*`) gets the app instead. The live cart stream is not buffered. Redis and Elasticsearch are not
+`/orders`, `/vendor/*`) gets the app instead. The live cart stream is not buffered. Pages carry security headers
+(`client/security-headers.conf`: nosniff, frame and referrer policy, a minimal CSP, permissions policy; the same set
+is in `client/vercel.json`), and the nginx version is hidden. Redis and Elasticsearch are not
 published to the host network beyond localhost.
 
 Every URL uses ids (`/product/:productId`, `/store/:storeId`, `/search?category=<categoryId>`). There are no slugs.
@@ -410,6 +412,8 @@ sequenceDiagram
   new token from its "Check again" lifts it.
 - **CSRF:** the refresh cookie only goes to `/auth`, and `/auth/refresh` requires `X-Requested-With: vendora`,
   which another site can't send without passing CORS. Set `COOKIE_SAMESITE=none` (HTTPS) when the API is on another domain.
+- **CORS:** only `CLIENT_URL` origins (plus any localhost port in development) get CORS headers. Other origins are
+  refused quietly, without those headers, so the browser blocks the page from reading the answer; no 500.
 
 ## 6. Cache (Redis or in-memory)
 
@@ -569,8 +573,10 @@ atomic status change, so a double click can't apply it twice.
   options. `createdAt` breaks sort ties, so pages never swap products.
 - **Every search box uses it.** Besides the shop's product search, `services/entitySearch.ts` keeps two more
   indices: `<alias>-vendors` (store name, tagline, email, phone, GSTIN, city/state, owner name and email) and
-  `<alias>-users` (name, email, phone). The shoppers' store search matches only what a store page shows (name,
-  tagline, city/state), so nobody can probe which store an email or phone belongs to; admin search uses every field.
+  `<alias>-users` (name, email). The shoppers' store search matches only what a store page shows (name,
+  tagline, city/state), so nobody can probe which store an email or phone belongs to; admin search uses every field
+  (also in the MongoDB fallback). A product reindex replaces only the product index builds (`<alias>-v<n>-…`) and
+  never touches these two.
   Store search, admin vendors, admin users and the admin order search (by
   customer, store or product name) query them, and the seller's and admin's product lists query the product index
   (hidden and deleted products included, a seller only sees their own). Matching is typo tolerant (`fuzziness:
@@ -632,7 +638,7 @@ with `Retry-After: 5`; the log gets one line per request and a single "connectio
 | POST | `/products/:productId/reviews` | `{title, comment, photos[]}` (auth, delivered order, max 20; the same comment again within a minute is 409) |
 | PATCH / DELETE | `/products/:productId/reviews/:reviewId` | Edit / delete your review (admins may delete) |
 | POST / DELETE | `/products/:productId/reviews/:reviewId/helpful` | Vote / unvote helpful (auth, not your own) |
-| GET | `/coupons?vendors=` | Active, started coupons a shopper can use |
+| GET | `/coupons?vendors=` | Active, started coupons a shopper can use; with a token, coupons that customer has used up are left out |
 | GET | `/stores`, `/stores/:storeId` | Store directory, store profile and stats |
 | POST | `/uploads?folder=products\|stores\|avatars\|reviews\|returns` | Multipart `images[]` → S3 or local disk (auth) |
 
