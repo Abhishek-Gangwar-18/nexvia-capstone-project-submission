@@ -43,14 +43,15 @@ Three roles, one screenshot each:
 
 ## 4. Architecture (1:10)
 
-Show the system diagram (`docs/diagrams/system-overview.mmd`) and the containers diagram.
+Show the system diagram (`docs/diagrams/system-overview.mmd`), the containers diagram and the live deployment diagram
+(`docs/diagrams/deployment.mmd`).
 
 - **Frontend:** React 19 + TypeScript, Vite, Tailwind, TanStack Query.
 - **Backend:** Node 24 + Express + TypeScript, 114 API routes.
 - **Data:** MongoDB Atlas (transactions, change streams), Redis (sessions, locks, rate limits, cache),
   Elasticsearch (search), AWS S3 (images), Stripe (payments + Connect).
 - **Runs anywhere:** `docker compose up` starts the whole stack. Deployed as separate frontend (Vercel) and backend
-  (Render).
+  (Render, Singapore), with every service hosted: Atlas, Upstash Redis, Elastic Cloud, S3 and Stripe.
 - Point to make: **every external service has a fallback**, so search keeps working when Elasticsearch is down.
 
 ## 5. How the money moves (1:00)
@@ -66,8 +67,8 @@ Show the payment flow diagram.
 Live site: **https://nexvia-e-commerce.vercel.app**. Open it a minute early: the free API plan sleeps when idle and takes
 about 50 s to wake. Practise this path; have it open in tabs before you start. Use card `4242 4242 4242 4242`.
 
-1. **Search** "iphone" → results appear. Typo correction ("iphnoe" → iPhone) needs Elasticsearch, which is off on the
-   live site: show it on the local Docker stack, or just mention it. *(20 s)*
+1. **Search** "iphnoe" → Elasticsearch corrects it to iPhone; type "iph" slowly to show the typeahead, then search
+   "mobile" (synonym of phone) and use a filter and a sort. *(20 s)*
 2. **Add two products from two different stores** → cart shows two packages. *(20 s)*
 3. **Checkout and pay** with the Stripe test card → the "Payment successful — order placed!" card appears. *(40 s)*
 4. **Seller view (TechNova):** order appears → mark *packed* → *shipped*. *(30 s)*
@@ -121,6 +122,6 @@ Repo link, live demo **https://nexvia-e-commerce.vercel.app**, and your contact.
 | Why pay sellers after 7 days? | So a refunded return never has to claw money back from a seller |
 | What if Stripe's webhook never arrives? | Reconciliation job every 6 hours, plus the client confirms the payment on return |
 | How do you stop two buyers taking the last item? | Atomic conditional stock decrement; the second checkout gets a clear "out of stock" error |
-| Why is search less forgiving on the live site? | Elasticsearch isn't hosted for the demo (it would need a paid Elastic Cloud cluster); the API falls back to MongoDB search automatically, which works but has no typo tolerance |
+| What happens if Elasticsearch goes down? | The live site uses Elasticsearch on Elastic Cloud (Hosted, Singapore). If it is unreachable, the API switches search to MongoDB automatically, checks again every 15 s, and rebuilds the index from MongoDB before switching back |
 | Why is `strict` TypeScript off? | Turning it on reports ~1,900 errors; done safely it's a multi-day job, planned next |
 | How is the API secured? | Short-lived tokens, rotating refresh cookie, server-side sessions, rate limits, role checks on every route, startup refuses unsafe production config |

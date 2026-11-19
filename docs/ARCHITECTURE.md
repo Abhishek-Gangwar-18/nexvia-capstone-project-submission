@@ -83,6 +83,26 @@ browser talks to one origin, as with the Vite dev proxy. A page load of a path t
 is in `client/vercel.json`), and the nginx version is hidden. Redis and Elasticsearch are not
 published to the host network beyond localhost.
 
+**Live deployment (`docs/diagrams/deployment.mmd`):** frontend and backend are deployed separately, and every
+required service runs hosted.
+
+```mermaid
+flowchart LR
+  B[Browser] -->|HTTPS| V[Vercel: React build, global CDN<br/>nexvia-e-commerce.vercel.app]
+  B -->|HTTPS REST + refresh cookie, CORS| A[Render, Singapore: Node 24 API<br/>vendora-api-i3wm.onrender.com]
+  A --> M[(MongoDB Atlas<br/>replica set)]
+  A --> R[(Upstash Redis<br/>rediss:// TLS)]
+  A -->|HTTPS + API key| E[(Elastic Cloud Hosted<br/>Elasticsearch 8.19, AWS Singapore)]
+  A --> S3[(AWS S3<br/>ap-south-1)]
+  A --> STR[Stripe test mode<br/>PaymentIntents, refunds, Connect]
+  STR -. signed webhook .-> A
+```
+
+The API, Redis and Elasticsearch sit in or near Singapore, close to the Atlas cluster. Elasticsearch is a **Hosted**
+deployment, not Serverless, because Serverless rejects the index settings the API uses (`number_of_shards`,
+`auto_expand_replicas`). The API builds the product, store and user indices from MongoDB on startup, so a new cluster
+needs no seeding; if the cluster is unreachable, search runs on MongoDB until it answers again.
+
 Every URL uses ids (`/product/:productId`, `/store/:storeId`, `/search?category=<categoryId>`). There are no slugs.
 
 ## 3. Database schema (MongoDB)

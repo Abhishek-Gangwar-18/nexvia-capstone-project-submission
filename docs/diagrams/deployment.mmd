@@ -1,0 +1,9 @@
+flowchart LR
+  B[Browser] -->|HTTPS| V[Vercel: React build, global CDN<br/>nexvia-e-commerce.vercel.app]
+  B -->|HTTPS REST + refresh cookie, CORS| A[Render, Singapore: Node 24 API<br/>vendora-api-i3wm.onrender.com]
+  A --> M[(MongoDB Atlas<br/>replica set)]
+  A --> R[(Upstash Redis<br/>rediss:// TLS)]
+  A -->|HTTPS + API key| E[(Elastic Cloud Hosted<br/>Elasticsearch 8.19, AWS Singapore)]
+  A --> S3[(AWS S3<br/>ap-south-1)]
+  A --> STR[Stripe test mode<br/>PaymentIntents, refunds, Connect]
+  STR -. signed webhook .-> A

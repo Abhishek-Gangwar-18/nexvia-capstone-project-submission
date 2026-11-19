@@ -6,8 +6,8 @@ the platform splits each payment between the sellers and its own commission.
 **Live demo:** **[nexvia-e-commerce.vercel.app](https://nexvia-e-commerce.vercel.app)** (frontend on Vercel) · API on Render:
 [vendora-api-i3wm.onrender.com/health](https://vendora-api-i3wm.onrender.com/health). Sign in with the
 [seeded accounts](#seeded-accounts) (e.g. `customer@vendora.dev` / `Customer@123`) and pay with Stripe's test card
-`4242 4242 4242 4242` (any future date and CVC): no real money moves. The free API plan sleeps when idle, so the first
-request can take about a minute.
+`4242 4242 4242 4242` (any future date and CVC): no real money moves. Search runs on Elasticsearch (Elastic Cloud), so
+typos work too: try "iphnoe". The free API plan sleeps when idle, so the first request can take about a minute.
 
 **Stack:** TypeScript throughout · React 19 (Vite, Tailwind CSS v4, Framer Motion, TanStack Query, Zustand, Recharts) ·
 Node.js + Express · MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 · Stripe (Payment Element + Connect)
@@ -227,8 +227,8 @@ error and shows in Admin → Payments.
 ## Deploying (frontend and backend separately)
 
 The live demo runs exactly this way: the API on Render (Singapore region, free plan) with MongoDB Atlas, Upstash Redis,
-S3 and Stripe test mode, and the web app on Vercel. Elasticsearch is left off there, so search runs on MongoDB (no typo
-tolerance); everything else is the same as locally.
+S3, Stripe test mode and Elasticsearch 8.19 on Elastic Cloud (Hosted, AWS Singapore, connected with an API key), and the
+web app on Vercel. Everything runs the same as locally, including typo-tolerant search.
 
 **Backend → Render** (`render.yaml` included) or any Node host
 - **Without a card:** create a **Web Service** by hand (free instance type). A Render Blueprint (`render.yaml`) asks for
@@ -249,6 +249,11 @@ tolerance); everything else is the same as locally.
   refuses to start without Stripe keys, because the test gateway marks orders paid without money. For an
   intentional demo without real payments, set `ALLOW_TEST_GATEWAY=true`. If Elasticsearch is configured, use an
   HTTPS endpoint and API key or username/password, and keep the cluster on a private network.
+- **Elasticsearch on Elastic Cloud:** create a **Hosted** deployment (not Serverless: it rejects the shard/replica index
+  settings) on version 8.x in the API's region, create an API key in Kibana (Stack Management → API keys), then set
+  `ELASTICSEARCH_NODE` (the `https://` endpoint) and `ELASTICSEARCH_API_KEY` (the encoded key). On startup the API
+  builds the product, store and user indices from MongoDB; no seeding needed. Remove both variables to go back to
+  MongoDB search.
 
 **Frontend → Vercel** (`client/vercel.json` included) or Netlify
 - Root directory: `client`, build `pnpm build` (type-checks, then builds), output `dist`. `client/vercel.json` installs
@@ -259,8 +264,10 @@ tolerance); everything else is the same as locally.
 
 **Security checklist before going live**
 - Atlas → Network Access: allow only the API host's outbound IPs, not `0.0.0.0/0`.
-- Elasticsearch must require authentication (Elastic Cloud API key) and must not be reachable from the internet:
-  the store and user indices hold emails and phone numbers.
+- Elasticsearch must require authentication (Elastic Cloud API key, kept only in the host's environment): the store and
+  user indices hold emails and phone numbers. The demo cluster is reachable over HTTPS with the key only; for a real
+  launch, add an Elastic Cloud traffic filter for the API host's outbound IPs and give the key only the
+  `vendora-products*` index privileges.
 - Stripe webhook URL: `https://<your-api>/payments/webhook` (no `/api`).
 - MongoDB must be a replica set (Atlas is) for transactions and live cart updates.
 
@@ -320,7 +327,7 @@ pnpm --dir client typecheck
 ├── docs/DECISIONS.md        design decisions and trade-offs
 ├── docs/PRESENTATION.md     10-minute final presentation outline
 ├── docs/REFLECTION.md       individual reflection (template)
-├── docs/diagrams/           Mermaid sources of the architecture diagrams
+├── docs/diagrams/           Mermaid sources of the architecture diagrams (incl. the live deployment)
 ├── docs/screenshots/        21 screenshots: customer, seller, admin, mobile, dark mode
 ├── docker-compose.yml       full stack (api, web, Redis, Elasticsearch; optional MongoDB)
 └── render.yaml              backend deploy blueprint (Node 24)

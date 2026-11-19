@@ -22,7 +22,7 @@ Parts of the project that were mine. Tick or edit; add what's missing.
 - [ ] Reviews, coupons, PDF invoices, admin analytics
 - [ ] Docker setup (API + web images, nginx, compose)
 - [ ] TypeScript migration (161 files, 0 type errors)
-- [ ] Deployment (Render + Vercel), README and docs, tests
+- [ ] Deployment (Render + Vercel, Elastic Cloud for live search), README and docs, tests
 
 _Which of these was the part you're proudest of, and why?_
 

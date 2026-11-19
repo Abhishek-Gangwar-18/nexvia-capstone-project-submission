@@ -198,6 +198,14 @@ as the brief asks. The same code also runs as containers (`server/Dockerfile`, `
 **Why.** Each side scales and deploys on its own, and a frontend change never restarts the API. S3 holds uploads, so
 the API host's disk can be wiped on every deploy.
 
+**Hosted services.** The API, Upstash Redis and Elasticsearch run in or near Singapore, next to the Atlas cluster.
+Elasticsearch is an Elastic Cloud **Hosted** deployment (8.19, matching the 8.x client and the local Docker version),
+not Serverless, because Serverless rejects the `number_of_shards` and `auto_expand_replicas` index settings. It is
+connected with an API key, and the indices are built from MongoDB on startup.
+
+**Trade-off.** The Elastic Cloud cluster is a trial. When it ends, search falls back to MongoDB without breaking
+anything else, and only typo tolerance and synonyms are lost.
+
 ---
 
 ## Next steps

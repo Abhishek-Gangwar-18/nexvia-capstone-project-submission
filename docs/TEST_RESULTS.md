@@ -134,14 +134,15 @@ The frontend and the API are deployed separately, as the brief asks:
 |---|---|---|
 | Web app | Vercel (static build, global CDN) | https://nexvia-e-commerce.vercel.app |
 | API | Render, Singapore, free plan (Node 24) | https://vendora-api-i3wm.onrender.com |
-| Services | MongoDB Atlas, Upstash Redis (TLS), AWS S3 (ap-south-1), Stripe test mode | — |
+| Services | MongoDB Atlas, Upstash Redis (TLS), Elastic Cloud Hosted Elasticsearch 8.19 (AWS Singapore, API key), AWS S3 (ap-south-1), Stripe test mode | — |
 
 Checked against the live addresses (read-only requests, plus one manual test order):
 
 | Check | Result |
 |---|---|
-| API `/health` | database connected, cache `redis`, storage `s3`, payments `stripe`; search `mongodb` (Elasticsearch deliberately not hosted) |
+| API `/health` | database connected, cache `redis`, storage `s3`, payments `stripe`; search `elasticsearch` (Elastic Cloud Hosted 8.19, Singapore: 184 products, 5 stores and 26 users indexed on startup; "iphnoe" → iPhone results) |
 | Data | 184 products and 5 stores served from Atlas |
+| Search (live) | every search answered by `elasticsearch`: "iphnoe" → iPhone 6, iPhone 5s (typo tolerance); "mobile" → 30 results including phones (synonyms); "iph" → typeahead suggestions |
 | HTTPS | `http://` redirects to `https://`; HSTS on both sites |
 | Security headers | CSP, `X-Frame-Options`, `nosniff`, referrer and permissions policy on the web app; helmet headers on the API |
 | Web app | home and deep links (e.g. `/product/…`) load; `robots.txt` served; the build points at the live API |
