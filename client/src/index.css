@@ -192,3 +192,9 @@
 .recharts-cartesian-grid line {
   @apply stroke-zinc-200 dark:stroke-white/[0.06];
 }
+
+/* Time-left bar on the "order placed" toast (components/orders/OrderPlacedToast.tsx). */
+@keyframes order-toast-timer {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}

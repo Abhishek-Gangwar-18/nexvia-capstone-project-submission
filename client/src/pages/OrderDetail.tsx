@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronLeft, CreditCard, Download, MapPin, MessageSquarePlus, PartyPopper, Receipt, Store, Truck, X, XCircle } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { ChevronLeft, CreditCard, Download, MapPin, MessageSquarePlus, Receipt, Store, Truck, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, downloadFile, errorMessage } from '../lib/api';
 import { formatDateTime, money } from '../lib/format';
@@ -15,56 +15,7 @@ import MockPaymentModal from '../components/checkout/MockPaymentModal';
 import StripePaymentModal from '../components/checkout/StripePaymentModal';
 import PackageReturns from '../components/orders/PackageReturns';
 import RefundsCard from '../components/orders/RefundsCard';
-
-const SUCCESS_BANNER_MS = 5_000;
-
-interface SuccessBannerProps {
-  order?: any;
-  onClose?: () => void;
-}
-
-function SuccessBanner({ order, onClose }: SuccessBannerProps) {
-  // Fades away on its own after 5 seconds (the X closes it sooner).
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const timer = setTimeout(() => close.current(), SUCCESS_BANNER_MS);
-    return () => clearTimeout(timer);
-  }, []);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -20, scale: 0.97 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -10, transition: { duration: 0.6 } }}
-      className="relative mb-6 overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 p-6 text-white shadow-xl shadow-emerald-600/20"
-    >
-      {Array.from({ length: 18 }, (_, i) => (
-        <motion.span
-          key={i}
-          className="absolute h-2 w-2 rounded-sm"
-          style={{ left: `${(i * 37) % 100}%`, top: -10, background: ['#fde68a', '#fbcfe8', '#c7d2fe', '#ffffff'][i % 4] }}
-          animate={{ y: [0, 160], rotate: [0, 360], opacity: [1, 0] }}
-          transition={{ duration: 1.8 + (i % 5) * 0.3, delay: (i % 6) * 0.1, ease: 'easeIn' }}
-        />
-      ))}
-      <button type="button" onClick={onClose} className="absolute top-3 right-3 rounded-lg p-1.5 text-white/80 hover:bg-white/10" aria-label="Dismiss">
-        <X className="h-4 w-4" />
-      </button>
-      <div className="relative flex items-center gap-4">
-        <motion.div initial={{ rotate: -20, scale: 0 }} animate={{ rotate: 0, scale: 1 }} transition={{ type: 'spring', delay: 0.2 }} className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/20">
-          <PartyPopper className="h-7 w-7" />
-        </motion.div>
-        <div>
-          <p className="font-display text-2xl font-bold">Order placed successfully!</p>
-          <p className="text-sm text-emerald-50">
-            Thank you! {order.packages.length > 1 ? `Your ${order.packages.length} packages are` : 'Your package is'} being prepared by the seller{order.packages.length > 1 ? 's' : ''}.
-          </p>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
+import { showOrderPlaced } from '../components/orders/OrderPlacedToast';
 
 interface OrderDetailProps {
   admin?: any;
@@ -104,7 +55,6 @@ export default function OrderDetail({ admin = false }: OrderDetailProps) {
     api
       .post(`/orders/${id}/verify`, { paymentIntentId: intent })
       .then(() => {
-        toast.success('Payment successful!');
         queryClient.invalidateQueries({ queryKey: ['cart'] });
         setParams({ placed: '1' });
       })
@@ -114,6 +64,12 @@ export default function OrderDetail({ admin = false }: OrderDetailProps) {
       })
       .finally(() => refetch());
   }, [admin, id, params, queryClient, refetch, setParams]);
+
+  useEffect(() => {
+    if (!showSuccess || order?.payment.status !== 'paid') return;
+    showOrderPlaced(order);
+    setParams({}, { replace: true });
+  }, [showSuccess, order, setParams]);
 
   if (isLoading) return <PageLoader />;
   if (error) {
@@ -184,10 +140,6 @@ export default function OrderDetail({ admin = false }: OrderDetailProps) {
 
   return (
     <div className={admin ? '' : 'container-page py-8'}>
-      <AnimatePresence>
-        {showSuccess && order.payment.status === 'paid' && <SuccessBanner order={order} onClose={() => setParams({}, { replace: true })} />}
-      </AnimatePresence>
-
       <Link to={back} className="inline-flex items-center gap-1 text-sm font-semibold muted hover:text-brand-600">
         <ChevronLeft className="h-4 w-4" /> {admin ? 'All orders' : 'My orders'}
       </Link>
@@ -340,7 +292,6 @@ export default function OrderDetail({ admin = false }: OrderDetailProps) {
         onPaid={(paidOrder) => {
           setStripeCheckout(null);
           if (paidOrder) {
-            toast.success('Payment successful!');
             queryClient.invalidateQueries({ queryKey: ['cart'] });
             setParams({ placed: '1' });
           }

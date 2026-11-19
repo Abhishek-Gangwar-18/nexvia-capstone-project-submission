@@ -317,10 +317,8 @@ export default function Checkout() {
         onPaid={(order) => {
           const id = stripeCheckout.order._id;
           setStripeCheckout(null);
-          if (order) {
-            toast.success('Payment successful!');
-            return finish(order);
-          }
+          // The order page greets the paid order with its own "order placed" toast.
+          if (order) return finish(order);
           queryClient.invalidateQueries({ queryKey: ['orders'] });
           return navigate(`/orders/${id}`);
         }}
