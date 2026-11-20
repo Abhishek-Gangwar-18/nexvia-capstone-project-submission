@@ -7,10 +7,10 @@ documentation and screenshots, and with its full commit history.
 
 | # | Code | Project | Folder | Live demo | Demo video |
 |---|---|---|---|---|---|
-| 1 | **FS-01** | Multi-Vendor E-Commerce Marketplace (*Vendora*) | [`FS-01-multi-vendor-ecommerce-marketplace/`](FS-01-multi-vendor-ecommerce-marketplace/) | [nexvia-e-commerce.vercel.app](https://nexvia-e-commerce.vercel.app) | [Watch](DRIVE_LINK_FS01) |
-| 2 | **FS-04** | Multi-Tenant SaaS Project Management Platform (*FlowBoard*) | [`FS-04-multi-tenant-saas-project-management/`](FS-04-multi-tenant-saas-project-management/) | Runs locally with one Docker command (see below) | [Watch](DRIVE_LINK_FS04) |
+| 1 | **FS-01** | Multi-Vendor E-Commerce Marketplace (*Vendora*) | [`FS-01-multi-vendor-ecommerce-marketplace/`](FS-01-multi-vendor-ecommerce-marketplace/) | [nexvia-e-commerce.vercel.app](https://nexvia-e-commerce.vercel.app) | [Watch](https://drive.google.com/file/d/1qO337jTuIBguYjPCCvD3eQBDFUQ6np_X/view?usp=drive_link) |
+| 2 | **FS-04** | Multi-Tenant SaaS Project Management Platform (*FlowBoard*) | [`FS-04-multi-tenant-saas-project-management/`](FS-04-multi-tenant-saas-project-management/) | Runs locally with one Docker command (see below) | [Watch](https://drive.google.com/file/d/1Q5DPV1o9S-GVkftP2Cd4BEGZg49agaen/view?usp=drive_link) |
 
-**All demo videos and supporting files:** [Google Drive folder](DRIVE_FOLDER_LINK)
+**All demo videos and supporting files:** [Google Drive folder](https://drive.google.com/drive/folders/1ZtdPV5PBGXeYEzb5U389Xvie9ThJ32c4?usp=drive_link)
 
 ---
 
