@@ -1,0 +1,8 @@
+{% autoescape off %}Join {{ workspace }} on FlowBoard
+
+{{ inviter }} invited you to join as {{ role }}. The invitation expires on {{ expires_at|date:"F j, Y" }}.
+
+Accept the invitation: {{ url }}
+
+If you weren't expecting this, you can ignore this email.
+{% endautoescape %}

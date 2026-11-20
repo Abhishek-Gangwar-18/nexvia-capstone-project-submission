@@ -1,0 +1,9 @@
+{% autoescape off %}{{ title }}
+
+{{ body }}
+{% if url %}
+Open in FlowBoard: {{ url }}
+{% endif %}
+--
+You're getting this because of your {{ workspace }} workspace. Turn these emails off under Profile & security.
+{% endautoescape %}
