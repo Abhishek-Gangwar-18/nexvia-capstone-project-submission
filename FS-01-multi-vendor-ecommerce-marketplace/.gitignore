@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.log
+
+# secrets
+.env
+.env.local
+
+# local data (embedded MongoDB files, locally stored uploads)
+server/.data/
+server/uploads/
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,51 @@
+# Render blueprint for the API (the React client deploys separately, e.g. on Vercel).
+services:
+  - type: web
+    name: vendora-api
+    runtime: node
+    # Closest Render region to India, near the Atlas cluster and the hosted Redis.
+    region: singapore
+    rootDir: server
+    buildCommand: corepack enable && pnpm install --prod --frozen-lockfile
+    startCommand: pnpm start
+    healthCheckPath: /health
+    envVars:
+      # The API is TypeScript that Node runs directly (type stripping needs Node 22.18+).
+      - key: NODE_VERSION
+        value: '24'
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: AUTO_SEED
+        value: 'false'
+      - key: MONGO_URI
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: SERVER_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ELASTICSEARCH_NODE
+        sync: false
+      - key: ELASTICSEARCH_API_KEY
+        sync: false
+      - key: AWS_REGION
+        value: ap-south-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_CONNECT_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_CURRENCY
+        value: inr

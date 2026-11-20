@@ -1,0 +1,8 @@
+flowchart LR
+  B[Browser] -->|:8080| W[web: nginx + built React app]
+  W -->|API paths| A[api: Node 24, :5050]
+  A --> R[(redis)]
+  A --> E[(elasticsearch)]
+  A --> M[(MongoDB Atlas, or the optional mongo container)]
+  A --> S3[(AWS S3)]
+  A --> STR[Stripe]

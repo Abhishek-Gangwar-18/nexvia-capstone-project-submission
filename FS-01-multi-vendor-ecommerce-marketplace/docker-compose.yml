@@ -1,0 +1,88 @@
+# Full stack in Docker:  docker compose up -d --build   -> app on http://localhost:8080
+#   (api + web + Redis + Elasticsearch; the API reads server/.env, e.g. your Atlas MONGO_URI)
+# Only backing services for `pnpm dev`:  docker compose up -d redis elasticsearch
+#   docker compose up -d redis        (just Redis; plain `up -d` also starts MongoDB and Elasticsearch)
+# then in server/.env set:
+#   REDIS_URL=redis://localhost:6379
+#   ELASTICSEARCH_NODE=http://localhost:9200
+# (MongoDB here listens on 27017, same as the embedded dev database - run one or the other.)
+services:
+  # Vendora API (server/Dockerfile). Settings come from server/.env; the lines below point it
+  # at the Redis and Elasticsearch containers and at the web container's address.
+  api:
+    build: ./server
+    restart: unless-stopped
+    env_file: ./server/.env
+    environment:
+      - PORT=5050
+      - REDIS_URL=redis://redis:6379
+      - ELASTICSEARCH_NODE=http://elasticsearch:9200
+      - CLIENT_URL=http://localhost:8080
+      - SERVER_URL=http://localhost:8080
+    volumes:
+      - api-uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  # Vendora web (client/Dockerfile): built React app on nginx, proxies API calls to `api`.
+  web:
+    build: ./client
+    restart: unless-stopped
+    ports:
+      - '8080:80'
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Local MongoDB, only if you don't use Atlas: docker compose --profile local-db up -d mongo
+  mongo:
+    image: mongo:7
+    profiles: ['local-db']
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+
+  # Redis for local development: docker compose up -d redis
+  # Only reachable from this machine (it has no password). Everything it holds expires on its own
+  # (caches, locks, rate-limit counters), so it keeps no data volume.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Elasticsearch for local development: docker compose up -d elasticsearch
+  # Only reachable from this machine (security is off). The API rebuilds the index from MongoDB when needed.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.2
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # A nearly full laptop disk would otherwise make the index read-only.
+      - cluster.routing.allocation.disk.threshold_enabled=false
+    ports:
+      - '127.0.0.1:9200:9200'
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fs "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s" || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+volumes:
+  api-uploads:
+  mongo-data:
+  es-data:

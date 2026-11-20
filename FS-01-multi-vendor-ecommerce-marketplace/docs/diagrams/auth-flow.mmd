@@ -1,0 +1,17 @@
+sequenceDiagram
+  participant C as Client
+  participant A as API
+  participant S as Session (MongoDB + cache)
+  C->>A: POST /auth/login
+  A->>S: create session (hash of refresh secret)
+  A-->>C: { accessToken, user } + Set-Cookie vendora_rt
+  C->>A: GET /cart (Bearer access token)
+  A->>S: session active? (cached 60s, miss -> MongoDB)
+  A-->>C: 200
+  Note over C,A: 15 minutes later
+  C->>A: GET /cart
+  A-->>C: 401 TOKEN_EXPIRED
+  C->>A: POST /auth/refresh (cookie + X-Requested-With)
+  A->>S: rotate secret (must match current hash)
+  A-->>C: new accessToken + new cookie
+  C->>A: GET /cart (retried once)
