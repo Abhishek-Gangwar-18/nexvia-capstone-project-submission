@@ -50,6 +50,43 @@ Node.js + Express · MongoDB (Mongoose) · Elasticsearch 8 · Redis · AWS S3 ·
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart LR
+  B[Browser] -->|HTTPS| V[Vercel: React SPA<br/>TanStack Query, Zustand]
+  B -->|REST + Bearer access token<br/>refresh token in httpOnly cookie| A[Node.js + Express API<br/>routes → controllers → services]
+  A --> M[(MongoDB Atlas<br/>replica set)]
+  A --> R[(Redis<br/>sessions, locks, cache, rate limits)]
+  A --> E[(Elasticsearch<br/>search, facets, typeahead)]
+  A --> S3[(AWS S3<br/>images)]
+  A --> STR[Stripe<br/>PaymentIntents, refunds, Connect]
+  STR -. signed webhooks .-> A
+  M -. change streams .-> A
+  A -. Server-Sent Events: live cart .-> B
+```
+
+- **Layers:** a React SPA talks to a REST API. Each route has zod validation and role checks (customer, seller, admin),
+  controllers stay thin, and business rules live in services.
+- **Adapters with fallbacks:** every external service has its own adapter in `server/src/services`. During development,
+  Redis falls back to memory, Elasticsearch to MongoDB search, S3 to local disk and Stripe to a test gateway. Production
+  refuses to start with an unsafe fallback.
+- **Orders and payments:** one checkout is split into one package per seller. Stock and coupons are held for 15 minutes
+  while the customer pays. Payment is final only after Stripe verifies it (webhook or check), inside a MongoDB
+  transaction. The platform keeps its commission, and each seller's share is transferred through Stripe Connect after
+  delivery and the return window.
+- **Concurrency:** stock, coupons, refunds and payouts change through conditional atomic updates, Redis locks and
+  idempotency keys. Two buyers can't get the last unit, and a double click can't create a second order, refund or payout.
+- **Auth:** 15-minute JWT access tokens are kept in memory only. Rotating refresh tokens sit in an httpOnly cookie, and
+  only their SHA-256 hash is stored. Sessions can be revoked at once (log out everywhere, blocked user).
+- **Live cart:** MongoDB change streams push price, stock and coupon changes to open pages over Server-Sent Events.
+
+The full design (database schema, concurrency rules, auth flow, order lifecycle, payment split, search and the API
+reference) is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, and the reasons behind each choice are in
+**[docs/DECISIONS.md](docs/DECISIONS.md)**.
+
+---
+
 ## Screenshots
 
 All screenshots are in [docs/screenshots/](docs/screenshots/) (taken from the Docker stack with demo data).
